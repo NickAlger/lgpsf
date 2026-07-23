@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MIT
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(ellipsoid_tree 0.2)
+
+include("${CMAKE_CURRENT_LIST_DIR}/lgpsfTargets.cmake")
+check_required_components(lgpsf)
