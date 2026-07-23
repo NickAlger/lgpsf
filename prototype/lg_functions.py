@@ -129,3 +129,61 @@ def eval_lg_nd(p, ell, m, *u):
     norm = math.sqrt(2.0 * math.factorial(p) / math.gamma(p + alpha + 1.0))
 
     return norm * Y * radial
+
+
+def grad_eval_lg_nd(p, ell, m, *u):
+    """Spatial gradient (w.r.t. u) of eval_lg_nd(p, ell, m, *u).
+
+    Returns a length-N tuple of arrays (one per component of u, same shape
+    as the broadcast inputs). Product rule on
+    psi = C * Y(u) * L_p^alpha(r^2) * exp(-r^2/2), reusing exactly the
+    pieces eval_lg_nd already has -- no new special-function code:
+
+      - dY/du_k is elementary term-by-term monomial calculus over the same
+        coefficient table;
+      - d/dt L_p^alpha(t) = -L_{p-1}^(alpha+1)(t) (the classical Laguerre
+        derivative identity, checked symbolically against the recurrence
+        before use), so the radial derivative is genlaguerre itself at
+        (p-1, alpha+1) -- L_{-1} = 0 by convention, matching L_0 being
+        constant.
+    """
+    N = len(u)
+    monos, rows = TABLE[(N, ell)]
+    if m >= len(rows):
+        raise ValueError(
+            f"N={N} ell={ell} has {len(rows)} harmonic mode(s); m={m} is out of range"
+        )
+    row = rows[m]
+
+    us = [np.asarray(ui, dtype=float) for ui in u]
+    r2 = sum(ui * ui for ui in us)
+
+    Y = 0.0
+    dY = [0.0] * N
+    for mono, coeff in zip(monos, row):
+        term = coeff
+        for ui, a in zip(us, mono):
+            term = term * ui**a
+        Y = Y + term
+
+        for k in range(N):
+            a_k = mono[k]
+            if a_k == 0:
+                continue
+            dterm = coeff * a_k
+            for j in range(N):
+                power = mono[j] - 1 if j == k else mono[j]
+                if power != 0:
+                    dterm = dterm * us[j] ** power
+            dY[k] = dY[k] + dterm
+
+    alpha = ell + N / 2.0 - 1.0
+    R = genlaguerre(p, alpha, r2)
+    dR_dt = -genlaguerre(p - 1, alpha + 1.0, r2) if p >= 1 else 0.0
+    gaussian = np.exp(-0.5 * r2)
+    norm = math.sqrt(2.0 * math.factorial(p) / math.gamma(p + alpha + 1.0))
+
+    prefactor = norm * gaussian
+    return tuple(
+        prefactor * (R * dY[k] - us[k] * Y * (R - 2.0 * dR_dt)) for k in range(N)
+    )
