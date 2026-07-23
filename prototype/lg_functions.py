@@ -93,9 +93,11 @@ def eval_lg(p, ell, u1, u2):
     return norm * radial * angular
 
 
-def eval_lg_nd(p, ell, m, *u):
+def eval_lg_nd(p, ell, m, u):
     """Evaluate the real Laguerre-Gaussian mode (p, ell, m) in N dimensions
-    at points u = (u_1, ..., u_N) (broadcastable arrays; N = len(u)).
+    at points u, an array of shape (N, *batch_shape) -- N is read off
+    u.shape[0], batch_shape can be anything (a flat list of points, a grid,
+    even scalar). Returns an array of shape (*batch_shape).
 
     ell >= 0 is the harmonic-polynomial (angular) degree; m indexes the
     d_N(ell)-dimensional orthonormal basis of that degree from
@@ -104,9 +106,12 @@ def eval_lg_nd(p, ell, m, *u):
     ell > 0/ell < 0 branches up to which index is which). N == 1 has no
     modes for ell >= 2 (see lg_harmonics_table's generator docstring).
 
-    Orthonormal in L^2(R^N), same convention as eval_lg.
+    Orthonormal in L^2(R^N), same convention as eval_lg. Vectorized over
+    the batch only; the loop over the (small, fixed) monomial count is a
+    plain Python loop on purpose -- see docs/design-notes.md.
     """
-    N = len(u)
+    u = np.asarray(u, dtype=float)
+    N = u.shape[0]
     monos, rows = TABLE[(N, ell)]
     if m >= len(rows):
         raise ValueError(
@@ -114,14 +119,13 @@ def eval_lg_nd(p, ell, m, *u):
         )
     row = rows[m]
 
-    us = [np.asarray(ui, dtype=float) for ui in u]
-    r2 = sum(ui * ui for ui in us)
+    r2 = np.sum(u * u, axis=0)
 
     Y = 0.0
     for mono, coeff in zip(monos, row):
         term = coeff
-        for ui, a in zip(us, mono):
-            term = term * ui**a
+        for k, a in enumerate(mono):
+            term = term * u[k]**a
         Y = Y + term
 
     alpha = ell + N / 2.0 - 1.0
@@ -131,11 +135,12 @@ def eval_lg_nd(p, ell, m, *u):
     return norm * Y * radial
 
 
-def grad_eval_lg_nd(p, ell, m, *u):
-    """Spatial gradient (w.r.t. u) of eval_lg_nd(p, ell, m, *u).
+def grad_eval_lg_nd(p, ell, m, u):
+    """Spatial gradient (w.r.t. u) of eval_lg_nd(p, ell, m, u).
 
-    Returns a length-N tuple of arrays (one per component of u, same shape
-    as the broadcast inputs). Product rule on
+    u: array of shape (N, *batch_shape), same convention as eval_lg_nd.
+    Returns an array of shape (N, *batch_shape) (one gradient component per
+    leading-axis entry, at every point). Product rule on
     psi = C * Y(u) * L_p^alpha(r^2) * exp(-r^2/2), reusing exactly the
     pieces eval_lg_nd already has -- no new special-function code:
 
@@ -147,7 +152,8 @@ def grad_eval_lg_nd(p, ell, m, *u):
         (p-1, alpha+1) -- L_{-1} = 0 by convention, matching L_0 being
         constant.
     """
-    N = len(u)
+    u = np.asarray(u, dtype=float)
+    N = u.shape[0]
     monos, rows = TABLE[(N, ell)]
     if m >= len(rows):
         raise ValueError(
@@ -155,15 +161,14 @@ def grad_eval_lg_nd(p, ell, m, *u):
         )
     row = rows[m]
 
-    us = [np.asarray(ui, dtype=float) for ui in u]
-    r2 = sum(ui * ui for ui in us)
+    r2 = np.sum(u * u, axis=0)
 
     Y = 0.0
     dY = [0.0] * N
     for mono, coeff in zip(monos, row):
         term = coeff
-        for ui, a in zip(us, mono):
-            term = term * ui**a
+        for k, a in enumerate(mono):
+            term = term * u[k]**a
         Y = Y + term
 
         for k in range(N):
@@ -174,7 +179,7 @@ def grad_eval_lg_nd(p, ell, m, *u):
             for j in range(N):
                 power = mono[j] - 1 if j == k else mono[j]
                 if power != 0:
-                    dterm = dterm * us[j] ** power
+                    dterm = dterm * u[j] ** power
             dY[k] = dY[k] + dterm
 
     alpha = ell + N / 2.0 - 1.0
@@ -184,6 +189,5 @@ def grad_eval_lg_nd(p, ell, m, *u):
     norm = math.sqrt(2.0 * math.factorial(p) / math.gamma(p + alpha + 1.0))
 
     prefactor = norm * gaussian
-    return tuple(
-        prefactor * (R * dY[k] - us[k] * Y * (R - 2.0 * dR_dt)) for k in range(N)
-    )
+    du = [prefactor * (R * dY[k] - u[k] * Y * (R - 2.0 * dR_dt)) for k in range(N)]
+    return np.stack(du, axis=0)

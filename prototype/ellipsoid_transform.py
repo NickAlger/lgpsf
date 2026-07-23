@@ -5,7 +5,7 @@ T maps a physical point x into the normalized coordinate u = T(theta, x) that
 eval_lg_nd/grad_eval_lg_nd (lg_functions.py) expect: u = L^{-1}(x - mu),
 Sigma = L L^T the node's covariance ellipsoid. This is built as the
 composition of two stages (design discussion, 2026-07-23; see
-docs/design-notes.md for the layout convention used here):
+docs/design-notes.md for the array layout convention used here):
 
   Stage 2 (theta -> (mu, L)): unpack_theta / jvp_unpack_theta /
     vjp_unpack_theta. theta is the log-Cholesky encoding of L (N diagonal
@@ -15,7 +15,10 @@ docs/design-notes.md for the layout convention used here):
     "fixed mu") -- the two cases the VarPro design calls for.
   Stage 1 (mu, L, x -> T(x)): pullback / pullback_jvp / pullback_vjp. The
     only piece that ever touches the actual ellipsoid geometry; independent
-    of how theta encodes (mu, L).
+    of how theta encodes (mu, L). Solves against L via its explicit inverse
+    (formed once, since theta -- and hence L -- is never batched) rather
+    than a triangular substitution loop: cheap (N <= 4) and turns every
+    "solve" into a single batched matrix contraction.
 
 eval_T / jvp_T / vjp_T compose the two stages via the chain rule (forward
 mode: push a theta-tangent through stage 2, then stage 1; reverse mode: pull
@@ -26,47 +29,28 @@ small stage-2 function, never touching stage 1.
 
 Vectorized over x (a batch of any number of points, of any broadcastable
 shape); NOT vectorized over theta -- theta is always a single parameter
-vector. x, u, w and other point-indexed quantities are represented as
-length-N tuples of arrays (one array per coordinate, the same
-structure-of-arrays convention as eval_lg_nd's *u; see
-docs/design-notes.md), so T's output can be fed straight into
-eval_lg_nd(p, ell, m, *T(...)).
+vector. Point-indexed quantities (x, u, w, ...) are arrays of shape
+(N, *batch_shape) -- non-batch axes first, the point-batch axes last,
+matching the numpy-natural layout convention in docs/design-notes.md -- so
+T's output can be fed straight into eval_lg_nd(p, ell, m, T(...)). Loops
+over N (spatial dimension) or P (theta's parameter count) stay as plain
+Python loops -- both are small and fixed, and the governing rule (agreed
+2026-07-23) is: vectorize over the point batch always, loops over every
+other axis are fine, often preferable for memory.
 """
 import numpy as np
 
 
-# --------------------------------------------------------------------------
-# Small linear-algebra building blocks: solve triangular systems, batched
-# over a point-tuple right-hand side, reused by both pullback (solve L) and
-# its VJP (solve L^T).
-# --------------------------------------------------------------------------
-
-def solve_L(L, rhs):
-    """Solve L y = rhs for y (L lower-triangular), rhs a length-N tuple of
-    arrays. Forward substitution; the Python loop is over N (small, fixed),
-    every arithmetic op is vectorized over whatever shape each rhs[i] is."""
-    N = len(rhs)
-    y = [None] * N
-    for i in range(N):
-        s = rhs[i]
-        for j in range(i):
-            s = s - L[i, j] * y[j]
-        y[i] = s / L[i, i]
-    return tuple(y)
+def _apply_matrix(A, v):
+    """A @ v, batched over v's trailing axes. A: (N, N); v: (N, *batch_shape);
+    returns (N, *batch_shape)."""
+    return np.einsum('ij,j...->i...', A, v)
 
 
-def solve_LT(L, rhs):
-    """Solve L^T z = rhs for z (L lower-triangular, so L^T is
-    upper-triangular), rhs a length-N tuple of arrays. Backward
-    substitution."""
-    N = len(rhs)
-    z = [None] * N
-    for i in reversed(range(N)):
-        s = rhs[i]
-        for j in range(i + 1, N):
-            s = s - L[j, i] * z[j]
-        z[i] = s / L[i, i]
-    return tuple(z)
+def _broadcast_param(vec, ndim_extra):
+    """Reshape a (N,) parameter vector so it broadcasts against a
+    (N, *batch_shape) array with len(batch_shape) == ndim_extra."""
+    return vec.reshape(vec.shape[0], *([1] * ndim_extra))
 
 
 # --------------------------------------------------------------------------
@@ -75,11 +59,11 @@ def solve_LT(L, rhs):
 # --------------------------------------------------------------------------
 
 def pullback(mu, L, x):
-    """u = L^{-1}(x - mu). x: length-N tuple of arrays (broadcastable
-    together); returns a length-N tuple of arrays, same convention."""
-    N = len(x)
-    v = tuple(np.asarray(x[i], dtype=float) - mu[i] for i in range(N))
-    return solve_L(L, v)
+    """u = L^{-1}(x - mu). x: array of shape (N, *batch_shape); returns an
+    array of the same shape."""
+    x = np.asarray(x, dtype=float)
+    v = x - _broadcast_param(mu, x.ndim - 1)
+    return _apply_matrix(np.linalg.inv(L), v)
 
 
 def pullback_jvp(mu, L, dmu, dL, x):
@@ -93,39 +77,38 @@ def pullback_jvp(mu, L, dmu, dL, x):
     d(L^{-1}) = -L^{-1} dL L^{-1} and dv = -dmu, then substitute
     L^{-1} v = u.
     """
-    N = len(x)
     u = pullback(mu, L, x)
-    rhs = tuple(dmu[i] + sum(dL[i, j] * u[j] for j in range(N)) for i in range(N))
-    y = solve_L(L, rhs)
-    return tuple(-yi for yi in y)
+    rhs = _apply_matrix(dL, u) + _broadcast_param(dmu, u.ndim - 1)
+    return -_apply_matrix(np.linalg.inv(L), rhs)
 
 
 def pullback_vjp(mu, L, x, w):
-    """Reverse-mode: given a cotangent w (length-N tuple of arrays, same
-    shape as x -- one cotangent per point), return (w_mu, w_L), the
+    """Reverse-mode: given a cotangent w (array of shape (N, *batch_shape),
+    same shape as x -- one cotangent per point), return (w_mu, w_L), the
     cotangents on (mu, L) such that for any (dmu, dL),
     sum_points w . pullback_jvp(mu, L, dmu, dL, x)
-      == sum_points (w_mu . dmu + sum_ij w_L[i][j] * dL[i,j])
+      == sum_points (w_mu . dmu + sum_ij w_L[i,j] * dL[i,j])
     (this identity is the adjoint-consistency test in
     test_ellipsoid_transform.py).
 
-    w_mu: length-N tuple of arrays (batched over points, like w itself).
-    w_L: N x N (nested list) of arrays, w_L[i][j] batched like w.
+    w_mu: shape (N, *batch_shape), like w. w_L: shape (N, N, *batch_shape).
 
     z = L^{-T} w, w_mu = -z, w_L = -outer(z, u); derived from the adjoint
     of pullback_jvp's linear map (dmu, dL) -> du.
     """
-    N = len(x)
+    w = np.asarray(w, dtype=float)
     u = pullback(mu, L, x)
-    z = solve_LT(L, w)
-    w_mu = tuple(-zi for zi in z)
-    w_L = [[-z[i] * u[j] for j in range(N)] for i in range(N)]
+    z = _apply_matrix(np.linalg.inv(L).T, w)
+    w_mu = -z
+    w_L = -np.einsum('i...,j...->ij...', z, u)
     return w_mu, w_L
 
 
 # --------------------------------------------------------------------------
 # Stage 2: theta -> (mu, L), a log-Cholesky encoding, with mu either free
-# (leading N entries of theta) or fixed at a given constant mu0.
+# (leading N entries of theta) or fixed at a given constant mu0. theta is
+# never batched, so these loops over N/P are outside the batch-vectorization
+# rule entirely and stay as plain Python loops.
 # --------------------------------------------------------------------------
 
 def theta_size(N, mu0=None):
@@ -188,9 +171,9 @@ def jvp_unpack_theta(theta, dtheta, N, mu0=None):
 def vjp_unpack_theta(theta, N, w_mu, w_L, mu0=None):
     """Reverse-mode: given (w_mu, w_L) (the cotangents on (mu, L), batched
     over points as in pullback_vjp's output), return the batched covector
-    on theta -- a length-theta_size(N, mu0) tuple of arrays. w_mu is simply
-    dropped when mu0 is not None (mu isn't a function of theta, so it has
-    no theta component to accumulate into)."""
+    on theta -- an array of shape (theta_size(N, mu0), *batch_shape). w_mu
+    is simply dropped when mu0 is not None (mu isn't a function of theta,
+    so it has no theta component to accumulate into)."""
     _, L = unpack_theta(theta, N, mu0)
     P = theta_size(N, mu0)
     result = [None] * P
@@ -200,13 +183,13 @@ def vjp_unpack_theta(theta, N, w_mu, w_L, mu0=None):
             result[idx] = w_mu[i]
             idx += 1
     for i in range(N):
-        result[idx] = w_L[i][i] * L[i, i]
+        result[idx] = w_L[i, i] * L[i, i]
         idx += 1
     for i in range(1, N):
         for j in range(i):
-            result[idx] = w_L[i][j]
+            result[idx] = w_L[i, j]
             idx += 1
-    return tuple(result)
+    return np.stack(result, axis=0)
 
 
 # --------------------------------------------------------------------------
@@ -215,16 +198,16 @@ def vjp_unpack_theta(theta, N, w_mu, w_L, mu0=None):
 # --------------------------------------------------------------------------
 
 def eval_T(theta, N, x, mu0=None):
-    """u = T(theta, x), the ellipsoid pullback. x: length-N tuple of
-    arrays; returns a length-N tuple of arrays (feed straight into
-    eval_lg_nd(p, ell, m, *eval_T(...)))."""
+    """u = T(theta, x), the ellipsoid pullback. x: array of shape
+    (N, *batch_shape); returns an array of the same shape (feed straight
+    into eval_lg_nd(p, ell, m, eval_T(...)))."""
     mu, L = unpack_theta(theta, N, mu0)
     return pullback(mu, L, x)
 
 
 def jvp_T(theta, dtheta, N, x, mu0=None):
     """Directional derivative of T(theta, x) w.r.t. theta in direction
-    dtheta, at fixed x. Returns a length-N tuple of arrays, same
+    dtheta, at fixed x. Returns an array of shape (N, *batch_shape), same
     convention as eval_T."""
     mu, L = unpack_theta(theta, N, mu0)
     dmu, dL = jvp_unpack_theta(theta, dtheta, N, mu0)
@@ -232,9 +215,9 @@ def jvp_T(theta, dtheta, N, x, mu0=None):
 
 
 def vjp_T(theta, N, x, w, mu0=None):
-    """Reverse-mode: given a cotangent w (length-N tuple of arrays, one
-    per point, same shape as x), return <w, dT/dtheta> as a length-P tuple
-    of arrays (batched over points, P = theta_size(N, mu0)) -- deliberately
+    """Reverse-mode: given a cotangent w (array of shape (N, *batch_shape),
+    one per point, same shape as x), return <w, dT/dtheta> as an array of
+    shape (P, *batch_shape) (P = theta_size(N, mu0)) -- deliberately
     per-point rather than summed, so the caller can sum (for a gradient of
     a scalar objective) or keep it as the rows of a batched Jacobian."""
     mu, L = unpack_theta(theta, N, mu0)
@@ -243,33 +226,31 @@ def vjp_T(theta, N, x, w, mu0=None):
 
 
 # --------------------------------------------------------------------------
-# Testing utility: the full (batch_shape, N, P) Jacobian tensor, built two
+# Testing utility: the full (N, P, *batch_shape) Jacobian tensor, built two
 # independent ways (forward and reverse sweeps). See
 # test_ellipsoid_transform.py for the cross-checks this enables.
 # --------------------------------------------------------------------------
 
 def jacobian_tensor_forward(theta, N, x, mu0=None):
     """dT_i/dtheta_p at every point, via P calls to jvp_T with standard
-    basis directions in theta-space. Shape (*batch_shape, N, P)."""
+    basis directions in theta-space. Shape (N, P, *batch_shape)."""
     P = theta_size(N, mu0)
     cols = []
     for p in range(P):
         dtheta = np.zeros(P)
         dtheta[p] = 1.0
-        du = jvp_T(theta, dtheta, N, x, mu0=mu0)
-        cols.append(np.stack(du, axis=-1))  # (*batch_shape, N)
-    return np.stack(cols, axis=-1)  # (*batch_shape, N, P)
+        cols.append(jvp_T(theta, dtheta, N, x, mu0=mu0))  # (N, *batch_shape)
+    return np.stack(cols, axis=1)  # (N, P, *batch_shape)
 
 
 def jacobian_tensor_reverse(theta, N, x, mu0=None):
     """dT_i/dtheta_p at every point, via N calls to vjp_T with standard
-    basis cotangents in output space. Shape (*batch_shape, N, P)."""
-    bshape = np.broadcast(*[np.asarray(xi, dtype=float) for xi in x]).shape
+    basis cotangents in output space. Shape (N, P, *batch_shape)."""
+    x = np.asarray(x, dtype=float)
+    bshape = x.shape[1:]
     rows = []
     for i in range(N):
-        w = tuple(
-            np.full(bshape, 1.0 if k == i else 0.0) for k in range(N)
-        )
-        dtheta_batched = vjp_T(theta, N, x, w, mu0=mu0)
-        rows.append(np.stack(dtheta_batched, axis=-1))  # (*batch_shape, P)
-    return np.stack(rows, axis=-2)  # (*batch_shape, N, P)
+        w = np.zeros((N,) + bshape)
+        w[i] = 1.0
+        rows.append(vjp_T(theta, N, x, w, mu0=mu0))  # (P, *batch_shape)
+    return np.stack(rows, axis=0)  # (N, P, *batch_shape)

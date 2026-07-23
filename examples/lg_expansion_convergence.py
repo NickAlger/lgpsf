@@ -43,8 +43,9 @@ SETTINGS = {
 }
 
 
-def target_f(*coords):
-    r2 = sum(c * c for c in coords)
+def target_f(coords):
+    """coords: array of shape (N, *batch_shape)."""
+    r2 = np.sum(coords * coords, axis=0)
     gaussian = np.exp(-r2 / (2.0 * WIDTH**2))
     smooth = 1.0 + AMP * np.sin(FREQ * coords[0])
     return gaussian * smooth
@@ -78,10 +79,10 @@ def enumerate_modes_by_level(N, max_level):
 
 def run_convergence(N, max_level, half_width, n_grid):
     axes = [np.linspace(-half_width, half_width, n_grid) for _ in range(N)]
-    mesh = np.meshgrid(*axes, indexing="ij")
+    mesh = np.stack(np.meshgrid(*axes, indexing="ij"), axis=0)  # (N, n_grid, ..., n_grid)
     cell_volume = (axes[0][1] - axes[0][0]) ** N
 
-    f_vals = target_f(*mesh)
+    f_vals = target_f(mesh)
     f_norm = math.sqrt(np.sum(f_vals**2) * cell_volume)
 
     levels = enumerate_modes_by_level(N, max_level)
@@ -92,7 +93,7 @@ def run_convergence(N, max_level, half_width, n_grid):
     total_modes = 0
     for level_modes in levels:
         for (p, ell, m) in level_modes:
-            psi = eval_lg_nd(p, ell, m, *mesh)
+            psi = eval_lg_nd(p, ell, m, mesh)
             c = np.sum(f_vals * psi) * cell_volume
             recon = recon + c * psi
             total_modes += 1

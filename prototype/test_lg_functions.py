@@ -18,26 +18,27 @@ FD_TOL = 1e-6  # well above the ~1e-10 central-difference floor measured at FD_S
 
 
 def _central_diff_grad(p, ell, m, u, h=FD_STEP):
-    N = len(u)
+    N = u.shape[0]
     grad = np.zeros(N)
     for k in range(N):
-        u_plus = list(u)
-        u_plus[k] = u_plus[k] + h
-        u_minus = list(u)
-        u_minus[k] = u_minus[k] - h
-        f_plus = eval_lg_nd(p, ell, m, *u_plus)
-        f_minus = eval_lg_nd(p, ell, m, *u_minus)
+        u_plus = u.copy()
+        u_plus[k] += h
+        u_minus = u.copy()
+        u_minus[k] -= h
+        f_plus = eval_lg_nd(p, ell, m, u_plus)
+        f_minus = eval_lg_nd(p, ell, m, u_minus)
         grad[k] = (f_plus - f_minus) / (2 * h)
     return grad
 
 
 def _assert_gradient_matches_fd(p, ell, m, u):
-    analytic = np.array([float(g) for g in grad_eval_lg_nd(p, ell, m, *u)])
+    u = np.asarray(u, dtype=float)
+    analytic = grad_eval_lg_nd(p, ell, m, u)
     fd = _central_diff_grad(p, ell, m, u)
     err = np.max(np.abs(analytic - fd))
     scale = max(1.0, np.max(np.abs(fd)))
     assert err / scale < FD_TOL, (
-        f"N={len(u)} p={p} ell={ell} m={m} u={u}: "
+        f"N={u.shape[0]} p={p} ell={ell} m={m} u={u}: "
         f"analytic={analytic} fd={fd} rel_err={err / scale:.3e}"
     )
 
@@ -51,9 +52,9 @@ def test_gradient_matches_finite_differences():
                 continue
             for p in range(4):
                 for m in range(len(rows)):
-                    _assert_gradient_matches_fd(p, ell, m, [0.0] * N)  # origin
+                    _assert_gradient_matches_fd(p, ell, m, np.zeros(N))  # origin
                     for _ in range(3):
-                        u = rng.uniform(-1.5, 1.5, size=N).tolist()
+                        u = rng.uniform(-1.5, 1.5, size=N)
                         _assert_gradient_matches_fd(p, ell, m, u)
 
 

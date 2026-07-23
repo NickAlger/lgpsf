@@ -39,7 +39,8 @@ def _random_L(N, rng):
 
 
 def _random_batch(N, K, rng):
-    return tuple(rng.uniform(-1.5, 1.5, size=K) for _ in range(N))
+    """Array of shape (N, K): K random points in N dimensions."""
+    return rng.uniform(-1.5, 1.5, size=(N, K))
 
 
 # --------------------------------------------------------------------------
@@ -57,11 +58,11 @@ def test_pullback_jvp_vjp_adjoint_consistency():
         w = _random_batch(N, 20, rng)
 
         du = pullback_jvp(mu, L, dmu, dL, x)
-        lhs = sum(w[i] * du[i] for i in range(N))  # pointwise, shape (20,)
+        lhs = np.sum(w * du, axis=0)  # pointwise, shape (20,)
 
         w_mu, w_L = pullback_vjp(mu, L, x, w)
-        rhs = sum(w_mu[i] * dmu[i] for i in range(N))
-        rhs = rhs + sum(w_L[i][j] * dL[i, j] for i in range(N) for j in range(N))
+        rhs = np.sum(w_mu * dmu.reshape(N, 1), axis=0)
+        rhs = rhs + np.sum(w_L * dL.reshape(N, N, 1), axis=(0, 1))
 
         err = np.max(np.abs(lhs - rhs))
         assert err < 1e-10, f"N={N}: adjoint mismatch, max err={err:.3e}"
@@ -84,13 +85,9 @@ def test_pullback_jvp_matches_finite_differences():
             mu_p, mu_m = mu.copy(), mu.copy()
             mu_p[k] += FD_STEP
             mu_m[k] -= FD_STEP
-            fd = tuple(
-                (pullback(mu_p, L, x)[i] - pullback(mu_m, L, x)[i]) / (2 * FD_STEP)
-                for i in range(N)
-            )
-            for i in range(N):
-                err = np.max(np.abs(analytic[i] - fd[i]))
-                assert err < FD_TOL, f"N={N} dmu[{k}]: err={err:.3e}"
+            fd = (pullback(mu_p, L, x) - pullback(mu_m, L, x)) / (2 * FD_STEP)
+            err = np.max(np.abs(analytic - fd))
+            assert err < FD_TOL, f"N={N} dmu[{k}]: err={err:.3e}"
 
         # perturb each lower-triangular entry of L (including diagonal)
         for a in range(N):
@@ -103,13 +100,9 @@ def test_pullback_jvp_matches_finite_differences():
                 L_p, L_m = L.copy(), L.copy()
                 L_p[a, b] += FD_STEP
                 L_m[a, b] -= FD_STEP
-                fd = tuple(
-                    (pullback(mu, L_p, x)[i] - pullback(mu, L_m, x)[i]) / (2 * FD_STEP)
-                    for i in range(N)
-                )
-                for i in range(N):
-                    err = np.max(np.abs(analytic[i] - fd[i]))
-                    assert err < FD_TOL, f"N={N} dL[{a},{b}]: err={err:.3e}"
+                fd = (pullback(mu, L_p, x) - pullback(mu, L_m, x)) / (2 * FD_STEP)
+                err = np.max(np.abs(analytic - fd))
+                assert err < FD_TOL, f"N={N} dL[{a},{b}]: err={err:.3e}"
 
 
 # --------------------------------------------------------------------------
@@ -136,10 +129,10 @@ def test_theta_jvp_vjp_adjoint_consistency():
             w = _random_batch(N, 15, rng)
 
             du = jvp_T(theta, dtheta, N, x, mu0=mu0)
-            lhs = sum(w[i] * du[i] for i in range(N))
+            lhs = np.sum(w * du, axis=0)
 
-            dtheta_batched = vjp_T(theta, N, x, w, mu0=mu0)
-            rhs = sum(dtheta_batched[p] * dtheta[p] for p in range(P))
+            dtheta_batched = vjp_T(theta, N, x, w, mu0=mu0)  # (P, K)
+            rhs = np.sum(dtheta_batched * dtheta.reshape(P, 1), axis=0)
 
             err = np.max(np.abs(lhs - rhs))
             assert err < 1e-10, f"N={N} mu0={mu0}: adjoint mismatch, max err={err:.3e}"
@@ -161,14 +154,9 @@ def test_theta_jvp_matches_finite_differences():
                 theta_p, theta_m = theta.copy(), theta.copy()
                 theta_p[p] += FD_STEP
                 theta_m[p] -= FD_STEP
-                fd = tuple(
-                    (eval_T(theta_p, N, x, mu0=mu0)[i] - eval_T(theta_m, N, x, mu0=mu0)[i])
-                    / (2 * FD_STEP)
-                    for i in range(N)
-                )
-                for i in range(N):
-                    err = np.max(np.abs(analytic[i] - fd[i]))
-                    assert err < FD_TOL, f"N={N} mu0={mu0} p={p}: err={err:.3e}"
+                fd = (eval_T(theta_p, N, x, mu0=mu0) - eval_T(theta_m, N, x, mu0=mu0)) / (2 * FD_STEP)
+                err = np.max(np.abs(analytic - fd))
+                assert err < FD_TOL, f"N={N} mu0={mu0} p={p}: err={err:.3e}"
 
 
 def test_jacobian_tensor_forward_matches_reverse():
@@ -192,17 +180,16 @@ def test_jacobian_tensor_matches_finite_differences():
             P = theta_size(N, mu0)
             x = _random_batch(N, 8, rng)
 
-            tensor = jacobian_tensor_forward(theta, N, x, mu0=mu0)  # (K, N, P)
+            tensor = jacobian_tensor_forward(theta, N, x, mu0=mu0)  # (N, P, K)
             for p in range(P):
                 theta_p, theta_m = theta.copy(), theta.copy()
                 theta_p[p] += FD_STEP
                 theta_m[p] -= FD_STEP
                 up = eval_T(theta_p, N, x, mu0=mu0)
                 um = eval_T(theta_m, N, x, mu0=mu0)
-                for i in range(N):
-                    fd = (up[i] - um[i]) / (2 * FD_STEP)
-                    err = np.max(np.abs(tensor[:, i, p] - fd))
-                    assert err < FD_TOL, f"N={N} mu0={mu0} i={i} p={p}: err={err:.3e}"
+                fd = (up - um) / (2 * FD_STEP)  # (N, K)
+                err = np.max(np.abs(tensor[:, p, :] - fd))
+                assert err < FD_TOL, f"N={N} mu0={mu0} p={p}: err={err:.3e}"
 
 
 if __name__ == "__main__":
