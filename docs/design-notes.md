@@ -174,6 +174,57 @@ the usual small-residual argument. Verified in
 test_varpro.py::test_kaufman_reverse_mode_matches_jac_built (reverse
 build vs an independent forward-built reference, machine precision).
 
+## The row-fit orchestration layer: raw interface, holdout selection
+
+**Decisions (2026-07-24, `prototype/row_fit.py`; evidence: the
+frog-kernel robustness study in `docs/robust-init-notes.md` and the PIG
+slice-37 refits in the research repo):**
+
+- **Raw-data interface**: the caller supplies coordinates, lumped
+  masses, raw probes/responses, `mu0`, modes; `fit_row` whitens
+  internally. Masses are *routed* through this layer but all mass math
+  stays in `whitening.py` -- the confinement convention gains a second
+  boundary, not a second implementation.
+- **Selection by held-out probe equations, never by in-sample cost**:
+  a degenerate theta can lower the in-sample cost while ruining the
+  fit (observed live on the PIG release runaway: mu 3000 km off-domain
+  with LOWER probe cost). Internal random split; falls back to
+  in-sample cost, flagged, when probes are too few.
+- **Initial-Sigma ladder**: log-spaced circles from the local mesh
+  spacing at `mu0` to a whole-batch circle, plus an optional caller
+  `sigma0` rung. Too-small and too-large both fail in different ways;
+  best-of over the ladder brackets every observed case.
+- **Mixed ladder (window-shape rungs)**: scaled copies of the window's
+  own shape join the circles -- the mass-weighted covariance of the
+  batch geometry (masses ~ cell areas, so this measures the window
+  REGION, not mesh density) recovers the aspect/orientation of the
+  caller's conservative ellipsoid, which the circle family is blind to.
+  Circles stay as shape-agnostic insurance (the window shape inherits
+  the caller's prior errors; boundary-clipped windows lie).
+- **Window-containment admissibility**: the conservative window bounds
+  the true kernel by construction, so fits whose major semi-axis
+  exceeds the window radius -- or released centers leaving the window
+  -- are excluded from selection. Necessary because few-equation
+  holdout scores cannot reliably reject degenerate fits (observed: a
+  3000:1 needle 3x the window winning a 4-equation holdout by 0.02).
+- **Fixed-mu ladder, guarded release once per rung**: pinning mu
+  collapses outcome variance; a wrong `mu0` makes every pinned rung
+  compensate with a distorted shape, so no single rung's release basin
+  is trustworthy -- release them all, accept only if a released fit
+  beats every pinned one on the holdout. The free-mu basin is narrow
+  (empirically ~half the smaller kernel sigma); centers further off
+  than that are the backprojection workflow's job, not LM's.
+- **Backprojection init estimation is separate and caller-invoked**
+  (`backproject_row` + `row_moments`): `r_hat = Z^T y / k` is unbiased
+  for iid-standard-normal probes, and the RAW row values already carry
+  the lumped-mass quadrature weight (`r_j = m_rho m_j phi_j`), so the
+  moment estimator takes NO mass vector -- only the diagonal spike
+  excluded (`diag_index`) and noise thresholds (the backprojection has
+  a flat `||row||/sqrt(k)` noise floor; far-field entries otherwise
+  drag the mean to the window centroid and inflate the covariance,
+  while over-aggressive hard thresholds truncate the tails and shrink
+  it -- `noise_mad ~ 3` on conservative windows).
+
 ## Mass matrices confined to a single layer, via noise whitening
 
 **Decision (2026-07-24):** `M1` (row mass) and `M2` (column mass) appear in

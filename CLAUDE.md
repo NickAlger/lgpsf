@@ -134,10 +134,30 @@ existing JVP/VJP composes with it for free -- no new derivative math.
    `_ReducedProblem`'s docstring for the Kaufman<->GP<->Schur-complement
    relationships.
 
+7. **`row_fit.py`** -- the assembled general-purpose single-row fitting
+   layer, raw-data interface: `fit_row(x, m2_diag, z, y, mu0, modes,
+   diag_index, mu, sigma0, ...)` -> `RowFitResult`. Whitens internally
+   (masses *routed* here, mass math stays in `whitening.py`);
+   multi-starts over a log-spaced circle ladder (local mesh spacing at
+   mu0 -> whole-batch radius) plus an optional caller `sigma0` rung;
+   selects on internally held-out probe equations (NOT in-sample cost --
+   a degenerate theta can lower cost while ruining the fit); default
+   `mu="fixed_then_release"` runs the ladder pinned, then releases mu
+   once per rung under an accept-only-if-better holdout guard; the
+   diagonal spike enters as `diag_index`. Companion caller-invoked
+   utilities `backproject_row` + `row_moments` estimate (mu, Sigma)
+   inits from the probes at zero matvecs -- raw row values already carry
+   the lumped-mass quadrature weight, so the moment estimator needs no
+   mass vector, only the diagonal excluded and noise thresholds
+   (`rel_threshold`, `noise_mad`).
+
 Tests mirror this file-by-file (`test_lg_functions.py`,
 `test_ellipsoid_transform.py`, `test_lg_ellipsoid_feature.py`,
 `test_whitening.py`, `test_varpro.py` -- the latter's end-to-end check
-recovers a known $(\theta^*, c^*, s^*)$ from perturbed initialization).
+recovers a known $(\theta^*, c^*, s^*)$ from perturbed initialization --
+and `test_row_fit.py`, whose synthetic rows exercise the raw-data
+contract end to end, including nonuniform masses and the
+backprojection-rescues-bad-center workflow).
 Examples: `examples/plot_lg_modes.py` (2D mode grid),
 `examples/lg_expansion_convergence.py` ($N=1,2,3$ convergence study).
 
@@ -173,9 +193,12 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
   outer loop currently delegates to scipy/MINPACK; everything else in
   `varpro.py` is already library-free numpy).
 - Wedge/mode-selection (growing the LG basis by oscillator level,
-  cross-validated, per the research plan) -- not reimplemented here.
-- Any connection to real mesh data, probes, or `ellipsoid_tree` --
-  everything so far is tested against synthetic points/probes.
+  cross-validated, per the research plan) -- not reimplemented here;
+  `fit_row` takes an explicit mode list.
+- `ellipsoid_tree` integration. (The library HAS been validated against
+  real PDE-Hessian probe data -- the glaciology rows, in the separate
+  maintainer-local research repo -- reproducing and beating the research
+  prototype's numbers; the in-repo tests remain synthetic by design.)
 - Any C++ code beyond the empty scaffold.
 - Python bindings (`bindings/` doesn't exist yet; see the commented-out
   note in `CMakeLists.txt`).
