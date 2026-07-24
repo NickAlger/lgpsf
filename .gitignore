@@ -77,3 +77,9 @@ dev/
 
 # Editor-local (machine-specific paths)
 .vscode/
+
+# LaTeX build artifacts (keep the .tex source and the compiled .pdf)
+*.aux
+*.fls
+*.fdb_latexmk
+*.synctex.gz

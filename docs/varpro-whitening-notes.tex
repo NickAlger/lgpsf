@@ -1,0 +1,210 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1.1in]{geometry}
+\usepackage{amsmath,amssymb,mathtools,booktabs}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+
+\newcommand{\Mone}{M_1}
+\newcommand{\Mtwo}{M_2}
+\newcommand{\what}[1]{\widehat{#1}}
+
+\title{Noise-whitened VarPro fitting: combining smooth and discrete\\
+       basis functions without mass matrices in the fit}
+\author{N.~Alger, Claude \quad (notes; session 2026-07-24)}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+Per-row VarPro fitting of the LG-PSF Hessian model combines two kinds of basis
+function: theta-dependent smooth (Laguerre--Gaussian) features, and a fixed
+theta-independent ``extra'' basis (a discrete spike, and generalizations of
+it) supplied directly as sampled values. The two live in different spaces
+with different natural inner products (one in the discretized function space,
+one in its dual), and combining them naively -- e.g.\ orthogonalizing them
+against each other under a plain Euclidean inner product -- either gets the
+wrong answer or requires the fitting code to know about the mesh mass
+matrices explicitly. This note derives a \emph{noise-whitening} change of
+variables under which the entire per-row fit becomes an ordinary
+(mass-free) least-squares problem: every basis function, every derivative,
+and the data itself are rescaled once, at the interface, so that plain
+Euclidean operations throughout the fit are automatically correct. The two
+mass matrices ($M_1$ for the row/target space, $M_2$ for the column/source
+space) appear only in that one whitening layer; the VarPro fitting machinery
+itself never sees them. The whitening transform is theta-independent and
+symmetric, so it composes with the existing forward/reverse-mode derivative
+machinery (\texttt{lg\_functions.py}, \texttt{ellipsoid\_transform.py}) with
+no new derivative math required.
+\end{abstract}
+
+\section{Setup}
+
+Recall the discretization picture (session 2026-07-23): $X$ is the discrete
+source/column function space with inner product $\langle u,v\rangle_X =
+u^\top \Mtwo v$; $Y$ is the discrete target/row space with $\langle
+u,v\rangle_Y = u^\top \Mone v$; $X'$, $Y'$ are their duals, with $\Mtwo:
+X\to X'$ and $\Mone: Y\to Y'$ the Riesz maps induced by those inner
+products; the kernel $\Phi: X'\to Y$ and the assembled operator $H = \Mone
+\Phi \Mtwo : X \to Y'$. Both $\Mone,\Mtwo$ are diagonal (lumped mass).
+
+Each Laguerre--Gaussian smooth feature $\phi_i(\cdot;\theta)$, sampled at
+mesh nodes, is an element of $X$ -- and, because the continuum family
+$\{\psi_i\}$ is exactly $L^2(\mathbb{R}^N)$-orthonormal (verified numerically
+in \texttt{lg\_harmonics\_table.py} and \texttt{lg\_functions.py}), the
+sampled $\phi_i$ are nearly $\Mtwo$-orthonormal: $\phi_i^\top \Mtwo \phi_{i'}
+\approx \delta_{ii'}$, up to mesh resolution. A user-supplied ``extra''
+basis function $e_d$ (a one-hot vector for the diagonal spike; more general
+indicator combinations for e.g.\ a ring-neighbor correction) is instead a
+sampled \emph{functional} -- the coordinate representation of a discrete
+measure (a sum of point masses) via the FEM nodal interpolation property
+$N_k(x_i) = \delta_{ik}$ -- and so is native to $X'$, not $X$.
+
+\section{The row model}
+
+Fix a row $\rho$ with mass $m_\rho := (\Mone)_{\rho\rho}$, and a local
+neighbor/support batch of $K$ column points $x_j$ with per-point masses
+$m_j := (\Mtwo)_{jj}$. The row model is
+\begin{equation}
+H[\rho,j] \;\approx\; \underbrace{m_\rho m_j \sum_i c_i\, \phi_i(x_j;\theta)}_{\text{smooth}}
+\;+\; \underbrace{m_\rho \sum_d s_d\, e_d(j)}_{\text{extra}},
+\label{eq:row-model}
+\end{equation}
+with $c_i$, $s_d$ the (linear) coefficients VarPro solves for at each trial
+$\theta$. The column mass $m_j$ on the smooth term is a quadrature weight --
+$\phi_i$ approximates a continuum kernel evaluated at a mesh quadrature
+point, and $m_j$ discretizes the integral. The extra term carries no
+quadrature weight because it is not a continuum-kernel evaluation at all: it
+is a direct, discrete correction to specific matrix entries. (Session
+2026-07-23 verified this asymmetry reproduces the established $m_\rho
+s_\rho\,\delta_{\rho j}$ spike convention exactly.)
+
+Probing: draw i.i.d.\ standard normal $z_\ell$ ($\ell = 1,\dots,k$,
+restricted to the batch -- a restriction of an i.i.d.\ vector is still
+i.i.d.), observe $y_\ell(\rho) = (Hz_\ell)(\rho) = \sum_j H[\rho,j]\,
+z_\ell(j)$. Substituting \eqref{eq:row-model},
+\begin{equation}
+y_\ell(\rho) \;=\; m_\rho \sum_i c_i\, g_\ell^{(i)} \;+\; m_\rho \sum_d s_d\, h_\ell^{(d)},
+\qquad
+g_\ell^{(i)} := (\Mtwo \phi_i)\cdot z_\ell, \quad h_\ell^{(d)} := e_d \cdot z_\ell.
+\label{eq:probe-eq}
+\end{equation}
+
+\paragraph{The problem with combining these naively.} $\phi_i$ (in $X$) and
+$e_d$ (in $X'$) are different kinds of object; comparing or orthogonalizing
+them requires first mapping one into the other's space via the Riesz map,
+and then using \emph{that} space's natural inner product. Using the raw
+Euclidean inner product throughout (as an early draft of this design did)
+happens to reproduce the correct answer for a single one-hot $e_d$ -- every
+diagonal-respecting inner product agrees on a coordinate-axis-aligned vector
+-- but is not correct in general (e.g.\ a ring-neighbor indicator combining
+several points), and more importantly requires the fitting code to reach
+into $\Mtwo$ (and its inverse) explicitly to do the orthogonalization
+correctly. That is exactly the kind of mass-matrix leakage this note is
+trying to eliminate.
+
+\section{Noise whitening}
+
+Define, per row (all quantities below implicitly depend on $\rho$ through
+$m_\rho$ and the batch):
+\begin{align}
+\what{z}_\ell &:= \Mtwo^{1/2} z_\ell, \label{eq:whiten-z}\\
+\what{\phi}_i(\theta) &:= \sqrt{m_\rho}\; \Mtwo^{1/2} \phi_i(\theta), \label{eq:whiten-phi}\\
+\what{e}_d &:= \sqrt{m_\rho}\; \Mtwo^{-1/2} e_d, \label{eq:whiten-e}\\
+\what{y}_\ell &:= y_\ell(\rho) / \sqrt{m_\rho}. \label{eq:whiten-y}
+\end{align}
+$\Mtwo^{1/2}$ is diagonal, hence symmetric, so $(\Mtwo \phi_i)\cdot z_\ell =
+(\Mtwo^{1/2}\phi_i)\cdot(\Mtwo^{1/2}z_\ell)$, giving $\what\phi_i \cdot
+\what z_\ell = \sqrt{m_\rho}\, g_\ell^{(i)}$; likewise $\what e_d \cdot \what
+z_\ell = \sqrt{m_\rho}\,(\Mtwo^{-1/2}e_d)\cdot(\Mtwo^{1/2}z_\ell) =
+\sqrt{m_\rho}\, e_d\cdot z_\ell = \sqrt{m_\rho}\, h_\ell^{(d)}$. Dividing
+\eqref{eq:probe-eq} by $\sqrt{m_\rho}$:
+\begin{equation}
+\what y_\ell \;\approx\; \sum_i c_i \big(\what\phi_i(\theta)\cdot\what z_\ell\big)
+\;+\; \sum_d s_d \big(\what e_d \cdot \what z_\ell\big).
+\label{eq:whitened-model}
+\end{equation}
+This is an ordinary (unweighted) linear regression in $\ell$: every mass
+matrix has been absorbed into the four definitions
+\eqref{eq:whiten-z}--\eqref{eq:whiten-y}, and \eqref{eq:whitened-model}
+itself is mass-free.
+
+\emph{Note on $\what e_d$:} $\Mone$ contributes the same $\sqrt{m_\rho}$
+factor to \emph{both} terms of \eqref{eq:row-model} (there is one row mass,
+shared), so $\what e_d$ needs the same $\sqrt{m_\rho}$ prefactor as $\what
+\phi_i$ even though it does not involve $\Mtwo$ (which enters with the
+opposite sign of exponent, $-1/2$ vs.\ $+1/2$, reflecting that $e_d$ lives in
+$X'$ where $\phi_i$ lives in $X$). An earlier pass at this derivation
+omitted the $\sqrt{m_\rho}$ on $\what e_d$; this was caught by checking
+\eqref{eq:whitened-model} term by term against \eqref{eq:probe-eq} before
+implementing it, and confirmed numerically (\texttt{test\_whitening.py}) by
+constructing an explicit $H$ from \eqref{eq:row-model} and checking that the
+whitened quantities reproduce $y_\ell(\rho)$ to machine precision.
+
+\section{Consequences}
+
+\paragraph{Orthonormality is inherited directly.} $\what\phi_i\cdot\what
+\phi_{i'} = m_\rho\,(\Mtwo^{1/2}\phi_i)\cdot(\Mtwo^{1/2}\phi_{i'}) = m_\rho\,
+\phi_i^\top \Mtwo \phi_{i'} \approx m_\rho\,\delta_{ii'}$: the whitened
+smooth basis vectors are, in the ordinary Euclidean sense, exactly as
+orthonormal (up to the constant $m_\rho$) as the $\Mtwo$-orthonormality
+already established for the sampled LG modes. No separate weighted inner
+product is needed to see this -- it falls out of using the plain dot product
+on already-whitened vectors.
+
+\paragraph{Plain-Euclidean orthogonalization is now correct by construction.}
+The session-2026-07-23 analysis found that projecting a smooth feature
+against an extra basis correctly requires the $\Mtwo^{-1}$-weighted inner
+product on $X'$: $\what\phi_p^\flat \mapsto \what\phi_p^\flat -
+e_i\,(e_i^\top \Mtwo^{-1} e_i)^{-1}(e_i^\top \Mtwo^{-1} \what\phi_p^\flat)$,
+$\what\phi_p^\flat := \Mtwo\phi_p$. Checking this against the whitened
+quantities here: $\what\phi_p \cdot \what e_i = (\Mtwo^{1/2}\phi_p)\cdot
+(\Mtwo^{-1/2}e_i) = \phi_p \cdot e_i$ and $\what e_i \cdot \what e_i = e_i^\top
+\Mtwo^{-1} e_i$ (the $\sqrt{m_\rho}$ factors cancel in the ratio) --
+identical projection coefficients. So plain-Euclidean orthogonalization of
+$\what\phi_p$ against $\what e_i$ \emph{is} the earlier, carefully-derived
+$\Mtwo^{-1}$-weighted projection; whitening does not introduce a different
+answer, it removes the need to ever justify or implement a non-Euclidean
+inner product near the fitting code.
+
+\paragraph{Derivatives compose for free.} $\sqrt{m_\rho}\,\Mtwo^{1/2}$ and
+$\sqrt{m_\rho}\,\Mtwo^{-1/2}$ are fixed, $\theta$-independent, symmetric
+linear operators (diagonal matrices). Consequently:
+\begin{itemize}
+\item the JVP of $\what\phi_i$ is that operator applied to the JVP of the
+  raw $\phi_i(\theta)$ -- i.e.\ apply it to whatever
+  \texttt{grad\_eval\_lg\_nd} $\cdot$ \texttt{jvp\_T} (chain rule through
+  the pullback) already produces;
+\item because the operator is symmetric, the VJP is the \emph{same}
+  operator applied to the incoming cotangent \emph{before} it is fed into
+  the existing VJP chain.
+\end{itemize}
+This is the same ``compose with a fixed linear map'' pattern used already
+for Stage~1/Stage~2 composition in \texttt{ellipsoid\_transform.py} and for
+the extra-basis projection in the 2026-07-23 design discussion. No new
+derivative formulas are needed anywhere; \texttt{lg\_functions.py} and
+\texttt{ellipsoid\_transform.py} are unchanged.
+
+\section{Resulting architecture}
+
+\begin{itemize}
+\item \textbf{Mass-free composed feature layer} (\texttt{lg\_ellipsoid\_feature.py}):
+  $\phi_i(x;\theta) := \psi_i(T(\theta,x))$ and its JVP/VJP, built purely by
+  composing the two existing modules via the chain rule. Knows nothing
+  about mass matrices.
+\item \textbf{Whitening interface layer} (\texttt{whitening.py}): the only
+  place $\Mone,\Mtwo$ appear. Provides (a) \texttt{whiten\_probes},
+  \texttt{whiten\_data}, \texttt{whiten\_extra} for the user-supplied raw
+  probe/data/extra-basis arrays, and (b) whitened wrappers around the
+  feature layer's eval/JVP/VJP, applying
+  $\sqrt{m_\rho}\,\Mtwo^{\pm 1/2}$ once.
+\item \textbf{Generic VarPro core} (not yet built): takes whitened probes,
+  whitened data, and the whitened-basis eval/JVP/VJP as callables. Performs
+  the actual per-row fit (orthogonalize the smooth basis against the extra
+  basis, solve the inner linear least squares, form the reduced residual,
+  provide its $\theta$-Jacobian to the outer Levenberg--Marquardt loop) in
+  ordinary Euclidean terms throughout. Never imports or references a mass
+  matrix.
+\end{itemize}
+
+\end{document}
