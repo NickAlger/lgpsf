@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import numpy as np
 
 from ellipsoid_transform import theta_size
-from lg_ellipsoid_feature import eval_feature, jvp_feature, vjp_feature
+from lg_ellipsoid_feature import eval_feature, jvp_feature, vjp_feature, jac_feature
 from lg_harmonics_table import TABLE
 
 FD_STEP = 1e-6
@@ -82,7 +82,32 @@ def test_jvp_matches_finite_differences():
                 assert err < FD_TOL, f"N={N} mu0={mu0} p={p}: err={err:.3e}"
 
 
+def test_jac_matches_jvp_columns():
+    """jac_feature shares the pullback and per-mode LG gradients across the
+    P theta directions; check that this restructuring changes nothing: each
+    of its columns must match a per-direction jvp_feature call (itself FD-
+    and adjoint-verified above) to machine precision."""
+    rng = np.random.default_rng(2)
+    for N in [1, 2, 3, 4]:
+        modes = _some_modes(N)
+        for mu0 in [None, rng.uniform(-1, 1, size=N)]:
+            theta = _random_theta(N, mu0, rng)
+            P = theta_size(N, mu0)
+            K = 10
+            x = rng.uniform(-1.5, 1.5, size=(N, K))
+
+            jac = jac_feature(theta, N, x, modes, mu0=mu0)
+            assert jac.shape == (len(modes), P, K)
+            for q in range(P):
+                dtheta = np.zeros(P)
+                dtheta[q] = 1.0
+                col = jvp_feature(theta, dtheta, N, x, modes, mu0=mu0)
+                err = np.max(np.abs(jac[:, q] - col))
+                assert err < 1e-12, f"N={N} mu0={mu0} q={q}: err={err:.3e}"
+
+
 if __name__ == "__main__":
     test_jvp_vjp_adjoint_consistency()
     test_jvp_matches_finite_differences()
+    test_jac_matches_jvp_columns()
     print("all lg_ellipsoid_feature checks passed")

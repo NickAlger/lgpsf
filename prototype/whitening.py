@@ -25,7 +25,7 @@ it's the same operator on both sides), before the existing VJP chain runs.
 """
 import numpy as np
 
-from lg_ellipsoid_feature import eval_feature, jvp_feature, vjp_feature
+from lg_ellipsoid_feature import eval_feature, jvp_feature, vjp_feature, jac_feature
 
 
 def whiten_probes(z, m2_diag):
@@ -56,6 +56,18 @@ def whitened_jvp_feature(theta, dtheta, N, x, row_mass, m2_diag, modes, mu0=None
     direction dtheta, at fixed x. The whitening operator is theta-independent,
     so this is just the operator applied to jvp_feature's raw output."""
     raw = jvp_feature(theta, dtheta, N, x, modes, mu0=mu0)
+    return np.sqrt(row_mass) * np.sqrt(m2_diag) * raw
+
+
+def whitened_jac_feature(theta, N, x, row_mass, m2_diag, modes, mu0=None):
+    """Full theta-Jacobian of whitened_eval_feature: shape
+    (len(modes), P, *batch_shape), entry [i, q] = d(phi_hat_i)/d(theta_q).
+    This is the derivative interface the VarPro fitting core consumes (see
+    jac_feature for why the jac, not the jvp, is the interface). The
+    whitening operator is theta-independent, so it's just the operator
+    applied to jac_feature's raw output -- the m2_diag scaling broadcasts
+    over the trailing batch axes, indifferent to the extra P axis."""
+    raw = jac_feature(theta, N, x, modes, mu0=mu0)
     return np.sqrt(row_mass) * np.sqrt(m2_diag) * raw
 
 

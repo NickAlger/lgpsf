@@ -30,6 +30,7 @@ from whitening import (
     whiten_extra,
     whiten_probes,
     whitened_eval_feature,
+    whitened_jac_feature,
     whitened_jvp_feature,
     whitened_vjp_feature,
 )
@@ -108,6 +109,30 @@ def test_whitened_jvp_matches_finite_differences():
                 assert err < FD_TOL, f"N={N} mu0={mu0} p={p}: err={err:.3e}"
 
 
+def test_whitened_jac_matches_whitened_jvp_columns():
+    """Column-by-column agreement of the whitened Jacobian tensor with
+    per-direction whitened JVP calls (themselves FD-verified above)."""
+    rng = np.random.default_rng(3)
+    for N in [1, 2, 3]:
+        modes = _some_modes(N)
+        row_mass = rng.uniform(0.5, 2.0)
+        for mu0 in [None, rng.uniform(-1, 1, size=N)]:
+            theta = _random_theta(N, mu0, rng)
+            P = theta_size(N, mu0)
+            K = 10
+            x = rng.uniform(-1.5, 1.5, size=(N, K))
+            m2_diag = rng.uniform(0.5, 2.0, size=K)
+
+            jac = whitened_jac_feature(theta, N, x, row_mass, m2_diag, modes, mu0=mu0)
+            assert jac.shape == (len(modes), P, K)
+            for q in range(P):
+                dtheta = np.zeros(P)
+                dtheta[q] = 1.0
+                col = whitened_jvp_feature(theta, dtheta, N, x, row_mass, m2_diag, modes, mu0=mu0)
+                err = np.max(np.abs(jac[:, q] - col))
+                assert err < 1e-12, f"N={N} mu0={mu0} q={q}: err={err:.3e}"
+
+
 def test_whitened_regression_reproduces_row_model():
     """Build H[rho, :] explicitly from the row model (varpro-whitening-notes
     eq. 1), apply it to a random probe to get y, and check the whitened
@@ -161,5 +186,6 @@ def test_whitened_regression_reproduces_row_model():
 if __name__ == "__main__":
     test_whitened_jvp_vjp_adjoint_consistency()
     test_whitened_jvp_matches_finite_differences()
+    test_whitened_jac_matches_whitened_jvp_columns()
     test_whitened_regression_reproduces_row_model()
     print("all whitening checks passed")

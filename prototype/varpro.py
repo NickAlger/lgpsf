@@ -92,8 +92,7 @@ def fit_varpro(
     y_hat: np.ndarray,
     e_hat: np.ndarray,
     basis_eval: Callable[[np.ndarray], np.ndarray],
-    basis_jvp: Callable[[np.ndarray, np.ndarray], np.ndarray],
-    basis_vjp: Callable[[np.ndarray, np.ndarray], np.ndarray],
+    basis_jac: Callable[[np.ndarray], np.ndarray],
     theta_init: np.ndarray,
     options: Optional[VarProOptions] = None,
 ) -> VarProResult:
@@ -118,17 +117,21 @@ def fit_varpro(
         Whitened smooth-basis values at theta, e.g.
         functools.partial(whitened_eval_feature, N=N, x=x,
         row_mass=row_mass, m2_diag=m2_diag, modes=modes, mu0=mu0).
-    basis_jvp : (theta (P,), dtheta (P,)) -> (n_modes, K)
-        Directional derivative of basis_eval w.r.t. theta. This alone is
-        enough for the default (Kaufman-simplified) Jacobian, looping
-        over the P standard basis directions -- cheap since P is small.
-    basis_vjp : (theta (P,), w (n_modes, K)) -> (P, K)
-        Reverse-mode: <w, d(basis_eval)/dtheta>, per point (not summed
-        over K). Not needed for the default Jacobian; kept in the
-        interface for adjoint-consistency verification (the same check
-        that has caught real sign/scale bugs twice already in this
-        project) and so a different Jacobian formula can be dropped in
-        later without changing this signature.
+    basis_jac : theta (P,) -> (n_modes, P, K)
+        Full theta-Jacobian of basis_eval, all P coordinate directions at
+        once, e.g. functools.partial(whitened_jac_feature, ...). The
+        Levenberg-Marquardt Jacobian needs every direction at each theta
+        anyway, and only the feature layer can share the direction-
+        independent work (each mode's spatial LG gradient) across them --
+        so the interface asks for the jac, even though the jvp remains
+        the primitive it's built from and tested against (decision
+        2026-07-24, docs/design-notes.md). Reverse mode (the old
+        basis_vjp) is not needed here at all: with the Jacobian explicit,
+        the cost gradient is J^T r, a matvec on an already-built matrix.
+        The vjp survives in the lower layers as a verification
+        instrument, and the fitting-core tests use it directly from
+        whitening.py for adjoint-consistency checks of the Jacobian
+        machinery -- it just doesn't pass through this signature.
     theta_init : (P,) array
         Starting guess for the outer Levenberg-Marquardt iteration (e.g.
         from a smoothed-beta heuristic ellipsoid) -- domain-specific, so

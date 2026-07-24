@@ -99,6 +99,39 @@ a sequential N-step substitution loop with one contraction, and it made the
 VJP's outer-product term (`w_L = -outer(z, u)`) collapse from a nested
 Python double-loop into a single `einsum` call too.
 
+## Dense Jacobian at the fitting-core interface, not matrix-free jvp/vjp
+
+**Decision (2026-07-24):** the VarPro fitting core takes a full-Jacobian
+callable `basis_jac(theta) -> (n_modes, P, K)` and builds its dense
+`(k, P)` Levenberg-Marquardt Jacobian explicitly. It does *not* take
+jvp/vjp callables, and there is no matrix-free / inexact-CG path.
+
+**Why dense:** P (theta's parameter count) is 3..14. A matrix-free
+Gauss-Newton/CG solve costs two derivative sweeps per CG iteration (one
+forward, one reverse) and up to P iterations, i.e. up to ~2P sweeps per
+outer step versus P for the dense build -- and gives up things LM wants:
+near-free re-solves as the damping lambda is retried (dense: factor J
+once, each new lambda is O(P^2); matrix-free: a fresh CG solve each
+time), QR/SVD solves on J itself instead of the squared-conditioning
+J^T J, and free access to J's column norms / singular values for trust-
+region scaling and well-determinedness diagnostics. Matrix-free becomes
+competitive when P reaches the hundreds and CG converges far short of P
+iterations; the *scale* in this problem lives in the number of rows
+(embarrassingly parallel), never inside one row's fit.
+
+**Why the jac (not the jvp) is the interface:** the LM Jacobian needs all
+P directions at every trial theta, and the direction-independent dominant
+cost -- each mode's spatial LG gradient (Laguerre recurrence + harmonic
+table) -- can only be shared *inside* the feature layer. A jvp called in
+a loop over P directions recomputes all of it P times; `jac_feature`
+computes it once (a ~P-fold saving on the Jacobian build). The jvp/vjp
+pair remains the primitive layer underneath: `jac_feature` is tested
+column-by-column against `jvp_feature`, which is itself FD- and
+adjoint-verified. The vjp is not in the fitting-core signature at all --
+with J explicit, the cost gradient is the matvec `J^T r` -- but stays in
+the lower layers as the reverse-mode half of the adjoint-consistency
+tests.
+
 ## Mass matrices confined to a single layer, via noise whitening
 
 **Decision (2026-07-24):** `M1` (row mass) and `M2` (column mass) appear in
