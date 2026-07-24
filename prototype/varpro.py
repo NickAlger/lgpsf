@@ -299,6 +299,7 @@ class _ReducedProblem:
         self.ridge = ridge
         self._cached_theta = None
         self._cached_solve = None
+        self._n_modes = None  # learned from the first successful evaluation
 
     def design_matrix(self, theta):
         """A(theta) = Z_hat basis_eval(theta)^T, shape (k, n_modes) --
@@ -308,8 +309,36 @@ class _ReducedProblem:
     def _solve_at(self, theta):
         theta = np.asarray(theta, dtype=float)
         if self._cached_theta is None or not np.array_equal(theta, self._cached_theta):
-            A_tilde = _project_out(self.Q_B, self.design_matrix(theta))
-            self._cached_solve = _inner_solve(A_tilde, self.y_tilde, self.ridge)
+            # An extreme trial theta can break the basis two ways: features
+            # overflow to nan (huge pullback -> inf * 0 in the LG
+            # evaluation), or np.linalg.inv(L) raises outright when the
+            # log-Cholesky diagonals underflow the determinant to zero.
+            try:
+                A_tilde = _project_out(self.Q_B, self.design_matrix(theta))
+                usable = bool(np.all(np.isfinite(A_tilde)))
+                if usable:
+                    self._n_modes = A_tilde.shape[1]
+            except np.linalg.LinAlgError:
+                usable = False
+            if usable:
+                self._cached_solve = _inner_solve(A_tilde, self.y_tilde, self.ridge)
+            else:
+                # Score the point as "the smooth model contributes
+                # nothing": residual = y_tilde, the worst finite cost any
+                # theta can produce, so the outer optimizer rejects the
+                # step and backs off instead of crashing. The optimizer
+                # only evaluates the Jacobian at accepted points (which
+                # beat this cost) and at a validated theta_init, so the
+                # Jacobian path never sees this sentinel.
+                n_modes = self._n_modes if self._n_modes is not None else 0
+                self._cached_solve = _InnerSolve(
+                    c=np.zeros(n_modes),
+                    residual=self.y_tilde.copy(),
+                    U=np.zeros((self.z_hat.shape[0], 0)),
+                    sigma=np.zeros(0),
+                    Vt=np.zeros((0, n_modes)),
+                    col_scale=np.ones(n_modes),
+                )
             self._cached_theta = theta.copy()
         return self._cached_solve
 
@@ -360,6 +389,7 @@ def fit_varpro(
     e_hat: Optional[np.ndarray] = None,
     basis_jac: Optional[Callable[[np.ndarray], np.ndarray]] = None,
     options: Optional[VarProOptions] = None,
+    callback: Optional[Callable[[np.ndarray, np.ndarray, np.ndarray], None]] = None,
 ) -> VarProResult:
     """Fit theta (and the linear coefficients c, s) for one mesh row.
 
@@ -409,6 +439,16 @@ def fit_varpro(
         no reverse-mode collapse, for which forward mode (P sweeps,
         P < n_modes) is the natural choice.
     options : VarProOptions, optional
+    callback : (theta (P,), c (n_modes,), residual (k,)) -> None, optional
+        Called at theta_init, at each *accepted* Levenberg-Marquardt
+        iterate, and finally at the returned solution -- i.e. at every
+        Jacobian evaluation, with consecutive duplicates merged. Rejected
+        trial steps only evaluate the residual, never the Jacobian, so the
+        calls trace exactly the outer iteration path, ending on
+        result.theta. Receives copies; keeping or mutating them is safe.
+        Intended for monitoring/visualization (see
+        examples/varpro_frog_fit.py), not control flow -- it cannot stop
+        the fit.
 
     Returns
     -------
@@ -452,11 +492,36 @@ def fit_varpro(
 
     reduced = _ReducedProblem(z_hat, y_hat, e_hat, basis_eval, basis_vjp,
                               options.ridge, basis_jac=basis_jac)
+    try:
+        init_ok = bool(np.all(np.isfinite(reduced.design_matrix(theta_init))))
+    except np.linalg.LinAlgError:
+        init_ok = False
+    if not init_ok:
+        raise ValueError(
+            "basis_eval(theta_init) produced non-finite values -- check "
+            "theta_init's scaling (e.g. log-Cholesky diagonal entries far "
+            "outside the geometry of the point batch)")
+
+    last_cb_theta = [None]
+
+    def jac(th):
+        J = reduced.jacobian(th, variant=options.jacobian)
+        if callback is not None:
+            th_arr = np.array(th, dtype=float)
+            # scipy adds Jacobian evaluations of its own around MINPACK's
+            # (shape validation at theta_init; result.jac at the solution)
+            # that can land on a theta the callback just saw -- dedupe so
+            # each distinct point on the iteration path fires exactly once
+            if last_cb_theta[0] is None or not np.array_equal(th_arr, last_cb_theta[0]):
+                sol = reduced._solve_at(th)  # cached from the jacobian call
+                callback(th_arr, sol.c.copy(), sol.residual.copy())
+                last_cb_theta[0] = th_arr
+        return J
 
     lsq = least_squares(
         reduced.residual,
         theta_init,
-        jac=lambda th: reduced.jacobian(th, variant=options.jacobian),
+        jac=jac,
         method="lm",
         x_scale=options.x_scale,
         max_nfev=options.max_nfev,

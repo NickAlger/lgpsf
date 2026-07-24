@@ -511,6 +511,66 @@ def test_fit_varpro_result_self_consistency():
     assert result.cost <= cost_init + 1e-12
 
 
+def test_fit_varpro_callback_traces_iterates():
+    """The callback traces the outer iteration path: first recorded theta
+    is theta_init, last is exactly result.theta (scipy's final Jacobian
+    evaluation at the solution), the recorded costs are non-increasing
+    (rejected trial steps never evaluate the Jacobian, so they never fire
+    the callback), and the last recorded cost matches result.cost."""
+    rng = np.random.default_rng(15)
+    prob = _make_problem(rng, N=2)
+    theta_true = prob["theta"]
+    A0 = prob["z_hat"] @ prob["basis_eval"](theta_true).T
+    c_true = rng.uniform(-1, 1, size=A0.shape[1])
+    y_hat = A0 @ c_true
+    theta_init = theta_true + rng.uniform(-0.05, 0.05, size=prob["P"])
+
+    history = []
+    result = fit_varpro(
+        prob["z_hat"], y_hat,
+        prob["basis_eval"], prob["basis_vjp"],
+        theta_init,
+        options=VarProOptions(ridge=0.0),
+        callback=lambda th, c, r: history.append((th, c, 0.5 * float(r @ r))),
+    )
+
+    assert result.success
+    assert len(history) >= 2
+    assert np.array_equal(history[0][0], theta_init)
+    assert np.array_equal(history[-1][0], result.theta)
+    costs = [h[2] for h in history]
+    assert all(costs[i + 1] <= costs[i] + 1e-14 for i in range(len(costs) - 1))
+    assert abs(costs[-1] - result.cost) < 1e-12
+    # shapes of the snapshots
+    assert all(h[0].shape == (prob["P"],) for h in history)
+    assert all(h[1].shape == (A0.shape[1],) for h in history)
+
+
+def test_reduced_problem_survives_overflow_theta():
+    """A trial theta with tiny log-Cholesky diagonals makes the pullback
+    huge and the LG evaluation overflow to nan. The reduced problem must
+    score such a point as 'model contributes nothing' (residual = y_tilde,
+    the worst finite cost) rather than crash in the SVD -- this is how the
+    outer optimizer gets to reject a wild trial step and back off."""
+    rng = np.random.default_rng(16)
+    prob = _make_problem(rng, N=2)
+    y_hat = rng.standard_normal(prob["k"])
+    rp = _ReducedProblem(prob["z_hat"], y_hat, prob["e_hat"],
+                         prob["basis_eval"], prob["basis_vjp"], ridge=0.0)
+
+    theta_bad = prob["theta"].copy()
+    theta_bad[2] = theta_bad[3] = -400.0  # log-diagonals: L ~ e^-400
+    with np.errstate(over="ignore", invalid="ignore"):
+        r_bad = rp.residual(theta_bad)
+    assert np.all(np.isfinite(r_bad))
+    assert np.array_equal(r_bad, rp.y_tilde)
+
+    # ...and the cache moves on: a sane theta afterwards solves normally
+    r_ok = rp.residual(prob["theta"])
+    assert np.all(np.isfinite(r_ok))
+    assert np.linalg.norm(r_ok) < np.linalg.norm(r_bad)
+
+
 def test_fit_varpro_input_validation():
     rng = np.random.default_rng(14)
     prob = _make_problem(rng, N=2)
@@ -534,6 +594,17 @@ def test_fit_varpro_input_validation():
     except ValueError:
         pass
 
+    # a theta_init that overflows the basis fails fast with a clear error
+    theta_bad = prob["theta"].copy()
+    theta_bad[2] = theta_bad[3] = -400.0
+    try:
+        with np.errstate(over="ignore", invalid="ignore"):
+            fit_varpro(prob["z_hat"], y_hat, prob["basis_eval"],
+                       prob["basis_vjp"], theta_bad)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
 
 if __name__ == "__main__":
     test_project_out()
@@ -550,5 +621,7 @@ if __name__ == "__main__":
     test_inner_solve_cached_between_residual_and_jacobian()
     test_fit_varpro_recovers_synthetic_row()
     test_fit_varpro_result_self_consistency()
+    test_fit_varpro_callback_traces_iterates()
+    test_reduced_problem_survives_overflow_theta()
     test_fit_varpro_input_validation()
     print("all varpro checks passed")
