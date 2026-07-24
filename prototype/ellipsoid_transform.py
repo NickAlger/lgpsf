@@ -118,6 +118,25 @@ def theta_size(N, mu0=None):
     return n_mu + N + N * (N - 1) // 2
 
 
+def release_mu(theta_fixed, mu0):
+    """Convert a fixed-mu theta to the free-mu encoding, seeding mu at
+    mu0 -- e.g. to warm-start a free-mu fit from a fixed-mu stage's
+    result. Inverse of freeze_mu. This is a plain concatenation because
+    the free-mu encoding is literally [mu, <the fixed-mu encoding>] (see
+    unpack_theta); the equivalence eval_T(release_mu(th, mu0), N, x) ==
+    eval_T(th, N, x, mu0=mu0) is pinned in test_ellipsoid_transform.py."""
+    return np.concatenate([np.asarray(mu0, dtype=float),
+                           np.asarray(theta_fixed, dtype=float)])
+
+
+def freeze_mu(theta_free, N):
+    """Split a free-mu theta into (theta_fixed, mu0) -- e.g. to continue
+    a free-mu result with mu pinned at its fitted value. Inverse of
+    release_mu."""
+    theta_free = np.asarray(theta_free, dtype=float)
+    return theta_free[N:].copy(), theta_free[:N].copy()
+
+
 def unpack_theta(theta, N, mu0=None):
     """theta -> (mu, L). mu0=None: mu is theta[:N] ("fit mu"). mu0=<array>:
     mu is fixed at mu0, unrelated to theta ("fixed mu"). Either way, the

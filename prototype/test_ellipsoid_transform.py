@@ -22,6 +22,8 @@ from ellipsoid_transform import (
     vjp_T,
     jacobian_tensor_forward,
     jacobian_tensor_reverse,
+    freeze_mu,
+    release_mu,
 )
 
 FD_STEP = 1e-6
@@ -192,6 +194,24 @@ def test_jacobian_tensor_matches_finite_differences():
                 assert err < FD_TOL, f"N={N} mu0={mu0} p={p}: err={err:.3e}"
 
 
+def test_freeze_release_mu_roundtrip_and_equivalence():
+    """The two theta encodings are convertible by construction (free-mu
+    theta = [mu, fixed-mu theta]): freeze/release round-trip exactly, and
+    the released theta evaluates to the identical pullback -- which is
+    what licenses warm-starting a free-mu fit from a fixed-mu result by
+    plain concatenation."""
+    rng = np.random.default_rng(7)
+    for N in [1, 2, 3]:
+        theta_free = rng.uniform(-0.5, 0.5, size=theta_size(N, None))
+        x = rng.uniform(-1.5, 1.5, size=(N, 7))
+
+        theta_fixed, mu0 = freeze_mu(theta_free, N)
+        assert theta_fixed.shape == (theta_size(N, mu0),)
+        assert np.array_equal(release_mu(theta_fixed, mu0), theta_free)
+        assert np.allclose(eval_T(theta_free, N, x),
+                           eval_T(theta_fixed, N, x, mu0=mu0))
+
+
 if __name__ == "__main__":
     test_pullback_jvp_vjp_adjoint_consistency()
     test_pullback_jvp_matches_finite_differences()
@@ -199,4 +219,5 @@ if __name__ == "__main__":
     test_theta_jvp_matches_finite_differences()
     test_jacobian_tensor_forward_matches_reverse()
     test_jacobian_tensor_matches_finite_differences()
+    test_freeze_release_mu_roundtrip_and_equivalence()
     print("all ellipsoid_transform checks passed")
