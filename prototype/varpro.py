@@ -31,7 +31,8 @@ VarPro = three ideas, each implemented as its own visible piece here:
     _project_out.
  3. The reduced residual's Jacobian comes from differentiating the
     projector (Golub-Pereyra formula, with Kaufman's residual-order
-    simplification as the cheap default).
+    simplification as the default -- built in a single batched
+    reverse-mode sweep, see _ReducedProblem.jacobian).
 
 Implementation status: the inner linear-algebra layer and the reduced
 problem (residual + both Jacobian variants, _ReducedProblem) are
@@ -59,11 +60,13 @@ class VarProOptions:
 
     jacobian: str = "kaufman"
     """Which reduced-residual Jacobian the outer loop gets: "kaufman"
-    (default) or "golub-pereyra". See _ReducedProblem.jacobian for the
-    formulas and the exact relationship (both give the exact gradient;
-    Kaufman's Gauss-Newton model is the Schur complement of the
-    full-space GN Hessian, Golub-Pereyra's adds a PSD O(||r||^2) term
-    and is the exact Jacobian of the reduced residual)."""
+    (default; one reverse sweep through basis_vjp) or "golub-pereyra"
+    (exact; additionally requires the basis_jac callable). See
+    _ReducedProblem.jacobian for the formulas and the exact relationship
+    (both give the exact gradient; Kaufman's Gauss-Newton model is the
+    Schur complement of the full-space GN Hessian, Golub-Pereyra's adds
+    a PSD O(||r||^2) term and is the exact Jacobian of the reduced
+    residual)."""
 
     x_scale: Union[str, np.ndarray] = "jac"
     """Per-theta-component trust-region scaling for LM. "jac" (scipy's
@@ -243,7 +246,26 @@ class _ReducedProblem:
         Golub-Pereyra (exact):  dr_q = -P_perp (dA~_q c) - pinv(A~)^T dA~_q^T r
         Kaufman:                dr_q = -P_perp (dA~_q c)
 
-    How they relate (each verified numerically in test_varpro.py):
+    How the Kaufman term is built -- one reverse sweep, not P forward
+    ones: dA_q c contracts the mode axis against the fixed vector c
+    before anything else, and sum_i c_i phi_hat_i is a single
+    scalar-per-point function (the fitted smooth model, c frozen), so all
+    P components of its theta-gradient come from ONE batched vjp call
+    with cotangent w_hat[i, j] = c_i:
+
+        G[q, j] = sum_i c_i dPhi_hat[i, q, j] = basis_vjp(theta, w_hat)[q, j]
+        J_K = -P_perp ( P_B_perp ( Z_hat G^T ) ).
+
+    The (n_modes, P, K) feature-Jacobian tensor never materializes and
+    n_modes and P never meet in any product. The Golub-Pereyra second
+    term has no such collapse -- W[i, q] = sum_j dPhi_hat[i, q, j]
+    (Z_hat^T r)_j keeps both the mode and theta axes alive, a genuine
+    (n_modes x P) bilinear block for which forward mode (P sweeps,
+    P < n_modes) is the natural choice -- so that variant additionally
+    requires basis_jac.
+
+    How the two variants relate (each verified numerically in
+    test_varpro.py):
       - The dropped term is O(||r||): the variants coincide exactly at a
         zero-residual fit.
       - The dropped term's columns lie in range(A~), the kept term's in
@@ -259,7 +281,8 @@ class _ReducedProblem:
         linearize). The operations don't commute, by exactly this term.
     """
 
-    def __init__(self, z_hat, y_hat, e_hat, basis_eval, basis_jac, ridge):
+    def __init__(self, z_hat, y_hat, e_hat, basis_eval, basis_vjp, ridge,
+                 basis_jac=None):
         self.z_hat = np.asarray(z_hat, dtype=float)
         self.y_hat = np.asarray(y_hat, dtype=float)
         e_hat = np.asarray(e_hat, dtype=float)
@@ -267,7 +290,8 @@ class _ReducedProblem:
         self.Q_B = _orthonormal_range(self.B)
         self.y_tilde = _project_out(self.Q_B, self.y_hat)
         self.basis_eval = basis_eval
-        self.basis_jac = basis_jac
+        self.basis_vjp = basis_vjp
+        self.basis_jac = basis_jac                     # only the GP variant needs it
         self.ridge = ridge
         self._cached_theta = None
         self._cached_solve = None
@@ -291,34 +315,46 @@ class _ReducedProblem:
         return self._solve_at(theta).residual
 
     def jacobian(self, theta, variant="kaufman"):
-        """dr/dtheta, shape (k, P), by the formula selected in `variant`
-        (see class docstring). Built column by column -- the loop over P is
-        small and fixed, per the batch-only vectorization principle."""
+        """dr/dtheta, shape (k, P). The Kaufman part (all of the default
+        variant) is one batched reverse-mode call plus dense algebra; the
+        Golub-Pereyra variant adds its second term from the full feature-
+        Jacobian tensor, column by column over the small P loop (see class
+        docstring for both formulas and why the modes differ)."""
+        if variant not in ("kaufman", "golub-pereyra"):
+            raise ValueError(f"unknown jacobian variant: {variant!r}")
         sol = self._solve_at(theta)
-        dPhi = self.basis_jac(theta)                   # (n_modes, P, K)
-        P = dPhi.shape[1]
-        cols = []
-        for q in range(P):
-            dA_tilde = _project_out(self.Q_B, self.z_hat @ dPhi[:, q].T)
-            col = -_project_out(sol.U, dA_tilde @ sol.c)
-            if variant == "golub-pereyra":
+
+        # Kaufman term in one reverse sweep: cotangent w_hat[i, j] = c_i.
+        K = self.z_hat.shape[1]
+        w_hat = np.broadcast_to(sol.c[:, None], (sol.c.shape[0], K))
+        G = self.basis_vjp(theta, w_hat)               # (P, K)
+        V = self.z_hat @ G.T                           # (k, P), columns dA_q c
+        J = -_project_out(sol.U, _project_out(self.Q_B, V))
+
+        if variant == "golub-pereyra":
+            if self.basis_jac is None:
+                raise ValueError(
+                    "variant='golub-pereyra' needs the basis_jac callable "
+                    "(its second term has no reverse-mode collapse); this "
+                    "problem was constructed without one")
+            dPhi = self.basis_jac(theta)               # (n_modes, P, K)
+            for q in range(dPhi.shape[1]):
+                dA_tilde = _project_out(self.Q_B, self.z_hat @ dPhi[:, q].T)
                 # -pinv(A~)^T dA~_q^T r, from the stored SVD pieces:
                 # pinv(A~)^T w = U diag(1/sigma) Vt (w / col_scale)
                 w = dA_tilde.T @ sol.residual          # (n_modes,)
-                col = col - sol.U @ ((sol.Vt @ (w / sol.col_scale)) / sol.sigma)
-            elif variant != "kaufman":
-                raise ValueError(f"unknown jacobian variant: {variant!r}")
-            cols.append(col)
-        return np.stack(cols, axis=1)
+                J[:, q] -= sol.U @ ((sol.Vt @ (w / sol.col_scale)) / sol.sigma)
+        return J
 
 
 def fit_varpro(
     z_hat: np.ndarray,
     y_hat: np.ndarray,
     basis_eval: Callable[[np.ndarray], np.ndarray],
-    basis_jac: Callable[[np.ndarray], np.ndarray],
+    basis_vjp: Callable[[np.ndarray, np.ndarray], np.ndarray],
     theta_init: np.ndarray,
     e_hat: Optional[np.ndarray] = None,
+    basis_jac: Optional[Callable[[np.ndarray], np.ndarray]] = None,
     options: Optional[VarProOptions] = None,
 ) -> VarProResult:
     """Fit theta (and the linear coefficients c, s) for one mesh row.
@@ -339,21 +375,18 @@ def fit_varpro(
         Whitened smooth-basis values at theta, e.g.
         functools.partial(whitened_eval_feature, N=N, x=x,
         row_mass=row_mass, m2_diag=m2_diag, modes=modes, mu0=mu0).
-    basis_jac : theta (P,) -> (n_modes, P, K)
-        Full theta-Jacobian of basis_eval, all P coordinate directions at
-        once, e.g. functools.partial(whitened_jac_feature, ...). The
-        Levenberg-Marquardt Jacobian needs every direction at each theta
-        anyway, and only the feature layer can share the direction-
-        independent work (each mode's spatial LG gradient) across them --
-        so the interface asks for the jac, even though the jvp remains
-        the primitive it's built from and tested against (decision
-        2026-07-24, docs/design-notes.md). Reverse mode (the old
-        basis_vjp) is not needed here at all: with the Jacobian explicit,
-        the cost gradient is J^T r, a matvec on an already-built matrix.
-        The vjp survives in the lower layers as a verification
-        instrument, and the fitting-core tests use it directly from
-        whitening.py for adjoint-consistency checks of the Jacobian
-        machinery -- it just doesn't pass through this signature.
+    basis_vjp : (theta (P,), w_hat (n_modes, K)) -> (P, K)
+        Batched reverse mode: <w_hat, d(basis_eval)/dtheta> per point,
+        deliberately NOT summed over the batch -- e.g. a closure over
+        whitening.whitened_vjp_feature. This is the primary derivative
+        callable: the default (Kaufman) Jacobian is ONE such call with
+        cotangent w_hat[i, j] = c_i, because contracting the mode axis
+        against the current linear coefficients turns all P Jacobian
+        columns into the theta-gradient of a single scalar-per-point
+        function (the fitted smooth model, c frozen) -- the gradient
+        regime, where reverse mode does everything in one sweep. The cost
+        gradient J^T r is that same sweep contracted once more. See
+        _ReducedProblem.jacobian and docs/design-notes.md (2026-07-24).
     theta_init : (P,) array
         Starting guess for the outer Levenberg-Marquardt iteration (e.g.
         from a smoothed-beta heuristic ellipsoid) -- domain-specific, so
@@ -363,6 +396,14 @@ def fit_varpro(
         diagonal spike. None (the default) means no extra basis at all --
         equivalent to passing an empty (0, K) array; the returned s is
         then empty.
+    basis_jac : theta (P,) -> (n_modes, P, K), optional
+        Full theta-Jacobian of basis_eval, e.g.
+        functools.partial(whitened_jac_feature, ...). Required only for
+        options.jacobian = "golub-pereyra", whose second term
+        W[i, q] = sum_j dPhi_hat[i, q, j] (Z_hat^T r)_j keeps both the
+        mode and theta axes alive -- a bilinear (n_modes x P) block with
+        no reverse-mode collapse, for which forward mode (P sweeps,
+        P < n_modes) is the natural choice.
     options : VarProOptions, optional
 
     Returns

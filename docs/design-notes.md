@@ -127,10 +127,52 @@ a loop over P directions recomputes all of it P times; `jac_feature`
 computes it once (a ~P-fold saving on the Jacobian build). The jvp/vjp
 pair remains the primitive layer underneath: `jac_feature` is tested
 column-by-column against `jvp_feature`, which is itself FD- and
-adjoint-verified. The vjp is not in the fitting-core signature at all --
-with J explicit, the cost gradient is the matvec `J^T r` -- but stays in
-the lower layers as the reverse-mode half of the adjoint-consistency
-tests.
+adjoint-verified.
+
+**Update (2026-07-24, later the same day):** the dense-Jacobian
+conclusion stands, but the "vjp is not in the fitting-core signature"
+part is superseded: the default (Kaufman) Jacobian build collapses to a
+single batched reverse-mode call, so `basis_vjp` is back as the *primary*
+derivative callable and `basis_jac` is optional (Golub-Pereyra variant
+only). See the next entry.
+
+## Kaufman Jacobian in one reverse sweep
+
+**Decision (2026-07-24, revising part of the previous entry):** the
+default (Kaufman) reduced-residual Jacobian is built by ONE batched
+reverse-mode call, not by looping the P forward directions:
+
+    G[q, j] = sum_i c_i dPhi_hat[i, q, j] = basis_vjp(theta, w_hat)[q, j]
+    with cotangent w_hat[i, j] = c_i;
+    J_K = -P_perp_A ( P_perp_B ( Z_hat G^T ) ).
+
+The (n_modes, P, K) feature-Jacobian tensor never materializes, and
+n_modes and P never meet in any product.
+
+**Why this works:** Kaufman's column q consumes dA_q c -- the mode axis
+contracts against the *fixed* coefficient vector c before anything else.
+sum_i c_i phi_hat_i is a single scalar-per-point function (the fitted
+smooth model with c frozen), so all P components of its theta-gradient
+come from one reverse sweep. The general rule: reverse mode wins when
+the output side is contracted to few covectors, forward mode when the
+input side is contracted to few directions; Kaufman's c-contraction puts
+the Jacobian build in the gradient regime. The exact (Golub-Pereyra)
+Jacobian's second term W[i, q] = sum_j dPhi_hat[i, q, j] (Z_hat^T r)_j
+has no such collapse -- both the mode and theta axes stay alive, a
+genuine (n_modes x P) bilinear block, for which forward mode (P sweeps,
+P < n_modes) is the natural choice. Hence the fitting-core interface:
+`basis_vjp` (batched, per-point -- exactly why vjp_T/vjp_feature return
+unsummed (P, *batch) covectors) is required; `basis_jac` is optional,
+used only by variant="golub-pereyra".
+
+**Cost hierarchy worth remembering** (per LM iteration): exact Jacobian
+= P forward sweeps; Kaufman = 1 reverse sweep + dense algebra; the cost
+gradient J^T r = that same sweep contracted once more (g = -G Z_hat^T r).
+Kaufman delivers full-width (approximate) Jacobian columns at gradient
+price -- an AD-complexity argument for it as the default, independent of
+the usual small-residual argument. Verified in
+test_varpro.py::test_kaufman_reverse_mode_matches_jac_built (reverse
+build vs an independent forward-built reference, machine precision).
 
 ## Mass matrices confined to a single layer, via noise whitening
 

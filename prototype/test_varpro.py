@@ -28,10 +28,15 @@ i.e. exactly the callables fit_varpro will receive:
   - The structural identities relating Kaufman to Golub-Pereyra: same
     gradient J^T r, Kaufman's columns in range(A~)^perp, the dropped term's
     columns in range(A~), and exact coincidence at a zero-residual fit.
-  - Adjoint consistency of the gradient: J^T r (forward-mode, via the
-    built Jacobian) vs an independent reverse-mode path through
+  - Adjoint consistency of the gradient: J^T r (via the built Jacobian)
+    vs an independent reverse-mode contraction through
     whitened_vjp_feature -- the house check that has caught real
     sign/transpose bugs at every other layer of this project.
+  - The one-sweep reverse-mode Kaufman build (one batched vjp with
+    cotangent w_hat[i,j] = c_i) vs an inline forward-mode reference built
+    column by column from the full basis_jac tensor, to machine
+    precision; plus the basis_jac-is-optional contract (default variant
+    needs none; golub-pereyra without one is a clear error).
   - The one-entry cache: residual(theta) then jacobian(theta) at the same
     theta triggers exactly one basis evaluation / inner solve.
 
@@ -223,14 +228,18 @@ def _make_problem(rng, N=2, mu0=None, num_extra=1, k=24, K=16):
 
     common = dict(N=N, x=x, row_mass=row_mass, m2_diag=m2_diag,
                   modes=modes, mu0=mu0)
+
+    def basis_vjp(theta, w_hat):
+        return whitened_vjp_feature(theta, w_hat=w_hat, **common)
+
     return dict(
         theta=theta,
         P=theta_size(N, mu0),
         z_hat=z_hat,
         e_hat=e_hat,
         basis_eval=partial(whitened_eval_feature, **common),
+        basis_vjp=basis_vjp,
         basis_jac=partial(whitened_jac_feature, **common),
-        vjp=partial(whitened_vjp_feature, **common),
         k=k,
     )
 
@@ -248,7 +257,8 @@ def test_reduced_jacobian_golub_pereyra_matches_fd():
         prob = _make_problem(rng, N=N, mu0=mu0)
         y_hat = rng.standard_normal(prob["k"])
         rp = _ReducedProblem(prob["z_hat"], y_hat, prob["e_hat"],
-                             prob["basis_eval"], prob["basis_jac"], ridge=0.0)
+                             prob["basis_eval"], prob["basis_vjp"], ridge=0.0,
+                             basis_jac=prob["basis_jac"])
         theta = prob["theta"]
 
         J = rp.jacobian(theta, variant="golub-pereyra")
@@ -272,7 +282,8 @@ def test_kaufman_vs_golub_pereyra_structure():
     prob = _make_problem(rng, N=2)
     y_hat = rng.standard_normal(prob["k"])  # large residual, so the term matters
     rp = _ReducedProblem(prob["z_hat"], y_hat, prob["e_hat"],
-                         prob["basis_eval"], prob["basis_jac"], ridge=0.0)
+                         prob["basis_eval"], prob["basis_vjp"], ridge=0.0,
+                         basis_jac=prob["basis_jac"])
     theta = prob["theta"]
 
     J_K = rp.jacobian(theta, variant="kaufman")
@@ -301,7 +312,8 @@ def test_variants_coincide_at_zero_residual():
     y_hat = A0 @ c_true + B @ s_true
 
     rp = _ReducedProblem(prob["z_hat"], y_hat, prob["e_hat"],
-                         prob["basis_eval"], prob["basis_jac"], ridge=0.0)
+                         prob["basis_eval"], prob["basis_vjp"], ridge=0.0,
+                         basis_jac=prob["basis_jac"])
     r = rp.residual(theta)
     assert np.max(np.abs(r)) < 1e-9 * max(1.0, np.max(np.abs(y_hat)))
 
@@ -323,7 +335,8 @@ def test_reduced_gradient_adjoint_consistency():
         prob = _make_problem(rng, N=2, mu0=mu0)
         y_hat = rng.standard_normal(prob["k"])
         rp = _ReducedProblem(prob["z_hat"], y_hat, prob["e_hat"],
-                             prob["basis_eval"], prob["basis_jac"], ridge=0.0)
+                             prob["basis_eval"], prob["basis_vjp"], ridge=0.0,
+                             basis_jac=prob["basis_jac"])
         theta = prob["theta"]
 
         r = rp.residual(theta)
@@ -332,10 +345,50 @@ def test_reduced_gradient_adjoint_consistency():
 
         c = rp._solve_at(theta).c
         w_feat = c[:, None] * (prob["z_hat"].T @ r)[None, :]  # (n_modes, K)
-        g_rev = -np.sum(prob["vjp"](theta, w_hat=w_feat), axis=1)
+        g_rev = -np.sum(prob["basis_vjp"](theta, w_feat), axis=1)
 
         assert np.allclose(g_fwd_K, g_rev, rtol=1e-8, atol=1e-10), mu0
         assert np.allclose(g_fwd_GP, g_rev, rtol=1e-8, atol=1e-10), mu0
+
+
+def test_kaufman_reverse_mode_matches_jac_built():
+    """The one-sweep reverse-mode identity behind the default Jacobian:
+    G = basis_vjp with cotangent w_hat[i,j] = c_i, then
+    J_K = -P_perp(P_B_perp(Z_hat G^T)), must equal the forward path
+    -P_perp(dA~_q c) built column by column from the full basis_jac
+    tensor -- reimplemented inline here as an independent reference, so
+    the production code path and the reference share nothing but the
+    feature layer underneath. Also: the default variant must work with no
+    basis_jac at all, and asking for golub-pereyra without one must be a
+    clear error, not a crash."""
+    rng = np.random.default_rng(11)
+    for fit_mu in [True, False]:
+        mu0 = None if fit_mu else rng.uniform(-1, 1, size=2)
+        prob = _make_problem(rng, N=2, mu0=mu0)
+        y_hat = rng.standard_normal(prob["k"])
+        # constructed WITHOUT basis_jac: the default path must not need it
+        rp = _ReducedProblem(prob["z_hat"], y_hat, prob["e_hat"],
+                             prob["basis_eval"], prob["basis_vjp"], ridge=0.0)
+        theta = prob["theta"]
+
+        J_K = rp.jacobian(theta)  # default variant, reverse-mode build
+
+        sol = rp._solve_at(theta)
+        dPhi = prob["basis_jac"](theta)  # (n_modes, P, K)
+        cols = []
+        for q in range(prob["P"]):
+            dA_tilde = _project_out(rp.Q_B, prob["z_hat"] @ dPhi[:, q].T)
+            cols.append(-_project_out(sol.U, dA_tilde @ sol.c))
+        J_ref = np.stack(cols, axis=1)
+
+        scale = max(1.0, np.max(np.abs(J_ref)))
+        assert np.max(np.abs(J_K - J_ref)) / scale < 1e-12, mu0
+
+        try:
+            rp.jacobian(theta, variant="golub-pereyra")
+            assert False, "expected ValueError for golub-pereyra without basis_jac"
+        except ValueError:
+            pass
 
 
 def test_inner_solve_cached_between_residual_and_jacobian():
@@ -353,7 +406,7 @@ def test_inner_solve_cached_between_residual_and_jacobian():
         return prob["basis_eval"](theta)
 
     rp = _ReducedProblem(prob["z_hat"], y_hat, prob["e_hat"],
-                         counting_eval, prob["basis_jac"], ridge=0.0)
+                         counting_eval, prob["basis_vjp"], ridge=0.0)
     theta = prob["theta"]
 
     rp.residual(theta)
@@ -377,5 +430,6 @@ if __name__ == "__main__":
     test_kaufman_vs_golub_pereyra_structure()
     test_variants_coincide_at_zero_residual()
     test_reduced_gradient_adjoint_consistency()
+    test_kaufman_reverse_mode_matches_jac_built()
     test_inner_solve_cached_between_residual_and_jacobian()
     print("all varpro checks passed")
