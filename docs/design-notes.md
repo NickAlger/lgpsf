@@ -98,3 +98,34 @@ and done once regardless of how many points are in the batch. This replaces
 a sequential N-step substitution loop with one contraction, and it made the
 VJP's outer-product term (`w_L = -outer(z, u)`) collapse from a nested
 Python double-loop into a single `einsum` call too.
+
+## Mass matrices confined to a single layer, via noise whitening
+
+**Decision (2026-07-24):** `M1` (row mass) and `M2` (column mass) appear in
+exactly one file, `prototype/whitening.py`. Everything below it
+(`lg_functions.py`, `ellipsoid_transform.py`, `lg_ellipsoid_feature.py`) is
+mass-free; everything above it (the VarPro fitting core) only ever sees
+already-whitened arrays and never imports or references a mass matrix.
+
+**Why:** combining theta-dependent smooth basis functions (which live in
+the discretized function space $X$, weighted by $M_2$) with theta-
+independent "extra" basis functions like the diagonal spike (which live
+natively in the dual space $X'$, weighted by $M_2^{-1}$) naively -- e.g.
+orthogonalizing them under a plain Euclidean inner product -- happens to
+work for a single one-hot spike but is not correct in general, and more
+importantly requires the fitting code to reach into $M_2$ (and its
+inverse) directly. Noise whitening (rescaling every basis function,
+derivative, and datum once by $\sqrt{m_\rho}\,M_2^{\pm 1/2}$) converts the
+whole per-row fit into an ordinary Euclidean least-squares problem, where
+plain-Euclidean orthogonalization is *provably* the correct operation --
+not a different, coincidentally-similar approximation to the dual-space
+projection, the identical thing, verified algebraically and numerically
+(`test_whitening.py`). Full derivation:
+`docs/varpro-whitening-notes.tex`.
+
+**Consequence for the derivative machinery:** the whitening operator is a
+fixed (theta-independent), symmetric linear map, so it composes with the
+existing JVP/VJP chain the same way Stage 1/Stage 2 composition already
+does -- apply it to the raw JVP output; apply it to the incoming cotangent
+before feeding the existing VJP chain. No new derivative formulas needed
+anywhere for whitening itself.

@@ -1,0 +1,177 @@
+# lgpsf — project guide
+
+This file is auto-loaded into context for any Claude Code session working
+in this repo. It's meant to get a fresh session oriented quickly, without
+needing to read prior conversation transcripts. Keep it current as the
+project evolves; it describes present state, not history (for
+session-by-session narrative, see `dev/HANDOFF.md` -- gitignored,
+maintainer-local, not visible here if you're reading this fresh).
+
+## What this project is
+
+`lgpsf`: Laguerre-Gaussian point-spread-function (LG-PSF) Hessian
+approximation with VarPro ellipsoid fitting. A method for cheaply
+approximating a large, dense, PDE-derived operator $H$ (originally a
+Gauss-Newton Hessian from a glaciology inverse problem, but the method
+itself is general) as a sparse, locally-supported operator: per mesh row, a
+smooth Laguerre-Gaussian kernel expansion on a fitted local ellipsoid, plus
+a discrete "spike" correction for the part of the point-spread function the
+mesh can't resolve. Fit via random probing (matvecs are the expensive
+currency) and nonlinear least squares.
+
+**Two-phase plan.** Build and verify the whole method in Python first
+(`prototype/`), as the reference implementation; port to a header-only
+C++17 library (`include/`, depends on Eigen + `ellipsoid_tree`) once the
+design is settled. The C++ side is currently just scaffold (CMake, a
+doctest harness, an empty umbrella header, a `hello_world` example) --
+nothing from `prototype/` has been ported yet.
+
+**Derived from, but diverges from, prior research.** The original method
+was developed in `~/repos/nicks_research_experiments/ellipsoid_psf_pig`
+(`lg-split-method-notes.tex`, `varpro-ellipsoid-notes.tex`,
+`varpro-rung-plan.md`) -- read those for the original motivation and
+experimental history, but **do not treat that plan as this project's
+spec**. Concrete divergences: VarPro derivatives here are analytic
+(forward- and reverse-mode), not finite-differenced; the LG basis is
+generalized to arbitrary spatial dimension $N$ (the research repo was
+2D-only); the smooth+spike combination is handled via a general
+orthogonal-projection mechanism (noise whitening, below) rather than
+hand-zeroing specific matrix entries.
+
+## The mathematical framework
+
+**Discretization structure.** $H = M_1 \Phi M_2$: $\Phi$ is the continuum
+kernel, $M_1$ (row/target) and $M_2$ (column/source) are diagonal lumped
+mass matrices. Functional-analytically, $M_2: X \to X'$ and $M_1: Y \to
+Y'$ are the Riesz maps of the discretized $L^2$ inner products, $\Phi:
+X'\to Y$, $H: X\to Y'$. Full treatment in
+`docs/varpro-whitening-notes.tex`.
+
+**The row model.** Fix row $\rho$, mass $m_\rho$, and a local
+neighbor/support batch of $K$ column points with masses $m_j$:
+$$H[\rho,j] \approx \underbrace{m_\rho m_j \textstyle\sum_i c_i\,\phi_i(x_j;\theta)}_{\text{smooth}} + \underbrace{m_\rho \textstyle\sum_d s_d\, e_d(j)}_{\text{extra (spike, ...)}}.$$
+The smooth features $\phi_i$ are theta-dependent Laguerre-Gaussian modes on
+a per-row ellipsoid; they carry the column mass $m_j$ because they're
+continuum-kernel evaluations at a quadrature point. The "extra" basis
+$e_d$ is theta-independent (a one-hot vector for the diagonal spike;
+generalizes to e.g. a ring-neighbor correction) and carries no column
+mass, because it's a direct discrete correction, not a quadrature object.
+
+**The Laguerre-Gaussian basis.** Real eigenfunctions of the $N$-D quantum
+harmonic oscillator: a harmonic polynomial (angular part, generalizes
+2D's $\cos/\sin$) times a radial generalized-Laguerre polynomial times a
+Gaussian, $L^2(\mathbb{R}^N)$-orthonormal. The harmonic-polynomial part is
+generated offline in exact rational arithmetic (`generate_lg_harmonics_table.py`)
+for $N=1..4$, oscillator level $\le 10$, and committed as a literal table.
+
+**The ellipsoid pullback.** $T(\theta,x) = L(\theta)^{-1}(x-\mu(\theta))$
+maps a physical point into the LG basis's natural round coordinates.
+$\theta$ is a log-Cholesky encoding of the local covariance ellipsoid,
+with $\mu$ either free (part of $\theta$) or fixed at a given constant.
+**Notation: $T$ denotes the pullback**, not a forward map -- if a forward
+map is ever needed, call it $T^{-1}$.
+
+**VarPro.** The ellipsoid parameters $\theta$ are nonlinear; the
+coefficients ($c$, $s$) are linear given $\theta$. Variable projection
+eliminates the linear coefficients in closed form at every trial $\theta$
+(an inner least-squares solve), so the outer Levenberg-Marquardt loop only
+ever sees the small, well-conditioned reduced problem in $\theta$.
+
+**Noise whitening** (`docs/varpro-whitening-notes.tex`, session
+2026-07-24) is the mechanism that lets the smooth ($X$-valued, $M_2$-
+weighted) and extra ($X'$-valued, $M_2^{-1}$-weighted) bases combine
+without the fitting code ever touching a mass matrix: rescale every basis
+function, derivative, and datum once, by $\sqrt{m_\rho}\,M_2^{\pm1/2}$, so
+the whole per-row fit becomes an ordinary Euclidean least-squares problem.
+Proven (not just assumed) that plain-Euclidean orthogonalization of the
+whitened bases is exactly the correct (dual-space-respecting) projection,
+and that the whitening operator being fixed/symmetric means every
+existing JVP/VJP composes with it for free -- no new derivative math.
+
+## Code architecture (`prototype/`, bottom-up)
+
+1. **`lg_functions.py`** -- pure LG basis math, no ellipsoid/theta.
+   `genlaguerre` (3-term recurrence, no scipy -- ports directly to C++,
+   which has no special-function library). `eval_lg` (2D-only reference,
+   matches the original research note's cos/sin convention exactly).
+   `eval_lg_nd`/`grad_eval_lg_nd` (general $N$, using the generated
+   harmonic table).
+2. **`generate_lg_harmonics_table.py`** -> **`lg_harmonics_table.py`** --
+   offline generator (exact rational: monomial harmonic projection +
+   Gram-Schmidt via Gaussian moments) for the $N$-D harmonic-polynomial
+   table, committed as literal data (~580KB), not computed at runtime.
+3. **`ellipsoid_transform.py`** -- the pullback $T(\theta,x)$ and its
+   JVP/VJP, built as two composable stages (theta -> (mu, L), then the
+   pullback geometry itself) so different theta encodings (`mu0=None` =
+   fit mu, `mu0=<array>` = fixed mu) never touch the geometry code.
+   Triangular solves via explicit `L^{-1}` + `einsum` (theta is never
+   batched, so this is negligible cost and avoids a substitution loop).
+4. **`lg_ellipsoid_feature.py`** -- composes (1) and (3):
+   $\phi_i(x;\theta) := \psi_i(T(\theta,x))$ and its JVP/VJP, for a list
+   of modes at once (the pullback is shared across modes, computed once).
+   Mass-free.
+5. **`whitening.py`** -- **the only place $M_1$/$M_2$ appear anywhere in
+   this codebase.** `whiten_probes`/`whiten_data`/`whiten_extra` for
+   user-supplied raw arrays, plus whitened wrappers around (4)'s
+   eval/JVP/VJP.
+6. **`varpro.py`** -- **API sketch only, not implemented**
+   (`fit_varpro` raises `NotImplementedError`). Defines `VarProOptions`/
+   `VarProResult` and the intended signature: whitened probes, whitened
+   data, whitened extra basis, three basis callables (eval/jvp/vjp),
+   theta_init, options -> fitted theta/coefficients + diagnostics. Mass-
+   free and geometry-free by construction -- everything problem-specific
+   is either an array or baked into a closure by the caller.
+
+Tests mirror this file-by-file (`test_lg_functions.py`,
+`test_ellipsoid_transform.py`, `test_lg_ellipsoid_feature.py`,
+`test_whitening.py`). Examples: `examples/plot_lg_modes.py` (2D mode
+grid), `examples/lg_expansion_convergence.py` ($N=1,2,3$ convergence
+study).
+
+## Conventions (see `docs/design-notes.md` for the full reasoning on each)
+
+- **Point-batched arrays are real numpy arrays, never tuples.** Shape
+  `(N, *batch_shape)` -- non-batch axes first, batch axes last, matching
+  numpy's row-major-contiguous default (Eigen's column-major default
+  means the *transpose* convention, `(K, N)`, is the right one there --
+  don't carry the numpy convention over to the C++ port unchanged).
+- **Vectorize the point batch only.** Loops over monomial count, spatial
+  dimension $N$, theta's parameter count $P$, Laguerre recurrence depth
+  are fine and often preferred (keeps memory at `O(batch)` not
+  `O(axis * batch)`); don't reach for `einsum`/broadcast tricks over those
+  other axes by default.
+- **`mu0=None` vs `mu0=<array>`** is the fit-mu/fixed-mu switch, threaded
+  through `ellipsoid_transform.py` and everything built on top of it.
+- **No scipy in the core reference math** (`genlaguerre`, the harmonic
+  table generator) -- these need to port to C++/Eigen, which has no
+  special-function library, so the Python reference is written as
+  explicit recurrences/formulas that translate directly. Ordinary linear
+  algebra (matrix inverse, etc.) is fine via plain numpy, since Eigen has
+  native equivalents there -- the scipy avoidance is specifically about
+  special functions, not linear algebra in general.
+- **Every JVP/VJP pair gets two kinds of test**: finite differences
+  *and* adjoint-consistency (`sum(w * jvp(...)) == sum(vjp(...) * v)` for
+  random `w`, `v`). The second has caught real sign/transpose bugs that
+  the first alone missed -- don't skip it for new derivative code.
+
+## Current status / what's not built yet
+
+- The actual VarPro Levenberg-Marquardt loop and inner whitened
+  least-squares solve (`varpro.py` is API-only).
+- Wedge/mode-selection (growing the LG basis by oscillator level,
+  cross-validated, per the research plan) -- not reimplemented here.
+- Any connection to real mesh data, probes, or `ellipsoid_tree` --
+  everything so far is tested against synthetic points/probes.
+- Any C++ code beyond the empty scaffold.
+- Python bindings (`bindings/` doesn't exist yet; see the commented-out
+  note in `CMakeLists.txt`).
+
+## Where to look for more
+
+- `docs/design-notes.md` -- terse, running log of C++-port-relevant
+  decisions (layout, vectorization principle, etc.).
+- `docs/varpro-whitening-notes.tex`/`.pdf` -- the whitening derivation in
+  full, with the row-model and reconciliation-with-earlier-analysis
+  arguments spelled out.
+- `dev/HANDOFF.md` -- gitignored, maintainer-local session notes; not
+  visible if you're reading only what's checked into the repo.
