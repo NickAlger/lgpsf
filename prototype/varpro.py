@@ -33,9 +33,10 @@ VarPro = three ideas, each implemented as its own visible piece here:
     projector (Golub-Pereyra formula, with Kaufman's residual-order
     simplification as the cheap default).
 
-Implementation status: the inner linear-algebra layer (steps 1-2 above)
-is implemented and tested; fit_varpro itself (the reduced
-residual/Jacobian and the outer Levenberg-Marquardt loop) still raises
+Implementation status: the inner linear-algebra layer and the reduced
+problem (residual + both Jacobian variants, _ReducedProblem) are
+implemented and tested; fit_varpro itself (the outer Levenberg-Marquardt
+wiring, the s back-solve, and result packaging) still raises
 NotImplementedError.
 """
 from dataclasses import dataclass
@@ -55,6 +56,14 @@ class VarProOptions:
     orthogonalized against e_hat) least-squares normal equations, after
     per-column equilibration -- guards against a smooth feature that's
     nearly unresolved on this row's mesh (lg-split-method-notes.tex)."""
+
+    jacobian: str = "kaufman"
+    """Which reduced-residual Jacobian the outer loop gets: "kaufman"
+    (default) or "golub-pereyra". See _ReducedProblem.jacobian for the
+    formulas and the exact relationship (both give the exact gradient;
+    Kaufman's Gauss-Newton model is the Schur complement of the
+    full-space GN Hessian, Golub-Pereyra's adds a PSD O(||r||^2) term
+    and is the exact Jacobian of the reduced residual)."""
 
     x_scale: Union[str, np.ndarray] = "jac"
     """Per-theta-component trust-region scaling for LM. "jac" (scipy's
@@ -213,13 +222,103 @@ def _inner_solve(A_tilde, y_tilde, ridge):
                        col_scale=col_scale)
 
 
+class _ReducedProblem:
+    """The reduced (theta-only) nonlinear least-squares problem VarPro
+    hands the outer optimizer: r(theta) = y_tilde - A_tilde(theta) c*(theta)
+    with c* from _inner_solve, plus r's Jacobian by differentiating the
+    projector.
+
+    Holds everything that is fixed across trial thetas -- the probes, the
+    extra block B = Z_hat E_hat^T and its orthonormal range Q_B, the
+    residualized data y_tilde -- plus a one-entry cache of the latest
+    theta's inner solve: optimizers call residual(theta) and
+    jacobian(theta) separately but back to back at the same theta, and
+    both need the same factorization.
+
+    Jacobian formulas (A~ = A_tilde, P_perp = I - U U^T the projector onto
+    range(A~)'s orthogonal complement, r the reduced residual, dA~_q the
+    q-th theta-derivative of A~ -- which is just P_B_perp dA_q, since the
+    extra block's projector doesn't move with theta):
+
+        Golub-Pereyra (exact):  dr_q = -P_perp (dA~_q c) - pinv(A~)^T dA~_q^T r
+        Kaufman:                dr_q = -P_perp (dA~_q c)
+
+    How they relate (each verified numerically in test_varpro.py):
+      - The dropped term is O(||r||): the variants coincide exactly at a
+        zero-residual fit.
+      - The dropped term's columns lie in range(A~), the kept term's in
+        range(A~)^perp -- so the term is orthogonal to r, and both
+        variants produce the SAME exact gradient J^T r. Kaufman changes
+        the quadratic model only, never the descent direction's
+        first-order information.
+      - Consequently their Gauss-Newton models differ by the PSD matrix
+        J2^T J2 = O(||r||^2): Kaufman's J^T J is exactly the Schur
+        complement of the full-space Gauss-Newton Hessian (linearize,
+        then eliminate the linear variables), Golub-Pereyra's is the
+        Gauss-Newton Hessian of the reduced problem (eliminate, then
+        linearize). The operations don't commute, by exactly this term.
+    """
+
+    def __init__(self, z_hat, y_hat, e_hat, basis_eval, basis_jac, ridge):
+        self.z_hat = np.asarray(z_hat, dtype=float)
+        self.y_hat = np.asarray(y_hat, dtype=float)
+        e_hat = np.asarray(e_hat, dtype=float)
+        self.B = self.z_hat @ e_hat.T                  # (k, num_extra)
+        self.Q_B = _orthonormal_range(self.B)
+        self.y_tilde = _project_out(self.Q_B, self.y_hat)
+        self.basis_eval = basis_eval
+        self.basis_jac = basis_jac
+        self.ridge = ridge
+        self._cached_theta = None
+        self._cached_solve = None
+
+    def design_matrix(self, theta):
+        """A(theta) = Z_hat basis_eval(theta)^T, shape (k, n_modes) --
+        before residualization (the back-solve for s needs the raw A)."""
+        return self.z_hat @ self.basis_eval(theta).T
+
+    def _solve_at(self, theta):
+        theta = np.asarray(theta, dtype=float)
+        if self._cached_theta is None or not np.array_equal(theta, self._cached_theta):
+            A_tilde = _project_out(self.Q_B, self.design_matrix(theta))
+            self._cached_solve = _inner_solve(A_tilde, self.y_tilde, self.ridge)
+            self._cached_theta = theta.copy()
+        return self._cached_solve
+
+    def residual(self, theta):
+        """r(theta), shape (k,). What the outer loop minimizes half the
+        squared norm of."""
+        return self._solve_at(theta).residual
+
+    def jacobian(self, theta, variant="kaufman"):
+        """dr/dtheta, shape (k, P), by the formula selected in `variant`
+        (see class docstring). Built column by column -- the loop over P is
+        small and fixed, per the batch-only vectorization principle."""
+        sol = self._solve_at(theta)
+        dPhi = self.basis_jac(theta)                   # (n_modes, P, K)
+        P = dPhi.shape[1]
+        cols = []
+        for q in range(P):
+            dA_tilde = _project_out(self.Q_B, self.z_hat @ dPhi[:, q].T)
+            col = -_project_out(sol.U, dA_tilde @ sol.c)
+            if variant == "golub-pereyra":
+                # -pinv(A~)^T dA~_q^T r, from the stored SVD pieces:
+                # pinv(A~)^T w = U diag(1/sigma) Vt (w / col_scale)
+                w = dA_tilde.T @ sol.residual          # (n_modes,)
+                col = col - sol.U @ ((sol.Vt @ (w / sol.col_scale)) / sol.sigma)
+            elif variant != "kaufman":
+                raise ValueError(f"unknown jacobian variant: {variant!r}")
+            cols.append(col)
+        return np.stack(cols, axis=1)
+
+
 def fit_varpro(
     z_hat: np.ndarray,
     y_hat: np.ndarray,
-    e_hat: np.ndarray,
     basis_eval: Callable[[np.ndarray], np.ndarray],
     basis_jac: Callable[[np.ndarray], np.ndarray],
     theta_init: np.ndarray,
+    e_hat: Optional[np.ndarray] = None,
     options: Optional[VarProOptions] = None,
 ) -> VarProResult:
     """Fit theta (and the linear coefficients c, s) for one mesh row.
@@ -236,9 +335,6 @@ def fit_varpro(
         neighbor/support batch. k = number of probes, K = batch size.
     y_hat : (k,) array
         This row's whitened response to each probe.
-    e_hat : (num_extra, K) array
-        Whitened extra (theta-independent) basis functions. num_extra may
-        be 0 (an empty (0, K) array) if there is no extra basis at all.
     basis_eval : theta (P,) -> (n_modes, K)
         Whitened smooth-basis values at theta, e.g.
         functools.partial(whitened_eval_feature, N=N, x=x,
@@ -262,6 +358,11 @@ def fit_varpro(
         Starting guess for the outer Levenberg-Marquardt iteration (e.g.
         from a smoothed-beta heuristic ellipsoid) -- domain-specific, so
         computing it is the caller's job, not this function's.
+    e_hat : (num_extra, K) array, optional
+        Whitened extra (theta-independent) basis functions, e.g. the
+        diagonal spike. None (the default) means no extra basis at all --
+        equivalent to passing an empty (0, K) array; the returned s is
+        then empty.
     options : VarProOptions, optional
 
     Returns
@@ -278,8 +379,8 @@ def fit_varpro(
     checked this after the fact too).
     """
     raise NotImplementedError(
-        "The inner linear-algebra layer (_project_out, _orthonormal_range, "
-        "_inner_solve) is implemented and tested, but the reduced "
-        "residual/Jacobian machinery and the outer Levenberg-Marquardt "
-        "loop are not wired up yet."
+        "The inner linear-algebra layer and the reduced problem "
+        "(_ReducedProblem: residual + both Jacobian variants) are "
+        "implemented and tested, but the outer Levenberg-Marquardt "
+        "wiring, the s back-solve, and result packaging are not."
     )
