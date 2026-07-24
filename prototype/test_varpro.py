@@ -40,6 +40,19 @@ i.e. exactly the callables fit_varpro will receive:
   - The one-entry cache: residual(theta) then jacobian(theta) at the same
     theta triggers exactly one basis evaluation / inner solve.
 
+Step 3 -- fit_varpro end to end:
+
+  - Exact recovery: y_hat built from the model at a known
+    (theta*, c*, s*), fit started from a perturbed theta -- recovers all
+    three to tight tolerance with near-zero cost, for both Jacobian
+    variants, and with and without an extra basis.
+  - Result packaging self-consistency on a noisy (no-exact-fit) problem:
+    the returned residual/cost recompute from (theta, c, s); the
+    back-solved s leaves the residual orthogonal to the extra block; the
+    final cost does not exceed the starting cost.
+  - Input validation: golub-pereyra without basis_jac, and fewer probes
+    than theta parameters, fail fast with clear errors.
+
 Run directly (`python test_varpro.py`) or via pytest.
 """
 import os
@@ -58,7 +71,14 @@ from whitening import (
     whitened_jac_feature,
     whitened_vjp_feature,
 )
-from varpro import _ReducedProblem, _inner_solve, _orthonormal_range, _project_out
+from varpro import (
+    VarProOptions,
+    _ReducedProblem,
+    _inner_solve,
+    _orthonormal_range,
+    _project_out,
+    fit_varpro,
+)
 
 
 def test_project_out():
@@ -419,6 +439,102 @@ def test_inner_solve_cached_between_residual_and_jacobian():
     assert n_evals["count"] == 2
 
 
+def test_fit_varpro_recovers_synthetic_row():
+    """The end-to-end check: build y_hat exactly from the row model at a
+    known (theta*, c*, s*), start LM from a perturbed theta, and recover
+    everything. Runs with both Jacobian variants (the Kaufman/GP
+    distinction vanishes as the residual -> 0, so both must converge to
+    the same answer) and without any extra basis at all (e_hat=None)."""
+    rng = np.random.default_rng(12)
+    for variant in ["kaufman", "golub-pereyra"]:
+        for use_extra in [True, False]:
+            prob = _make_problem(rng, N=2, num_extra=1)
+            theta_true = prob["theta"]
+            A0 = prob["z_hat"] @ prob["basis_eval"](theta_true).T
+            c_true = rng.uniform(-1, 1, size=A0.shape[1])
+            y_hat = A0 @ c_true
+            e_hat = None
+            s_true = np.zeros(0)
+            if use_extra:
+                e_hat = prob["e_hat"]
+                B = prob["z_hat"] @ e_hat.T
+                s_true = rng.uniform(-1, 1, size=B.shape[1])
+                y_hat = y_hat + B @ s_true
+
+            theta_init = theta_true + rng.uniform(-0.05, 0.05, size=prob["P"])
+            result = fit_varpro(
+                prob["z_hat"], y_hat,
+                prob["basis_eval"], prob["basis_vjp"],
+                theta_init,
+                e_hat=e_hat,
+                basis_jac=prob["basis_jac"],
+                options=VarProOptions(ridge=0.0, jacobian=variant),
+            )
+
+            label = f"variant={variant} extra={use_extra}"
+            assert result.success, f"{label}: {result.message}"
+            assert np.max(np.abs(result.theta - theta_true)) < 1e-6, label
+            assert np.max(np.abs(result.c - c_true)) < 1e-6, label
+            assert result.s.shape == s_true.shape, label
+            assert np.max(np.abs(result.s - s_true), initial=0.0) < 1e-6, label
+            assert result.cost < 1e-14, f"{label}: cost={result.cost:.3e}"
+
+
+def test_fit_varpro_result_self_consistency():
+    """On a noisy problem with no exact fit, the packaging invariants must
+    hold regardless of where LM stopped: the returned residual and cost
+    recompute exactly from (theta, c, s); the back-solved s makes the
+    residual orthogonal to the extra block (its normal equations); and the
+    final cost does not exceed the starting cost (LM is monotone)."""
+    rng = np.random.default_rng(13)
+    prob = _make_problem(rng, N=2, num_extra=2)
+    y_hat = rng.standard_normal(prob["k"])
+    theta_init = prob["theta"]
+
+    result = fit_varpro(
+        prob["z_hat"], y_hat,
+        prob["basis_eval"], prob["basis_vjp"],
+        theta_init,
+        e_hat=prob["e_hat"],
+    )  # default options: kaufman, ridge=1e-8
+
+    A = prob["z_hat"] @ prob["basis_eval"](result.theta).T
+    B = prob["z_hat"] @ prob["e_hat"].T
+    r_recomputed = y_hat - A @ result.c - B @ result.s
+    assert np.allclose(r_recomputed, result.residual, rtol=1e-9, atol=1e-11)
+    assert abs(result.cost - 0.5 * (r_recomputed @ r_recomputed)) < 1e-11
+    assert np.max(np.abs(B.T @ result.residual)) < 1e-8
+
+    rp = _ReducedProblem(prob["z_hat"], y_hat, prob["e_hat"],
+                         prob["basis_eval"], prob["basis_vjp"], ridge=1e-8)
+    cost_init = 0.5 * float(np.sum(rp.residual(theta_init) ** 2))
+    assert result.cost <= cost_init + 1e-12
+
+
+def test_fit_varpro_input_validation():
+    rng = np.random.default_rng(14)
+    prob = _make_problem(rng, N=2)
+    y_hat = rng.standard_normal(prob["k"])
+
+    # golub-pereyra without basis_jac must fail fast, before optimizing
+    try:
+        fit_varpro(prob["z_hat"], y_hat, prob["basis_eval"], prob["basis_vjp"],
+                   prob["theta"], e_hat=prob["e_hat"],
+                   options=VarProOptions(jacobian="golub-pereyra"))
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+    # fewer probes than theta parameters: method='lm' can't run
+    few = 2
+    try:
+        fit_varpro(prob["z_hat"][:few], y_hat[:few], prob["basis_eval"],
+                   prob["basis_vjp"], prob["theta"])
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
 if __name__ == "__main__":
     test_project_out()
     test_orthonormal_range()
@@ -432,4 +548,7 @@ if __name__ == "__main__":
     test_reduced_gradient_adjoint_consistency()
     test_kaufman_reverse_mode_matches_jac_built()
     test_inner_solve_cached_between_residual_and_jacobian()
+    test_fit_varpro_recovers_synthetic_row()
+    test_fit_varpro_result_self_consistency()
+    test_fit_varpro_input_validation()
     print("all varpro checks passed")

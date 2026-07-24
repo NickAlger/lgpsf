@@ -107,26 +107,39 @@ existing JVP/VJP composes with it for free -- no new derivative math.
    Triangular solves via explicit `L^{-1}` + `einsum` (theta is never
    batched, so this is negligible cost and avoids a substitution loop).
 4. **`lg_ellipsoid_feature.py`** -- composes (1) and (3):
-   $\phi_i(x;\theta) := \psi_i(T(\theta,x))$ and its JVP/VJP, for a list
-   of modes at once (the pullback is shared across modes, computed once).
+   $\phi_i(x;\theta) := \psi_i(T(\theta,x))$ and its JVP/VJP/Jacobian,
+   for a list of modes at once (the pullback and each mode's spatial LG
+   gradient are shared where the math allows -- `jac_feature` computes
+   the direction-independent work once across all $P$ theta directions).
    Mass-free.
 5. **`whitening.py`** -- **the only place $M_1$/$M_2$ appear anywhere in
    this codebase.** `whiten_probes`/`whiten_data`/`whiten_extra` for
    user-supplied raw arrays, plus whitened wrappers around (4)'s
-   eval/JVP/VJP.
-6. **`varpro.py`** -- **API sketch only, not implemented**
-   (`fit_varpro` raises `NotImplementedError`). Defines `VarProOptions`/
-   `VarProResult` and the intended signature: whitened probes, whitened
-   data, whitened extra basis, three basis callables (eval/jvp/vjp),
-   theta_init, options -> fitted theta/coefficients + diagnostics. Mass-
-   free and geometry-free by construction -- everything problem-specific
-   is either an array or baked into a closure by the caller.
+   eval/JVP/VJP/Jacobian.
+6. **`varpro.py`** -- the generic, mass-free VarPro fitting core,
+   **implemented**: `fit_varpro(z_hat, y_hat, basis_eval, basis_vjp,
+   theta_init, e_hat=None, basis_jac=None, options)` -> `VarProResult`.
+   Internally: Frisch-Waugh-Lovell preprocessing of the theta-independent
+   extra block (project it out once, back-solve its coefficients `s` at
+   the end); an SVD-based inner solve (`_inner_solve` -- the "projection"
+   in variable projection: equilibrated, ridge on the coefficients only,
+   rank-truncated); `_ReducedProblem` with the reduced residual and two
+   Jacobian variants -- Kaufman (default; built in ONE batched
+   reverse-mode `basis_vjp` call with cotangent $w[i,j]=c_i$, the
+   $(n_{modes},P,K)$ tensor never materializes) and exact Golub-Pereyra
+   (needs `basis_jac`; used for strict FD testing and as a fallback);
+   outer LM loop via `scipy.optimize.least_squares(method="lm")` (the one
+   delegated piece -- the C++ port will need a hand-rolled LM, to be
+   validated against this). Both variants share the exact gradient; see
+   `_ReducedProblem`'s docstring for the Kaufman<->GP<->Schur-complement
+   relationships.
 
 Tests mirror this file-by-file (`test_lg_functions.py`,
 `test_ellipsoid_transform.py`, `test_lg_ellipsoid_feature.py`,
-`test_whitening.py`). Examples: `examples/plot_lg_modes.py` (2D mode
-grid), `examples/lg_expansion_convergence.py` ($N=1,2,3$ convergence
-study).
+`test_whitening.py`, `test_varpro.py` -- the latter's end-to-end check
+recovers a known $(\theta^*, c^*, s^*)$ from perturbed initialization).
+Examples: `examples/plot_lg_modes.py` (2D mode grid),
+`examples/lg_expansion_convergence.py` ($N=1,2,3$ convergence study).
 
 ## Conventions (see `docs/design-notes.md` for the full reasoning on each)
 
@@ -156,8 +169,9 @@ study).
 
 ## Current status / what's not built yet
 
-- The actual VarPro Levenberg-Marquardt loop and inner whitened
-  least-squares solve (`varpro.py` is API-only).
+- A hand-rolled Levenberg-Marquardt loop as C++-portable reference (the
+  outer loop currently delegates to scipy/MINPACK; everything else in
+  `varpro.py` is already library-free numpy).
 - Wedge/mode-selection (growing the LG basis by oscillator level,
   cross-validated, per the research plan) -- not reimplemented here.
 - Any connection to real mesh data, probes, or `ellipsoid_tree` --

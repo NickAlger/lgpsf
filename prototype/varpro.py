@@ -34,16 +34,20 @@ VarPro = three ideas, each implemented as its own visible piece here:
     simplification as the default -- built in a single batched
     reverse-mode sweep, see _ReducedProblem.jacobian).
 
-Implementation status: the inner linear-algebra layer and the reduced
-problem (residual + both Jacobian variants, _ReducedProblem) are
-implemented and tested; fit_varpro itself (the outer Levenberg-Marquardt
-wiring, the s back-solve, and result packaging) still raises
-NotImplementedError.
+Implementation status: complete. fit_varpro wires _ReducedProblem into
+scipy.optimize.least_squares(method="lm", i.e. MINPACK's
+Levenberg-Marquardt) with the analytic reduced Jacobian, back-solves the
+extra coefficients s from the fitted smooth part (Frisch-Waugh-Lovell),
+and packages VarProResult. The outer LM loop is the one piece delegated
+to a library: a hand-rolled reference LM (which the C++ port will need
+-- there is no MINPACK there) is a possible later step, to be validated
+against this scipy-backed version.
 """
 from dataclasses import dataclass
 from typing import Callable, Optional, Union
 
 import numpy as np
+from scipy.optimize import least_squares
 
 
 @dataclass
@@ -115,9 +119,9 @@ class VarProResult:
     """Diagnostics from the underlying optimizer call."""
 
     jacobian: Optional[np.ndarray] = None
-    """(k, P) reduced-residual Jacobian at the optimum, if requested --
-    for future diagnostics (e.g. a cheap well-determinedness check), not
-    needed for the fit itself."""
+    """(k, P) reduced-residual Jacobian from the optimizer's final
+    evaluation -- for diagnostics (e.g. a cheap well-determinedness
+    check via its singular values), not needed for the fit itself."""
 
 
 # --------------------------------------------------------------------------
@@ -419,9 +423,69 @@ def fit_varpro(
     method="lm" doesn't support bounds; the research prototype only ever
     checked this after the fact too).
     """
-    raise NotImplementedError(
-        "The inner linear-algebra layer and the reduced problem "
-        "(_ReducedProblem: residual + both Jacobian variants) are "
-        "implemented and tested, but the outer Levenberg-Marquardt "
-        "wiring, the s back-solve, and result packaging are not."
+    options = options if options is not None else VarProOptions()
+    z_hat = np.asarray(z_hat, dtype=float)
+    y_hat = np.asarray(y_hat, dtype=float)
+    theta_init = np.asarray(theta_init, dtype=float)
+    if e_hat is None:
+        e_hat = np.zeros((0, z_hat.shape[1]))
+    e_hat = np.asarray(e_hat, dtype=float)
+
+    k = z_hat.shape[0]
+    P = theta_init.shape[0]
+    if y_hat.shape != (k,):
+        raise ValueError(
+            f"y_hat has shape {y_hat.shape}; expected ({k},) to match "
+            f"z_hat's {k} probes")
+    if e_hat.ndim != 2 or e_hat.shape[1] != z_hat.shape[1]:
+        raise ValueError(
+            f"e_hat has shape {e_hat.shape}; expected (num_extra, "
+            f"{z_hat.shape[1]}) to match z_hat's batch size")
+    if k < P:
+        raise ValueError(
+            f"Levenberg-Marquardt (method='lm') needs at least as many "
+            f"probes as theta parameters; got k={k} probes < P={P}")
+    if options.jacobian == "golub-pereyra" and basis_jac is None:
+        raise ValueError(
+            "options.jacobian='golub-pereyra' requires the basis_jac "
+            "callable (see its parameter docstring)")
+
+    reduced = _ReducedProblem(z_hat, y_hat, e_hat, basis_eval, basis_vjp,
+                              options.ridge, basis_jac=basis_jac)
+
+    lsq = least_squares(
+        reduced.residual,
+        theta_init,
+        jac=lambda th: reduced.jacobian(th, variant=options.jacobian),
+        method="lm",
+        x_scale=options.x_scale,
+        max_nfev=options.max_nfev,
+        ftol=options.ftol,
+        xtol=options.xtol,
+        gtol=options.gtol,
+    )
+
+    theta = lsq.x
+    c = reduced._solve_at(theta).c
+    A = reduced.design_matrix(theta)
+    # Frisch-Waugh-Lovell back-solve: given (theta, c), the optimal extra
+    # coefficients solve the small least-squares problem B s ~ y_hat - A c,
+    # and the resulting joint residual equals the reduced residual exactly
+    # (test_fwl_residualize_then_fit_matches_joint_fit).
+    s = np.linalg.lstsq(reduced.B, y_hat - A @ c, rcond=None)[0]
+    residual = y_hat - A @ c - reduced.B @ s
+
+    return VarProResult(
+        theta=theta,
+        c=c,
+        s=s,
+        residual=residual,
+        cost=0.5 * float(residual @ residual),
+        success=bool(lsq.success),
+        # njev counts accepted LM steps (one Jacobian evaluation each);
+        # scipy exposes no separate iteration counter for method="lm"
+        n_iterations=int(lsq.njev) if lsq.njev is not None else 0,
+        n_function_evals=int(lsq.nfev),
+        message=str(lsq.message),
+        jacobian=lsq.jac,
     )
