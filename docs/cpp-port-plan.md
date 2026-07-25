@@ -21,13 +21,13 @@ header (~180 MB-1 GB+ peak per compile job; sanitizer builds heavier).
 Hard rules for every session working on the C++ side:
 
 - **NEVER run a bare `make -j` / `cmake --build . -j` / `-j$(nproc)`.**
-- Default to **`-j4`** for normal builds; **`-j2` for sanitizer
+- Default to **`-j3`** for normal builds; **`-j2` for sanitizer
   builds** (matches the ellipsoid_tree CI cap); drop to `-j2`/serial
   if anything else heavy is running (Python fits, browsers).
 - Rule of thumb (from ellipsoid_tree's README): keep **>= 1-2 GB RAM
   per compile job**.
 - Prefer building specific targets (`cmake --build build --target
-  lgpsf_tests -j4`) over full rebuilds.
+  lgpsf_tests -j3`) over full rebuilds.
 - Set up a **precompiled header early** (M0-M1, not "later"): the
   ellipsoid_tree measurements are ~1.5 s / ~180 MB per Eigen TU
   without PCH vs ~0.2 s / ~125 MB with. The test suite is one
