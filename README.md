@@ -1,2 +1,2 @@
 # lgpsf
-Laguerre-Gaussian point spread function interpolation with VarPro ellipsoid fitting
+Laguerre-Gaussian point spread function approximation with VarPro ellipsoid fitting

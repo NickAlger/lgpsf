@@ -44,7 +44,11 @@ robustness study, docs/robust-init-notes.md; PIG slice-37 refits):
     outcome variance in every experiment); mu="fixed_then_release"
     (default) then releases the winning level's admissible fits (one
     per distinct theta) and accepts a released fit only under the
-    tie-break below.
+    tie-break below. CAVEAT (PIG field scale, slice 38): the release
+    guard's window-radius bound on the center is far too loose -- at
+    operator scale release shipped on ~91% of rows while buying
+    nothing on held-out data; pin mu for operator runs until release
+    is re-armed with a basin-scale ||mu - mu0|| bound.
 
 Selection = admissibility, then score, then simplicity:
   - ADMISSIBILITY: the caller's window is conservative, so the true

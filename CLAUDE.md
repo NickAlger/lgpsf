@@ -271,25 +271,37 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
 
 ## Current status / what's not built yet
 
-- A hand-rolled Levenberg-Marquardt loop as C++-portable reference (the
-  outer loop currently delegates to scipy/MINPACK; everything else in
-  `varpro.py` is already library-free numpy).
-- Wedge/mode-selection (growing the LG basis by oscillator level,
-  cross-validated, per the research plan) -- not reimplemented here;
-  `fit_from_probes` takes an explicit mode list or a `mode_levels` ladder.
-- `ellipsoid_tree` integration (`operator_fit.ellipsoid_field` produces
-  the (mu, Sigma) arrays it would consume). (The library HAS been
-  validated against real PDE-Hessian probe data -- the glaciology rows,
-  in the separate maintainer-local research repo -- reproducing and
-  beating the research prototype's numbers; the in-repo tests remain
-  synthetic by design.)
-- Level-2 cross-row amortization (neighbor warm starts / smoothed-theta
-  seeds as candidate injection) and field-level QC studies over
-  status/stop_reason/spike-measure maps -- `fit_operator` exists now,
-  these build on it.
-- Any C++ code beyond the empty scaffold.
-- Python bindings (`bindings/` doesn't exist yet; see the commented-out
-  note in `CMakeLists.txt`).
+- **The C++ port: DESIGN AGREED** -- `docs/cpp-port-plan.md` (deps,
+  threading, header-only, bindings, milestones M0-M6, the hand-rolled
+  LM contract, and the COMPILE MEMORY SAFETY rules: this machine has
+  been OOM-crashed by large `-j` builds -- read that section before
+  building any C++). Implementation starts in a fresh session; at port
+  start the prototype is FROZEN as the reference (its tests keep
+  running; new development lands C++-first).
+- A hand-rolled Levenberg-Marquardt loop (port milestone M2): the
+  prototype's outer loop delegates to scipy/MINPACK -- the one
+  delegated numeric; everything else in `varpro.py` is library-free.
+- Released-mu re-arming: `ProbeFitConfig`'s default
+  `mu="fixed_then_release"` is safe at single-row scale, but PIG
+  field-scale evidence (research-repo slice 38) showed release
+  shipping on ~91% of rows while buying nothing, guarded only by the
+  far-too-loose window-radius bound on the center. It needs a
+  basin-scale `||mu - mu0||` bound before being trusted at operator
+  scale; operator-level experiments pin mu meanwhile.
+- MarginGreedy adaptive mode policy: PARKED with evidence and queued
+  refinements (novelty floor first) -- see `docs/mode-policy-plan.md`'s
+  addendum. `WedgeLadder(10, 2)` is the operator-layer default.
+- Level-2 cross-row amortization (neighbor warm starts /
+  smoothed-theta seeds as candidate injection) and field-level QC maps
+  over status/stop_reason/spike-measure -- build on `fit_operator`.
+- Python bindings (`bindings/` doesn't exist yet; port milestone M5;
+  the hook location is marked by a comment in `CMakeLists.txt`).
+
+(The library HAS been validated at field scale against real
+PDE-Hessian probe data -- PIG slices 38/39 in the separate
+maintainer-local research repo: it beats the prior psfladder reference
+at every probe budget, at both smooth and rough basal-friction states;
+the in-repo tests remain synthetic by design.)
 
 ## Where to look for more
 
