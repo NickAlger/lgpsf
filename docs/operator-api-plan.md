@@ -115,6 +115,12 @@ format is a decompression of it.
 
 ## Helpers (each typed to a component)
 
+**Amendment (2026-07-25, PIG slice-38): deployed support == fit
+window.** The dof-context helpers below restrict each row to its fit
+window (stored on OperatorFit); eval_kernel stays the raw parametric
+component. Rationale in docs/design-notes.md ("Deployed support == fit
+window").
+
 | helper | consumes | notes |
 |---|---|---|
 | eval_kernel(fit, rows, x_query) | smooth | rectangular, arbitrary points |

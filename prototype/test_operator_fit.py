@@ -179,6 +179,46 @@ def test_operator_helpers_entries_matvec_assemble_qc():
     assert np.all(np.isnan(sm[ungated]))
 
 
+def test_deployed_support_is_fit_window():
+    """The slice-38 invariant: deployed support == fit window. Windows
+    are stored (CSR-style, sorted, self-inclusive in the square
+    context) and every dof-context helper returns exactly zero outside
+    them -- the windowed CV score is honest for the deployed operator
+    by construction."""
+    prob, fit = _square_case()
+    K = prob["x"].shape[1]
+    assert fit.window_indptr is not None
+    for rho in FIT_ROWS:
+        win = fit.row_window(rho)
+        assert win.size > 0 and np.all(np.diff(win) > 0)
+        assert rho in win                      # own dof inside (spike)
+
+    # the default fixture's windows cover the whole domain; refit two
+    # rows with a TIGHT tau_window so a genuine exterior exists
+    rho = FIT_ROWS[0]
+    tight = fit_operator(prob["x"], prob["m1"], prob["m2"],
+                         prob["V"], prob["HV"],
+                         sigma=0.35 ** 2 * np.eye(2), modes=MODES,
+                         rows=[rho],
+                         config=OperatorFitConfig(tau_window=3.0))
+    win = tight.row_window(rho)
+    outside = np.setdiff1d(np.arange(K), win)
+    assert outside.size > 0, "tight window still covers the mesh"
+    j_out = int(outside[0])
+
+    # eval_entries: zero outside the window
+    vals = eval_entries(tight, np.full(outside.size, rho), outside)
+    assert np.all(vals == 0.0)
+    # assemble_sparse: no stored entries outside the window
+    A = assemble_sparse(tight, tau=6.0).tocsr()
+    assert np.all(np.isin(A[rho].indices, win))
+    # matvec: a vector supported outside the window (and zero at rho,
+    # so no spike term) produces exactly zero in that row
+    v = np.zeros(K)
+    v[j_out] = 1.0
+    assert matvec(tight, v)[rho] == 0.0
+
+
 def test_baseline_guard_ships_baseline():
     """With an ORACLE sigma prior and the LM search crippled
     (max_nfev=1: MINPACK returns theta_init unchanged), the searched
@@ -278,6 +318,7 @@ def test_windows_override_and_failed_status():
 if __name__ == "__main__":
     test_fit_operator_recovers_synthetic_square()
     test_operator_helpers_entries_matvec_assemble_qc()
+    test_deployed_support_is_fit_window()
     test_baseline_guard_ships_baseline()
     test_rectangular_smooth_only()
     test_windows_override_and_failed_status()

@@ -212,13 +212,20 @@ existing JVP/VJP composes with it for free -- no new derivative math.
     fallback_baseline | failed`. Output = padded flat arrays (theta
     ALWAYS stored free-mu-encoded, mu, L, c + `mode_set_id` decoder, s
     (additive convention), score, baseline_score, stop_reason,
-    released, status, failures). Component-typed helpers: `eval_kernel`
-    (smooth, arbitrary points), `eval_entries`/`matvec`/
-    `to_linear_operator`/`assemble_sparse(tau, symmetrize=)` (both;
-    symmetry is an assembly policy; the sparsity pattern for ALL rows
-    comes from one `collision_pairs` points-tree x ellipsoid-tree dual
-    descent), `ellipsoid_field` (the (mu, Sigma) stack
-    `EllipsoidTree` consumes directly), `qc_map`, `spike_measure`.
+    released, status, failures, and the per-row FIT WINDOWS as
+    CSR-style `window_indptr`/`window_indices`). DEPLOYED SUPPORT ==
+    FIT WINDOW: every dof-context helper restricts row rho to its
+    window (the slice-38 invariant -- windowed CV is blind to
+    out-of-window model energy and LG modes extrapolate violently, so
+    fitted object == deployed object by construction).
+    Component-typed helpers: `eval_kernel` (the RAW smooth component,
+    arbitrary points, unrestricted), `eval_entries`/`matvec`/
+    `to_linear_operator`/`assemble_sparse(tau, symmetrize=)` (the
+    deployed operator; symmetry is an assembly policy; tau-support
+    pattern for ALL rows from one `collision_pairs` points-tree x
+    ellipsoid-tree dual descent, intersected with the windows),
+    `ellipsoid_field` (the (mu, Sigma) stack `EllipsoidTree` consumes
+    directly), `qc_map`, `spike_measure`.
 
 Tests mirror this file-by-file (`test_lg_functions.py`,
 `test_ellipsoid_transform.py`, `test_lg_ellipsoid_feature.py`,

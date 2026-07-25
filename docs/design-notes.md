@@ -395,3 +395,26 @@ worth recording for the C++ port:
   ShellLadder/ExplicitLadder/FixedSet; equivalence is pinned by
   fingerprint tests, so the refactor is a provable no-op for existing
   callers.
+
+## Deployed support == fit window (the slice-38 invariant)
+
+**Decision (2026-07-25, Nick):** the operator layer's dof-context
+helpers (`eval_entries`, `matvec`, `assemble_sparse`, hence `qc_map`)
+restrict each row to its FIT WINDOW, stored on `OperatorFit` as flat
+CSR-style arrays (`window_indptr`/`window_indices` -- exact under
+user-overridden windows, C++/MPI-friendly). `eval_kernel` remains the
+raw parametric smooth component at arbitrary points.
+
+**Why:** the windowed CV score is blind to model energy outside the
+window, and the polynomial x Gaussian LG modes extrapolate violently
+beyond the data support -- at PIG field scale one rogue row (level-2
+coefficients cancelling in-window, 99% of predicted energy outside)
+carried 94% of the whole-operator test error, and released-mu noise
+chases were the same blindness. Restricting deployment to the window
+makes fitted object == deployed object -- psfladder's structural
+invariant -- so the per-row CV is honest for deployment by
+construction. Rejected alternative: an analytic energy-containment
+guard via |det L| sum c^2 (a continuum identity that fails exactly at
+the coarse-mesh/boundary rows in question). Also the fast path: matvec
+now costs O(sum window) instead of O(R K). assemble_sparse's tau
+truncation now only trims the Gaussian tail INSIDE the window.

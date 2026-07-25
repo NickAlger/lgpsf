@@ -61,6 +61,17 @@ port reference. Future field-level ideas (neighbor warm starts,
 smoothed-theta seeds) enter as candidate injection into the per-row
 stream -- a sweep-order policy, not an API change.
 
+THE DEPLOYED OPERATOR IS WINDOW-RESTRICTED (PIG slice-38 lesson:
+windowed CV is blind to out-of-window model energy, and polynomial x
+Gaussian modes extrapolate violently beyond the data -- one rogue row
+carried 94% of a whole-operator test error). Every dof-context helper
+(eval_entries, matvec, assemble_sparse, qc_map) restricts row rho to
+its FIT WINDOW, stored on OperatorFit as flat CSR-style index arrays:
+fitted object == deployed object, the invariant that makes the per-row
+CV scores honest for deployment. eval_kernel remains the raw
+parametric smooth component at arbitrary points (component access, not
+the deployed operator).
+
 GEOMETRY QUERIES go through ellipsoid_tree (`pip install
 ellipsoid-tree` -- the same library the C++ port links), confined to
 this layer the way scipy is: spatial indexing, never reference math.
@@ -170,6 +181,21 @@ class OperatorFit:
     """Provenance echo."""
     failures: Dict[int, str] = field(default_factory=dict)
     """Row index -> error message, for status "failed" rows."""
+    window_indptr: Optional[np.ndarray] = None
+    """(R_all + 1,) CSR-style offsets into window_indices: row rho's
+    fit window is window_indices[window_indptr[rho]:window_indptr[rho+1]]
+    (sorted). The deployed operator's row support. None only on
+    hand-constructed fits, in which case the dof-context helpers fall
+    back to UNRESTRICTED evaluation (the pre-slice-38 behavior; avoid)."""
+    window_indices: Optional[np.ndarray] = None
+
+    def row_window(self, rho):
+        """Row rho's fit-window column indices (sorted), or None when
+        no window information is stored."""
+        if self.window_indptr is None:
+            return None
+        lo, hi = self.window_indptr[rho], self.window_indptr[rho + 1]
+        return self.window_indices[lo:hi]
 
     def row_modes(self, rho):
         """The (p, ell, m) list row rho's c prefix corresponds to."""
@@ -323,6 +349,7 @@ def fit_operator(x_cols, m1_diag, m2_diag, V, HV, sigma, mu0=None,
     released_arr = np.zeros(R_all, dtype=bool)
     status_arr = np.array(["gated_out"] * R_all, dtype=object)
     c_by_row = [None] * R_all
+    win_by_row = [None] * R_all
     set_id_arr = np.full(R_all, -1, dtype=int)
     mode_sets: List[List[Tuple[int, int, int]]] = []
     set_ids: Dict[tuple, int] = {}
@@ -353,6 +380,7 @@ def fit_operator(x_cols, m1_diag, m2_diag, V, HV, sigma, mu0=None,
                 raise ValueError(f"window has {idx.size} points "
                                  f"(mu0={mu_rho}, sigma too small or "
                                  f"tau_window too tight?)")
+            win_by_row[rho] = idx
 
             spike_pos = None
             if cfg.spike:
@@ -451,6 +479,13 @@ def fit_operator(x_cols, m1_diag, m2_diag, V, HV, sigma, mu0=None,
     for rho, c in enumerate(c_by_row):
         if c is not None:
             c_arr[rho, :len(c)] = c
+    win_indptr = np.zeros(R_all + 1, dtype=np.int64)
+    for rho in range(R_all):
+        n_w = 0 if win_by_row[rho] is None else len(win_by_row[rho])
+        win_indptr[rho + 1] = win_indptr[rho] + n_w
+    win_indices = np.concatenate(
+        [w for w in win_by_row if w is not None] or
+        [np.empty(0, dtype=np.int64)]).astype(np.int64)
 
     return OperatorFit(N=N, x_cols=x_cols, x_rows=x_rows,
                        m1_diag=m1_diag, m2_diag=m2_diag, spike=cfg.spike,
@@ -458,7 +493,8 @@ def fit_operator(x_cols, m1_diag, m2_diag, V, HV, sigma, mu0=None,
                        mode_set_id=set_id_arr, mode_sets=mode_sets,
                        s=s_arr, score=score_arr, baseline_score=base_arr,
                        stop_reason=stop_arr, released=released_arr,
-                       status=status_arr, config=cfg, failures=failures)
+                       status=status_arr, config=cfg, failures=failures,
+                       window_indptr=win_indptr, window_indices=win_indices)
 
 
 # ---------------------------------------------------------------------------
@@ -486,10 +522,12 @@ def eval_kernel(fit, rows, x_query):
 
 
 def eval_entries(fit, rows, cols):
-    """[both components] Paired entries of H~ in the dof context:
-    H~[rho, j] = m1[rho] m2[j] Phi~(rho, x_cols[:, j]),
-    plus m1[rho] s[rho] iff j == rho (the spike dof; square context).
-    rows, cols: equal-length index arrays; returns their (n,) values."""
+    """[both components] Paired entries of the DEPLOYED H~ in the dof
+    context: H~[rho, j] = m1[rho] m2[j] Phi~(rho, x_cols[:, j]) for j
+    in row rho's fit window and 0 outside it (deployed support == fit
+    support), plus m1[rho] s[rho] iff j == rho (the spike dof; square
+    context). rows, cols: equal-length index arrays; returns their
+    (n,) values."""
     rows = np.asarray(rows, dtype=int)
     cols = np.asarray(cols, dtype=int)
     if rows.shape != cols.shape:
@@ -500,6 +538,9 @@ def eval_entries(fit, rows, cols):
         j = cols[mask]
         kern = eval_kernel(fit, [rho], fit.x_cols[:, j])[0]
         vals = fit.m1_diag[rho] * fit.m2_diag[j] * kern
+        win = fit.row_window(rho)
+        if win is not None:
+            vals[~np.isin(j, win)] = 0.0
         if fit.spike:
             vals[j == rho] += fit.m1_diag[rho] * fit.s[rho]
         out[mask] = vals
@@ -507,17 +548,20 @@ def eval_entries(fit, rows, cols):
 
 
 def matvec(fit, v):
-    """[both components] H~ @ v with zero assembly: exact application
-    of the parametric operator (dense per-row kernel evaluation; the
-    Gaussian tail supplies the decay -- assemble_sparse is the
-    truncated alternative). v: (K_all,) or (K_all, q); rows without a
-    model contribute zero rows. Returns (R_all,) or (R_all, q)."""
+    """[both components] The DEPLOYED H~ @ v with zero assembly: each
+    row's smooth kernel is evaluated on its FIT WINDOW only (deployed
+    support == fit support -- also the fast path: O(sum window) rather
+    than O(R K)). v: (K_all,) or (K_all, q); rows without a model
+    contribute zero rows. Returns (R_all,) or (R_all, q)."""
     v = np.asarray(v, dtype=float)
     R_all = fit.m1_diag.shape[0]
     out = np.zeros((R_all,) + v.shape[1:])
     for rho in _model_rows(fit):
-        kern = eval_kernel(fit, [rho], fit.x_cols)[0]
-        out[rho] = (fit.m1_diag[rho] * (fit.m2_diag * kern)) @ v
+        j = fit.row_window(rho)
+        if j is None:
+            j = np.arange(fit.m2_diag.shape[0])
+        kern = eval_kernel(fit, [rho], fit.x_cols[:, j])[0]
+        out[rho] = (fit.m1_diag[rho] * (fit.m2_diag[j] * kern)) @ v[j]
         if fit.spike:
             out[rho] += fit.m1_diag[rho] * fit.s[rho] * v[rho]
     return out
@@ -533,16 +577,16 @@ def to_linear_operator(fit):
 
 
 def assemble_sparse(fit, tau, symmetrize=None):
-    """[both components] Sparse matrix decompression: per modeled row,
-    smooth entries on the columns within Mahalanobis distance tau of
-    the fitted ellipsoid (||L^{-1}(x_j - mu)|| <= tau), plus the spike
-    on the diagonal. The whole sparsity pattern -- which columns fall
-    in which rows' tau-ellipsoids, all rows at once -- comes from ONE
-    ellipsoid_tree collision_pairs dual descent of the column-point
-    tree against the fitted-ellipsoid tree. symmetrize: None (rows
-    as-is) or "average" ((A + A^T)/2; square context only) -- an
-    assembly POLICY, chosen by the consumer, not a fit property.
-    Returns scipy CSR."""
+    """[both components] Sparse decompression of the DEPLOYED operator:
+    per modeled row, smooth entries on (tau-ellipsoid support of the
+    fitted kernel) INTERSECTED WITH the row's fit window -- deployed
+    support == fit support; the tau truncation only trims the Gaussian
+    tail inside it -- plus the spike on the diagonal. The tau-support
+    pattern for all rows comes from ONE ellipsoid_tree collision_pairs
+    dual descent of the column-point tree against the fitted-ellipsoid
+    tree. symmetrize: None (rows as-is) or "average" ((A + A^T)/2;
+    square context only) -- an assembly POLICY, chosen by the consumer,
+    not a fit property. Returns scipy CSR."""
     R_all = fit.m1_diag.shape[0]
     K_all = fit.m2_diag.shape[0]
     model = _model_rows(fit)
@@ -559,6 +603,9 @@ def assemble_sparse(fit, tau, symmetrize=None):
         ends = np.searchsorted(pells, np.arange(model.size) + 1)
         for e, rho in enumerate(model):
             j = np.sort(pcols[starts[e]:ends[e]])
+            win = fit.row_window(rho)
+            if win is not None:
+                j = np.intersect1d(j, win, assume_unique=True)
             if j.size:
                 kern = eval_kernel(fit, [rho], fit.x_cols[:, j])[0]
                 rows_i.append(np.full(j.size, rho))
