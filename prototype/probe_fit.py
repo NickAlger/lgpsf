@@ -163,8 +163,17 @@ class ProbeFitConfig:
     mode_levels: Optional[List[int]] = None
     """Nested mode ladder: fit complete shells up to each listed
     oscillator level, ascending, with counting-rule admissibility and
-    mode_patience stopping. None = use fit_from_probes' explicit
-    `modes` argument as the single mode set."""
+    mode_patience stopping. Exactly one of `mode_levels`, `mode_sets`,
+    or fit_from_probes' explicit `modes` argument must be given."""
+
+    mode_sets: Optional[List[List[tuple]]] = None
+    """Explicit nested mode-set ladder: a list of (p, ell, m) lists,
+    ascending in size, each a superset of the previous (the nesting is
+    the caller's contract -- patience/warm-start semantics assume it).
+    This is the general ladder-policy hook: e.g. a radial-first wedge
+    (grow radial order p before angular order ell -- PIG slice-38
+    evidence: PSFs want radial depth, full shells waste budget on
+    high-ell modes) instead of the complete-shell ladder."""
 
     n_rungs: int = 6
     """Log-spaced circle scales from the local mesh spacing at mu0 to a
@@ -307,9 +316,12 @@ def fit_from_probes(x, m2_diag, z, y, mu0, modes=None,
                          f"{m2_diag.shape}, z {z.shape}, y {y.shape}")
     if cfg.mu not in ("fixed", "free", "fixed_then_release"):
         raise ValueError(f"unknown mu mode: {cfg.mu!r}")
-    if (cfg.mode_levels is None) == (modes is None):
-        raise ValueError("provide exactly one of `modes` (explicit list) "
-                         "or config.mode_levels (nested ladder)")
+    n_sources = sum(x is not None
+                    for x in (modes, cfg.mode_levels, cfg.mode_sets))
+    if n_sources != 1:
+        raise ValueError("provide exactly one of `modes` (explicit list), "
+                         "config.mode_levels (shell ladder), or "
+                         "config.mode_sets (explicit nested ladder)")
 
     if target_mass is None:
         target_mass = (float(m2_diag[spike_index])
@@ -345,6 +357,9 @@ def fit_from_probes(x, m2_diag, z, y, mu0, modes=None,
         levels = sorted(cfg.mode_levels)
         mode_sets = [(f"level<={L}", modes_up_to_level(N, L))
                      for L in levels]
+    elif cfg.mode_sets is not None:
+        mode_sets = [(f"set{i}(m={len(ms)})", [tuple(m) for m in ms])
+                     for i, ms in enumerate(cfg.mode_sets)]
     else:
         mode_sets = [("explicit", list(modes))]
     modes_of = dict(mode_sets)

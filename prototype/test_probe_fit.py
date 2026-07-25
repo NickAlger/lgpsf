@@ -327,6 +327,41 @@ def test_backprojection_end_to_end():
     assert np.linalg.norm(S_hat - S_ref) < 0.5 * np.linalg.norm(S_ref)
 
 
+def test_fit_from_probes_explicit_mode_sets_ladder():
+    """config.mode_sets (explicit nested ladder, e.g. radial-first) is
+    adjudicated like the shell ladder: a level<=1 truth fit with the
+    nested sets [G] < MODES < MODES+quads must pick MODES under the
+    simplicity tie-break, and the counting rule must skip oversized
+    sets."""
+    rng = np.random.default_rng(9)
+    prob = _make_row(rng)
+    big = MODES + [(1, 0, 0), (0, 2, 0), (0, 2, 1)]
+    res = fit_from_probes(prob["x"], prob["m2"], prob["z"], prob["y"],
+                  prob["mu_true"], modes=None,
+                  spike_index=prob["spike_index"],
+                  config=ProbeFitConfig(mu="fixed", target_score=None,
+                                      mode_sets=[[(0, 0, 0)], MODES, big],
+                                      tie_delta=1e-3))
+    assert res.modes == MODES
+    assert res.score < 1e-3
+    # counting rule on explicit sets: k=14 admits m<=3 only
+    prob2 = _make_row(rng, k=14)
+    res2 = fit_from_probes(prob2["x"], prob2["m2"], prob2["z"], prob2["y"],
+                   prob2["mu_true"], modes=None,
+                   spike_index=prob2["spike_index"],
+                   config=ProbeFitConfig(mu="fixed", target_score=None,
+                                       mode_sets=[MODES, big]))
+    assert res2.skipped == [f"set1(m={len(big)})"]
+
+    try:
+        fit_from_probes(prob["x"], prob["m2"], prob["z"], prob["y"],
+                        prob["mu_true"], modes=MODES,
+                        config=ProbeFitConfig(mode_sets=[MODES]))
+        assert False, "modes and mode_sets together must be rejected"
+    except ValueError:
+        pass
+
+
 def test_fit_from_probes_target_mass_scales_coefficients():
     """target_mass routing: with M1 != M2 (row mass differing from the
     spike dof's column mass), passing the true row mass recovers the
@@ -365,6 +400,7 @@ if __name__ == "__main__":
     test_fit_from_probes_mixed_ladder_enumeration()
     test_fit_from_probes_mode_ladder_selects_simplest()
     test_fit_from_probes_counting_rule_skips_levels()
+    test_fit_from_probes_explicit_mode_sets_ladder()
     test_fit_from_probes_target_mass_scales_coefficients()
     testwindow_shape_mass_weighted_geometry()
     test_raw_moments_mass_quadrature()

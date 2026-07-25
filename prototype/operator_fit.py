@@ -265,9 +265,12 @@ def fit_operator(x_cols, m1_diag, m2_diag, V, HV, sigma, mu0=None,
         sigma = np.broadcast_to(sigma, (R_all, N, N))
     if sigma.shape != (R_all, N, N):
         raise ValueError(f"sigma {sigma.shape} != (R={R_all}, N={N}, N={N})")
-    if (cfg.row.mode_levels is None) == (modes is None):
-        raise ValueError("provide exactly one of `modes` (explicit list) "
-                         "or config.row.mode_levels (nested ladder)")
+    n_mode_sources = sum(x is not None for x in
+                         (modes, cfg.row.mode_levels, cfg.row.mode_sets))
+    if n_mode_sources != 1:
+        raise ValueError("provide exactly one of `modes` (explicit list), "
+                         "config.row.mode_levels (shell ladder), or "
+                         "config.row.mode_sets (explicit nested ladder)")
     if windows is not None and len(windows) != R_all:
         raise ValueError(f"windows must have one entry per row "
                          f"({R_all}), got {len(windows)}")
@@ -291,6 +294,8 @@ def fit_operator(x_cols, m1_diag, m2_diag, V, HV, sigma, mu0=None,
     if cfg.row.mode_levels is not None:
         base_sets = [modes_up_to_level(N, lev)
                      for lev in sorted(cfg.row.mode_levels)]
+    elif cfg.row.mode_sets is not None:
+        base_sets = [[tuple(m) for m in ms] for ms in cfg.row.mode_sets]
     else:
         base_sets = [list(modes)]
     n_extra_cfg = 1 if cfg.spike else 0

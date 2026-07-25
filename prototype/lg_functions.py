@@ -193,14 +193,18 @@ def grad_eval_lg_nd(p, ell, m, u):
     return np.stack(du, axis=0)
 
 
-def modes_up_to_level(N, max_level):
+def modes_up_to_level(N, max_level, ell_max=None):
     """All (p, ell, m) with oscillator level 2p + ell <= max_level --
     complete shells in energy order, the single-knob mode family used
-    throughout for nested mode ladders. Requires the harmonic table to
-    cover (N, ell) for every ell <= max_level (generated for N <= 4,
-    level <= 10)."""
+    throughout for nested mode ladders. ell_max caps the angular order
+    (an ell-capped WEDGE: deep radial, shallow angular -- the PIG
+    slice-38 finding is that PSF-like kernels want radial depth, and
+    full shells waste budget on high-ell modes). None = no cap
+    (complete shells). Requires the harmonic table to cover (N, ell)
+    for every ell used (generated for N <= 4, level <= 10)."""
+    top = max_level if ell_max is None else min(max_level, ell_max)
     modes = []
-    for ell in range(max_level + 1):
+    for ell in range(top + 1):
         if (N, ell) not in TABLE:
             break
         _, rows = TABLE[(N, ell)]
