@@ -167,15 +167,48 @@ existing JVP/VJP composes with it for free -- no new derivative math.
    certifiably good, `mode_patience` stops the mode ladder; hard
    targets fail the certificates and buy the full grid. Structural
    facts (window, probes, masses, `spike_index`) are caller-declared,
-   never adjudicated; numerics stay in `VarProOptions`.
+   never adjudicated; numerics stay in `VarProOptions`. `target_mass=`
+   overrides the default target-mass inference (`m2_diag[spike_index]`,
+   exact only square-equal-mass) -- rescales only the returned `(c, s)`;
+   theta/scores/selection are invariant.
+10. **`operator_fit.py`** -- the whole-operator layer over (9), per
+    `docs/operator-api-plan.md`: `fit_operator(x_cols, m1_diag,
+    m2_diag, V, HV, sigma, mu0=, modes=, x_rows=, rows=, windows=,
+    config=OperatorFitConfig(tau_window=10, spike=True,
+    row=ProbeFitConfig(...)))` -> `OperatorFit`. The fitted object is
+    the parametric two-component sum `H~ = M1 Phi~ M2 + M1 S` (smooth
+    semi-discrete continuum kernel, rectangular by nature + sparse
+    dof-tied spike, square by nature), NEVER a matrix. Geometry queries
+    go through the `ellipsoid_tree` library (pip: `ellipsoid-tree`;
+    the C++ port links it anyway), confined to this layer like scipy --
+    indexing, never reference math. Per row: gate -> window (BallTree
+    ball query; radius `tau_window * `largest 1-sigma axis of the
+    user's best-guess `sigma[rho]`) ->
+    `fit_from_probes(sigma0=sigma[rho], target_mass=m1[rho])` ->
+    always-on BASELINE GUARD (linear LG fit at `sigma[rho]` pinned at
+    `mu0[rho]`, CV-scored on the same folds; the searched fit ships
+    only if strictly better -- never worse than the a-priori status
+    quo, by construction) -> status `fit | gated_out |
+    fallback_baseline | failed`. Output = padded flat arrays (theta
+    ALWAYS stored free-mu-encoded, mu, L, c + `mode_set_id` decoder, s
+    (additive convention), score, baseline_score, stop_reason,
+    released, status, failures). Component-typed helpers: `eval_kernel`
+    (smooth, arbitrary points), `eval_entries`/`matvec`/
+    `to_linear_operator`/`assemble_sparse(tau, symmetrize=)` (both;
+    symmetry is an assembly policy; the sparsity pattern for ALL rows
+    comes from one `collision_pairs` points-tree x ellipsoid-tree dual
+    descent), `ellipsoid_field` (the (mu, Sigma) stack
+    `EllipsoidTree` consumes directly), `qc_map`, `spike_measure`.
 
 Tests mirror this file-by-file (`test_lg_functions.py`,
 `test_ellipsoid_transform.py`, `test_lg_ellipsoid_feature.py`,
 `test_whitening.py`, `test_varpro.py` -- the latter's end-to-end check
 recovers a known $(\theta^*, c^*, s^*)$ from perturbed initialization --
-and `test_probe_fit.py`, whose synthetic targets exercise the raw-data
+`test_probe_fit.py`, whose synthetic targets exercise the raw-data
 contract end to end, including nonuniform masses and the
-backprojection-rescues-bad-center workflow).
+backprojection-rescues-bad-center workflow, and `test_operator_fit.py`,
+whose synthetic operator has $M_1 \ne M_2$ throughout so exact
+coefficient recovery also pins the target-mass routing).
 Examples: `examples/plot_lg_modes.py` (2D mode grid),
 `examples/lg_expansion_convergence.py` ($N=1,2,3$ convergence study).
 
@@ -213,10 +246,16 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
 - Wedge/mode-selection (growing the LG basis by oscillator level,
   cross-validated, per the research plan) -- not reimplemented here;
   `fit_from_probes` takes an explicit mode list or a `mode_levels` ladder.
-- `ellipsoid_tree` integration. (The library HAS been validated against
-  real PDE-Hessian probe data -- the glaciology rows, in the separate
-  maintainer-local research repo -- reproducing and beating the research
-  prototype's numbers; the in-repo tests remain synthetic by design.)
+- `ellipsoid_tree` integration (`operator_fit.ellipsoid_field` produces
+  the (mu, Sigma) arrays it would consume). (The library HAS been
+  validated against real PDE-Hessian probe data -- the glaciology rows,
+  in the separate maintainer-local research repo -- reproducing and
+  beating the research prototype's numbers; the in-repo tests remain
+  synthetic by design.)
+- Level-2 cross-row amortization (neighbor warm starts / smoothed-theta
+  seeds as candidate injection) and field-level QC studies over
+  status/stop_reason/spike-measure maps -- `fit_operator` exists now,
+  these build on it.
 - Any C++ code beyond the empty scaffold.
 - Python bindings (`bindings/` doesn't exist yet; see the commented-out
   note in `CMakeLists.txt`).

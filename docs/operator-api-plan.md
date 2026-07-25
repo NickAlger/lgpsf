@@ -1,9 +1,12 @@
 # Operator-level fitting API -- agreed design (2026-07-24)
 
-**Status: DESIGN AGREED (Nick + session 2026-07-24), not yet
-implemented.** Next step: implement `prototype/operator_fit.py` and
-helpers against this plan, tests mirroring per convention. The row-level
-machinery it builds on (`probe_fit.fit_from_probes`) is complete.
+**Status: IMPLEMENTED (session 2026-07-24) as
+`prototype/operator_fit.py`** (`fit_operator` -> `OperatorFit` + the
+helper table below), tests in `prototype/test_operator_fit.py`. This
+doc remains the design record; implementation-level decisions made
+during the port (free-mu theta storage, the `target_mass` kwarg on
+`fit_from_probes`, baseline-guard fold sharing) are logged in
+`docs/design-notes.md`.
 
 ## The fitted object (the central decision)
 

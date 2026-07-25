@@ -301,3 +301,64 @@ existing JVP/VJP chain the same way Stage 1/Stage 2 composition already
 does -- apply it to the raw JVP output; apply it to the incoming cotangent
 before feeding the existing VJP chain. No new derivative formulas needed
 anywhere for whitening itself.
+
+## The operator layer: parametric output, free-mu storage, target-mass routing
+
+**Decision (2026-07-24):** `prototype/operator_fit.py` implements the
+agreed whole-operator design (`docs/operator-api-plan.md`): the output
+is the parametric two-component object `H~ = M1 Phi~ M2 + M1 S` as
+padded flat arrays, never a matrix; every matrix format is a
+decompression helper (`eval_kernel`, `eval_entries`, `matvec` /
+`to_linear_operator`, `assemble_sparse`, `ellipsoid_field`, `qc_map`,
+`spike_measure`), each typed to the component(s) it touches. Three
+implementation choices worth recording for the C++ port:
+
+- **theta is stored in the free-mu encoding for every row**, pinned-mu
+  winners included (via `release_mu`, which is exact by construction of
+  the encoding). One uniform decode path (`mu0=None`) for all
+  downstream consumers, at zero cost; whether mu was actually optimized
+  lives in the separate `released` flag.
+- **`target_mass` kwarg on `fit_from_probes`:** the row layer used to
+  infer the target's mass as `m2_diag[spike_index]` -- exact only for
+  the square equal-mass case. The whitened design matrix is column-
+  equilibrated inside the inner solve, so the target mass rescales ONLY
+  the returned `(c, s)`; theta, CV scores, and selection are invariant.
+  The operator layer passes `m1_diag[rho]`, making `M1 != M2` operators
+  exact with no post-correction (pinned by
+  `test_fit_from_probes_target_mass_scales_coefficients` and by the
+  operator recovery test, which uses `M1 != M2` throughout).
+- **Baseline guard comparability:** the baseline (linear LG fit at
+  `sigma[rho]`, pinned mu0, one lstsq per counting-rule-admissible mode
+  set) is scored with `linear_cv_score` on the SAME folds
+  (`cfg.row.cv_folds`/`seed`) and the same whitened data as the
+  search's own scores, so "searched ships only if strictly better" is
+  an apples-to-apples comparison; ties (e.g. a crippled search stuck at
+  the baseline's own theta) ship the simpler baseline.
+
+## ellipsoid_tree for the operator layer's geometry queries
+
+**Decision (2026-07-24, Nick):** `operator_fit.py` uses the
+`ellipsoid_tree` library (pip: `ellipsoid-tree`; the same library the
+C++ port links) for its spatial queries, confined to that layer the
+way scipy is -- indexing/infrastructure, never reference math; the
+rest of the prototype stays pure numpy(+scipy).
+
+- **Window derivation** is a ball query on a zero-radius `BallTree`
+  over the columns (a point cloud, in ellipsoid_tree's vocabulary).
+- **`assemble_sparse`** gets its whole sparsity pattern from ONE
+  `collision_pairs(points_tree, ellipsoid_tree)` dual tree descent:
+  every (column point, fitted tau-ellipsoid) incidence, for all rows
+  at once, exactly (the library's tree pruning is conservative, the
+  member tests exact -- verified index-for-index against the
+  ball-prefilter + Mahalanobis reference it replaced, which
+  over-fetched by ~the aspect ratio before its exact test). The
+  `EllipsoidTree(mus, Sigmas, tau)` array overload consumes exactly
+  what `ellipsoid_field` emits -- the integration seam the plan doc
+  promised is now exercised in-repo.
+- **Boundary layout:** ellipsoid_tree takes points as rows, `(K, N)`
+  -- the transpose of this repo's `(N, K)` batch convention, and the
+  same flip already prescribed for the Eigen side; the `.T` happens at
+  the call boundary only.
+- `init_dictionary.local_spacing` still uses scipy's cKDTree for its
+  k-NN query (ellipsoid_tree's KDTree could take it; not worth churn
+  now).
