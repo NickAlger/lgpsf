@@ -1,11 +1,13 @@
-"""Tests for row_fit.py: the assembled single-row fitting layer and the
-backprojection initial-guess estimator.
+"""Tests for row_fit.py: the candidate-stream single-row fitting layer
+and the backprojection initial-guess estimator.
 
 The synthetic rows are built from the exact row model (raw values
 H[rho,j] = m_rho m_j sum c phi + m_rho s delta) on scattered points with
 NONUNIFORM masses, probed with iid standard-normal fields -- i.e. the
 raw-data contract fit_row and backproject_row/row_moments document,
-exercised end to end including the whitening routing.
+exercised end to end including the whitening routing, the candidate
+grid (init x mode-level x encoding), the linear-stage CV score, the
+admissibility and counting-rule guards, and the early-stop certificates.
 
 Run directly (`python test_row_fit.py`) or via pytest.
 """
@@ -19,6 +21,7 @@ import numpy as np
 from ellipsoid_transform import release_mu, unpack_theta
 from lg_ellipsoid_feature import eval_feature
 from row_fit import (
+    RowFitConfig,
     RowFitResult,
     _window_shape,
     backproject_row,
@@ -52,38 +55,42 @@ def _make_row(rng, K=90, k=60, mu_true=None, s_true=0.7):
 
 def _kernel_err(result, prob):
     pred = result.c @ eval_feature(
-        result.theta, 2, prob["x"], MODES,
+        result.theta, 2, prob["x"], result.modes,
         mu0=prob["mu_true"] if result.mu_fixed else None)
     return np.linalg.norm(pred - prob["phi"]) / np.linalg.norm(prob["phi"])
 
 
 def test_fit_row_recovers_synthetic_fixed_mu():
-    """mu0 = the true center, mu='fixed': the ladder + holdout selection
-    must recover the exactly-representable row to high accuracy, and the
-    spike coefficient with it."""
+    """mu0 = the true center, mu='fixed': the stream must recover the
+    exactly-representable row, fire the target certificate early, and
+    return coherent audit fields."""
     rng = np.random.default_rng(0)
     prob = _make_row(rng)
     result = fit_row(prob["x"], prob["m2"], prob["z"], prob["y"],
                      prob["mu_true"], MODES,
-                     diag_index=prob["diag_index"], mu="fixed")
+                     diag_index=prob["diag_index"],
+                     config=RowFitConfig(mu="fixed"))
     assert isinstance(result, RowFitResult)
-    assert result.used_holdout
+    assert result.score_kind == "cv"
     assert result.mu_fixed and not result.released
     assert result.score < 1e-6
+    assert result.stop_reason == "target"
+    assert len(result.candidates) <= 3   # the certificate fired early
     assert _kernel_err(result, prob) < 1e-5
     assert abs(result.s[0] - prob["s_true"]) < 1e-5
     assert np.allclose(result.mu, prob["mu_true"])
-    # rung table is populated and the winner index is coherent
-    assert len(result.rungs) >= 2
-    assert result.rungs[result.winner].score == result.score
+    assert result.modes == MODES
+    assert result.candidates[result.winner].score == result.score
 
 
 def test_fit_row_release_recovers_offset_center():
     """The row's true center is off the given mu0 by ~0.1 (within the
     free-mu basin -- empirically ~half the smaller kernel sigma; larger
     offsets land in a genuine local minimum and are the backprojection
-    workflow's job, tested below). The default fixed_then_release must
-    accept the release (guard passes) and recover center and kernel."""
+    workflow's job, tested below). fixed_then_release must accept the
+    release and recover center and kernel. target_score is disabled so
+    the dipole modes' first-order absorption of the center offset cannot
+    end the search before the release stage runs."""
     rng = np.random.default_rng(1)
     mu_true = np.array([0.35, -0.2])
     prob = _make_row(rng, mu_true=mu_true)
@@ -91,59 +98,119 @@ def test_fit_row_release_recovers_offset_center():
 
     res_rel = fit_row(prob["x"], prob["m2"], prob["z"], prob["y"], mu0,
                       MODES, diag_index=prob["diag_index"],
-                      mu="fixed_then_release")
+                      config=RowFitConfig(mu="fixed_then_release",
+                                          target_score=None))
     assert res_rel.released and not res_rel.mu_fixed
     assert np.linalg.norm(res_rel.mu - mu_true) < 1e-3
     assert _kernel_err(res_rel, prob) < 1e-4
 
     res_fix = fit_row(prob["x"], prob["m2"], prob["z"], prob["y"], mu0,
-                      MODES, diag_index=prob["diag_index"], mu="fixed")
+                      MODES, diag_index=prob["diag_index"],
+                      config=RowFitConfig(mu="fixed", target_score=None))
     assert res_rel.score < res_fix.score   # releasing genuinely helped
 
 
 def test_fit_row_backprojection_workflow_rescues_bad_center():
     """mu0 badly wrong (~0.3, outside the release basin): the plain fit
-    lands in a local minimum with a visibly imperfect score. The intended
-    remedy -- caller backprojects the row, estimates (mu, Sigma), and
-    passes them as mu0/sigma0 -- recovers the row exactly (the sigma0
-    rung's release carries the fit into the true basin even though the
-    backprojected center estimate is itself rough at this probe count)."""
+    cannot reach an exact fit. The intended remedy -- caller backprojects
+    the row, estimates (mu, Sigma), and passes them as mu0/sigma0 --
+    recovers the row exactly (the sigma0 rung's release carries the fit
+    into the true basin even though the backprojected center estimate is
+    itself rough at this probe count)."""
     rng = np.random.default_rng(1)
     mu_true = np.array([0.35, -0.2])
     prob = _make_row(rng, mu_true=mu_true)
     mu0_bad = mu_true + np.array([0.25, -0.2])
 
     res_bad = fit_row(prob["x"], prob["m2"], prob["z"], prob["y"], mu0_bad,
-                      MODES, diag_index=prob["diag_index"],
-                      mu="fixed_then_release")
-    assert res_bad.score > 1e-3   # stuck: local minimum, not exact
+                      MODES, diag_index=prob["diag_index"])
+    assert res_bad.score > 1e-3   # stuck short of exact
 
     r_hat = backproject_row(prob["z"], prob["y"])
     mu_bp, sigma_bp = row_moments(prob["x"], r_hat,
                                   diag_index=prob["diag_index"],
                                   rel_threshold=0.05, noise_mad=3.0)
     res_wf = fit_row(prob["x"], prob["m2"], prob["z"], prob["y"], mu_bp,
-                     MODES, diag_index=prob["diag_index"],
-                     mu="fixed_then_release", sigma0=sigma_bp)
+                     MODES, diag_index=prob["diag_index"], sigma0=sigma_bp)
     assert res_wf.released
     assert res_wf.score < 1e-6
     assert np.linalg.norm(res_wf.mu - mu_true) < 1e-3
     assert _kernel_err(res_wf, prob) < 1e-4
 
 
-def test_fit_row_sigma0_rung():
-    """A caller-supplied sigma0 joins the ladder as its own rung, and a
-    correct sigma0 cannot make the fit worse."""
+def test_fit_row_sigma0_tried_first():
+    """A caller-supplied sigma0 heads the candidate order; a correct one
+    fires the target certificate immediately."""
     rng = np.random.default_rng(2)
     prob = _make_row(rng)
     _, L_true = unpack_theta(prob["theta_true"], 2)
     result = fit_row(prob["x"], prob["m2"], prob["z"], prob["y"],
                      prob["mu_true"], MODES,
-                     diag_index=prob["diag_index"], mu="fixed",
-                     sigma0=L_true @ L_true.T)
-    labels = [r.label for r in result.rungs]
-    assert "sigma0" in labels
+                     diag_index=prob["diag_index"],
+                     sigma0=L_true @ L_true.T,
+                     config=RowFitConfig(mu="fixed"))
+    assert result.candidates[0].label == "sigma0"
+    assert result.stop_reason == "target"
+    assert len(result.candidates) == 1
     assert result.score < 1e-6
+
+
+def test_fit_row_mixed_ladder_enumeration():
+    """With the target certificate disabled, the full mixed ladder runs:
+    one window rung per circle rung; window_shape_rungs=False removes
+    them."""
+    rng = np.random.default_rng(7)
+    prob = _make_row(rng)
+    res = fit_row(prob["x"], prob["m2"], prob["z"], prob["y"],
+                  prob["mu_true"], MODES, diag_index=prob["diag_index"],
+                  config=RowFitConfig(mu="fixed", target_score=None))
+    labels = [c.label for c in res.candidates]
+    n_circle = sum(l.startswith("circle") for l in labels)
+    n_window = sum(l.startswith("window") for l in labels)
+    assert n_circle == n_window > 0
+    assert res.score < 1e-6
+
+    res2 = fit_row(prob["x"], prob["m2"], prob["z"], prob["y"],
+                   prob["mu_true"], MODES, diag_index=prob["diag_index"],
+                   config=RowFitConfig(mu="fixed", target_score=None,
+                                       window_shape_rungs=False))
+    assert not any(c.label.startswith("window") for c in res2.candidates)
+
+
+def test_fit_row_mode_ladder_selects_simplest():
+    """A row built from level<=1 modes, fit with mode_levels=[0, 1, 2]:
+    level 0 cannot represent it, levels 1 and 2 both can (nested), and
+    the simplicity tie-break must pick level 1. The warm-start candidate
+    appears at the later levels."""
+    rng = np.random.default_rng(3)
+    prob = _make_row(rng)
+    res = fit_row(prob["x"], prob["m2"], prob["z"], prob["y"],
+                  prob["mu_true"], modes=None,
+                  diag_index=prob["diag_index"],
+                  config=RowFitConfig(mu="fixed", target_score=None,
+                                      mode_levels=[0, 1, 2],
+                                      tie_delta=1e-3))
+    assert res.modes == MODES                     # level<=1, same order
+    assert res.candidates[res.winner].modes_label == "level<=1"
+    assert res.skipped == []
+    assert any(c.label.startswith("warm") for c in res.candidates)
+    # level<=2 candidates fit at least as well in-sample, but simplicity
+    # wins the tie
+    assert res.score < 1e-3
+
+
+def test_fit_row_counting_rule_skips_levels():
+    """A mode level the probe budget cannot support (k < 2*(m + extra +
+    P)) is skipped, not fit."""
+    rng = np.random.default_rng(4)
+    prob = _make_row(rng, k=14)   # level<=1 needs 2*(3+1+3)=14 <= 14; ok
+    res = fit_row(prob["x"], prob["m2"], prob["z"], prob["y"],
+                  prob["mu_true"], modes=None,
+                  diag_index=prob["diag_index"],
+                  config=RowFitConfig(mu="fixed", target_score=None,
+                                      mode_levels=[1, 3]))
+    assert res.skipped == ["level<=3"]
+    assert all(c.modes_label == "level<=1" for c in res.candidates)
 
 
 def test_window_shape_mass_weighted_geometry():
@@ -180,26 +247,6 @@ def test_window_shape_mass_weighted_geometry():
     S_unw = np.cov(x2)
     w_unw = np.linalg.eigvalsh(S_unw)
     assert abs(np.sqrt(w_unw[-1] / w_unw[0]) - a / b) > 0.4
-
-
-def test_fit_row_mixed_ladder_rungs():
-    """window_shape_rungs=True (default) adds one window rung per circle
-    rung; False removes them."""
-    rng = np.random.default_rng(7)
-    prob = _make_row(rng)
-    res = fit_row(prob["x"], prob["m2"], prob["z"], prob["y"],
-                  prob["mu_true"], MODES, diag_index=prob["diag_index"],
-                  mu="fixed")
-    labels = [r.label for r in res.rungs]
-    n_circle = sum(l.startswith("circle") for l in labels)
-    n_window = sum(l.startswith("window") for l in labels)
-    assert n_circle == n_window > 0
-    assert res.score < 1e-6
-
-    res2 = fit_row(prob["x"], prob["m2"], prob["z"], prob["y"],
-                   prob["mu_true"], MODES, diag_index=prob["diag_index"],
-                   mu="fixed", window_shape_rungs=False)
-    assert not any(r.label.startswith("window") for r in res2.rungs)
 
 
 def test_row_moments_mass_quadrature():
@@ -289,9 +336,11 @@ if __name__ == "__main__":
     test_fit_row_recovers_synthetic_fixed_mu()
     test_fit_row_release_recovers_offset_center()
     test_fit_row_backprojection_workflow_rescues_bad_center()
-    test_fit_row_sigma0_rung()
+    test_fit_row_sigma0_tried_first()
+    test_fit_row_mixed_ladder_enumeration()
+    test_fit_row_mode_ladder_selects_simplest()
+    test_fit_row_counting_rule_skips_levels()
     test_window_shape_mass_weighted_geometry()
-    test_fit_row_mixed_ladder_rungs()
     test_row_moments_mass_quadrature()
     test_row_moments_diag_exclusion()
     test_backprojection_end_to_end()

@@ -185,11 +185,34 @@ slice-37 refits in the research repo):**
   internally. Masses are *routed* through this layer but all mass math
   stays in `whitening.py` -- the confinement convention gains a second
   boundary, not a second implementation.
-- **Selection by held-out probe equations, never by in-sample cost**:
-  a degenerate theta can lower the in-sample cost while ruining the
-  fit (observed live on the PIG release runaway: mu 3000 km off-domain
-  with LOWER probe cost). Internal random split; falls back to
-  in-sample cost, flagged, when probes are too few.
+- **One candidate grid, one selection rule (2026-07-24 refactor)**: all
+  data-adjudicated choices -- init shape x scale, mode-set size, fixed
+  vs released mu -- are entries of a single ordered candidate stream
+  under one rule: admissibility, then score, then simplicity tie-break
+  (within tie_delta of the best, prefer fewer modes, then pinned mu --
+  the one-standard-error shape; subsumes the release accept-guard).
+  Structural facts (window, probes, masses, diag_index) are never
+  adjudicated; numerical hygiene stays in VarProOptions.
+- **Score = linear-stage K-fold CV, never in-sample cost**: a
+  degenerate theta can lower the in-sample cost while ruining the fit
+  (observed live on the PIG release runaway: mu 3000 km off-domain with
+  LOWER probe cost). theta is fit once per candidate on all equations;
+  the linear coefficients are refit leave-fold-out at that theta, so
+  every equation is scored out-of-sample for the linear stage at the
+  price of ONE nonlinear fit per candidate (the theta stage is mildly
+  optimistic -- P <= 5 on k equations, bounded by the counting rule,
+  which also guarantees the folds are well-posed).
+- **Early stopping = adaptive effort allocation, one-sided by design**:
+  certificates fire only when the data shows the row is easy, so hard
+  rows automatically buy the full grid. target_score exits everything
+  once an admissible candidate is good enough (nothing else can beat a
+  tie); mode_patience (>= 2: single-step worsening is noise) stops the
+  nested mode ladder; candidate ORDER (sigma0 first, then window and
+  circle rungs middle-out) makes the target fire fast. NO patience or
+  consensus stopping on the init axis: score-vs-scale is non-unimodal
+  and two inits can agree on the wrong minimum (both observed at 8:1).
+  Each new mode level seeds a JITTERED warm start from the previous
+  level's best (exact warm starts sit on the enrichment saddle).
 - **Initial-Sigma ladder**: log-spaced circles from the local mesh
   spacing at `mu0` to a whole-batch circle, plus an optional caller
   `sigma0` rung. Too-small and too-large both fail in different ways;

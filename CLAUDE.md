@@ -136,20 +136,27 @@ existing JVP/VJP composes with it for free -- no new derivative math.
 
 7. **`row_fit.py`** -- the assembled general-purpose single-row fitting
    layer, raw-data interface: `fit_row(x, m2_diag, z, y, mu0, modes,
-   diag_index, mu, sigma0, ...)` -> `RowFitResult`. Whitens internally
-   (masses *routed* here, mass math stays in `whitening.py`);
-   multi-starts over a log-spaced circle ladder (local mesh spacing at
-   mu0 -> whole-batch radius) plus an optional caller `sigma0` rung;
-   selects on internally held-out probe equations (NOT in-sample cost --
-   a degenerate theta can lower cost while ruining the fit); default
-   `mu="fixed_then_release"` runs the ladder pinned, then releases mu
-   once per rung under an accept-only-if-better holdout guard; the
-   diagonal spike enters as `diag_index`. Companion caller-invoked
-   utilities `backproject_row` + `row_moments` estimate (mu, Sigma)
-   inits from the probes at zero matvecs -- raw row values already carry
-   the lumped-mass quadrature weight, so the moment estimator needs no
-   mass vector, only the diagonal excluded and noise thresholds
-   (`rel_threshold`, `noise_mad`).
+   diag_index=, sigma0=, config=RowFitConfig(...))` -> `RowFitResult`.
+   Whitens internally (masses *routed* here, mass math stays in
+   `whitening.py`). Architecture: one ORDERED CANDIDATE STREAM over the
+   data-adjudicated axes -- init family x scale (log-spaced circles +
+   scaled window-shape rungs + optional `sigma0`, tried likely-winners
+   first), nested mode-set ladder (`config.mode_levels`, counting-rule
+   `k >= 2(m+extra+P)` admissibility, jittered warm starts across
+   levels), fixed vs released mu -- under ONE selection rule:
+   window-containment admissibility, then linear-stage K-fold CV score
+   (never in-sample cost), then a simplicity tie-break (fewer modes,
+   then pinned mu, within `tie_delta`). Early stopping is one-sided
+   adaptive effort: `target_score` exits when a candidate is
+   certifiably good, `mode_patience` stops the mode ladder; hard rows
+   fail the certificates and buy the full grid. Structural facts
+   (window, probes, masses, `diag_index`) are caller-declared, never
+   adjudicated; numerics stay in `VarProOptions`. Companion
+   caller-invoked utilities `backproject_row` + `row_moments` estimate
+   (mu, Sigma) inits from the probes at zero matvecs -- raw row values
+   already carry the lumped-mass quadrature weight, so the moment
+   estimator needs no mass vector, only the diagonal excluded and noise
+   thresholds (`rel_threshold`, `noise_mad`).
 
 Tests mirror this file-by-file (`test_lg_functions.py`,
 `test_ellipsoid_transform.py`, `test_lg_ellipsoid_feature.py`,
