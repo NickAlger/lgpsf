@@ -327,6 +327,36 @@ def test_backprojection_end_to_end():
     assert np.linalg.norm(S_hat - S_ref) < 0.5 * np.linalg.norm(S_ref)
 
 
+def test_fit_from_probes_target_mass_scales_coefficients():
+    """target_mass routing: with M1 != M2 (row mass differing from the
+    spike dof's column mass), passing the true row mass recovers the
+    exact (c, s); the default (m2[spike_index]) recovers the same theta
+    and score but coefficients scaled by m_true / m_used."""
+    rng = np.random.default_rng(8)
+    prob = _make_row(rng)
+    row_mass = 2.5                      # deliberately != m2[spike_index]
+    sp = prob["spike_index"]
+    raw = row_mass * prob["m2"] * prob["phi"]
+    raw[sp] += row_mass * prob["s_true"]
+    y = prob["z"] @ raw
+
+    res = fit_from_probes(prob["x"], prob["m2"], prob["z"], y,
+                          prob["mu_true"], MODES, spike_index=sp,
+                          target_mass=row_mass,
+                          config=ProbeFitConfig(mu="fixed"))
+    assert res.score < 1e-6
+    assert np.allclose(res.c, prob["c_true"], atol=1e-5)
+    assert abs(res.s[0] - prob["s_true"]) < 1e-5
+
+    res_d = fit_from_probes(prob["x"], prob["m2"], prob["z"], y,
+                            prob["mu_true"], MODES, spike_index=sp,
+                            config=ProbeFitConfig(mu="fixed"))
+    assert res_d.score < 1e-6           # scores/theta are mass-invariant
+    ratio = prob["m2"][sp] / row_mass
+    assert np.allclose(res_d.c * ratio, prob["c_true"], atol=1e-4)
+    assert abs(res_d.s[0] * ratio - prob["s_true"]) < 1e-4
+
+
 if __name__ == "__main__":
     test_fit_from_probes_recovers_synthetic_fixed_mu()
     test_fit_from_probes_release_recovers_offset_center()
@@ -335,6 +365,7 @@ if __name__ == "__main__":
     test_fit_from_probes_mixed_ladder_enumeration()
     test_fit_from_probes_mode_ladder_selects_simplest()
     test_fit_from_probes_counting_rule_skips_levels()
+    test_fit_from_probes_target_mass_scales_coefficients()
     testwindow_shape_mass_weighted_geometry()
     test_raw_moments_mass_quadrature()
     test_raw_moments_diag_exclusion()

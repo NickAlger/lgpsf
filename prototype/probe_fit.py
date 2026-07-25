@@ -266,7 +266,7 @@ class ProbeFitResult:
 
 def fit_from_probes(x, m2_diag, z, y, mu0, modes=None,
                     spike_index=None, sigma0=None,
-                    config=None, verbose=False):
+                    config=None, verbose=False, target_mass=None):
     """Fit a target function from raw probe data. See the module
     docstring for the architecture. Parameters:
 
@@ -278,14 +278,21 @@ def fit_from_probes(x, m2_diag, z, y, mu0, modes=None,
     modes : explicit (p, ell, m) list -- required iff config.mode_levels
         is None.
     spike_index : index of the target's own point within the batch;
-        builds the one-hot spike extra basis (and supplies the target
-        mass). None disables the spike -- justified only for targets
-        known to not be spike-dominated.
+        builds the one-hot spike extra basis. None disables the spike --
+        justified only for targets known to not be spike-dominated.
     sigma0 : optional (N, N) SPD initial covariance, tried FIRST (e.g.
         an a-priori estimate, or
         probe_moments.raw_moments(probe_moments.backproject(z, y), ...)).
     config : ProbeFitConfig.
     verbose : print the candidate table.
+    target_mass : the target's own lumped mass (M1)_rho,rho in the
+        operator-row application. Default None infers it as
+        m2_diag[spike_index] (exact for the square equal-mass case; 1.0
+        with no spike). The whitened design matrix is column-equilibrated
+        inside the inner solve, so this choice rescales ONLY the returned
+        (c, s) -- theta, CV scores, and the whole selection are invariant
+        -- but callers with M1 != M2 must pass it to get correctly scaled
+        coefficients.
     """
     cfg = config if config is not None else ProbeFitConfig()
     x = np.asarray(x, dtype=float)
@@ -304,8 +311,11 @@ def fit_from_probes(x, m2_diag, z, y, mu0, modes=None,
         raise ValueError("provide exactly one of `modes` (explicit list) "
                          "or config.mode_levels (nested ladder)")
 
-    target_mass = (float(m2_diag[spike_index])
-                   if spike_index is not None else 1.0)
+    if target_mass is None:
+        target_mass = (float(m2_diag[spike_index])
+                       if spike_index is not None else 1.0)
+    else:
+        target_mass = float(target_mass)
     n_extra = 1 if spike_index is not None else 0
     if spike_index is not None:
         E = np.zeros((1, K))
