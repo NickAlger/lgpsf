@@ -320,6 +320,7 @@ def fit_operator(x_cols, m1_diag, m2_diag, V, HV, sigma, mu0=None,
     # the stream's fixed-mu theta size drives both counting rules below
     P_fix = N + N * (N - 1) // 2 + N            # == theta_size(N, mu0=any)
     P_free = theta_size(N, None)
+    n_extra_cfg = 1 if cfg.spike else 0
     if cfg.row.mode_levels is not None:
         base_sets = [modes_up_to_level(N, lev)
                      for lev in sorted(cfg.row.mode_levels)]
@@ -334,7 +335,6 @@ def fit_operator(x_cols, m1_diag, m2_diag, V, HV, sigma, mu0=None,
                 N=N, k=k, n_extra=n_extra_cfg, P=P_fix))]
     else:
         base_sets = [list(modes)]
-    n_extra_cfg = 1 if cfg.spike else 0
     P_stream = P_free if cfg.row.mu == "free" else P_fix
 
     col_tree = et.BallTree(x_cols.T, np.zeros(K_all))

@@ -287,6 +287,24 @@ def test_rectangular_smooth_only():
             < 1e-4 * np.linalg.norm(truth)
 
 
+def test_operator_accepts_mode_policy():
+    """cfg.row.mode_policy drives the per-row ladder AND the baseline
+    guard's sets (via the policy's feedback-blind baseline_sets) --
+    the path the n_extra_cfg ordering bug lived on."""
+    from mode_policy import WedgeLadder
+    prob, _ = _square_case()
+    rho = 17
+    fit = fit_operator(prob["x"], prob["m1"], prob["m2"],
+                       prob["V"], prob["HV"],
+                       sigma=0.35 ** 2 * np.eye(2), rows=[rho],
+                       config=OperatorFitConfig(
+                           row=ProbeFitConfig(
+                               mode_policy=WedgeLadder(4, 2))))
+    assert fit.status[rho] in ("fit", "fallback_baseline")
+    assert fit.score[rho] < 1e-4
+    assert set(MODES) <= set(fit.row_modes(rho))
+
+
 def test_windows_override_and_failed_status():
     """An explicit per-row window is honored (entry rho overrides
     derivation; None entries derive as usual), and a non-SPD sigma row
@@ -321,5 +339,6 @@ if __name__ == "__main__":
     test_deployed_support_is_fit_window()
     test_baseline_guard_ships_baseline()
     test_rectangular_smooth_only()
+    test_operator_accepts_mode_policy()
     test_windows_override_and_failed_status()
     print("all operator_fit checks passed")
