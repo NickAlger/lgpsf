@@ -218,3 +218,100 @@ class RadialFirstLadder(_SequencePolicy):
             ms = [m for g in groups for m in g]
             seq.append((f"radial#{len(seq)}(m={len(ms)})", ms))
         return seq
+
+
+class MarginGreedy(ModePolicy):
+    """The adaptive frontier: grow a downward-closed active set in the
+    (p, ell) lattice by admitting the margin group(s) with the largest
+    exact one-step profit, gated against the pure-noise expectation.
+
+    Downward closed: a group (p, ell) is a margin candidate only if its
+    parents (p-1, ell) and (p, ell-1) are active -- matching the
+    enrichment-derivative structure (low modes repair, high modes
+    refine). Profits come from ctx.margin_profit (exact SSE reductions
+    at the current fitted theta; see probe_fit). The NOISE GATE: a
+    q-dof group must beat noise_gate * q/nu * ||r||^2 (nu = residual
+    dof), the expected profit of pure noise -- the guard against
+    greedy selection amplifying small-k validation noise (the PIG
+    released-mu lesson). bulk > 0 admits the smallest set of gated
+    groups capturing that fraction of total gated profit per rung
+    (Doerfler marking) instead of one group at a time.
+    """
+
+    def __init__(self, seed=None, max_level=10, ell_max=None,
+                 noise_gate=3.0, bulk=0.0):
+        self.seed = ([tuple(m) for m in seed] if seed is not None
+                     else [(0, 0, 0)])
+        self.max_level = max_level
+        self.ell_max = ell_max
+        self.noise_gate = noise_gate
+        self.bulk = bulk
+
+    def _margin_groups(self, N, active_pl):
+        out = []
+        for (p, ell) in sorted(active_pl):
+            for (dp, dl) in ((1, 0), (0, 1)):
+                q, le = p + dp, ell + dl
+                if (q, le) in active_pl or 2 * q + le > self.max_level:
+                    continue
+                if self.ell_max is not None and le > self.ell_max:
+                    continue
+                parents = [(q - 1, le), (q, le - 1)]
+                if all(par in active_pl for par in parents
+                       if par[0] >= 0 and par[1] >= 0):
+                    g = _harmonic_group(N, q, le)
+                    if g and (q, le) not in [o[0] for o in out]:
+                        out.append(((q, le), g))
+        return out
+
+    def propose(self, ctx):
+        if ctx.last_fit() is None:
+            if ctx.history:            # seed itself was skipped: give up
+                return None
+            return ("greedy-seed", list(self.seed))
+        last = ctx.last_fit()
+        if last.winner is None or ctx.margin_profit is None:
+            return None                # no feedback to grow on
+        active = [tuple(m) for m in last.modes]
+        active_pl = {(p, ell) for (p, ell, _) in active}
+        margin = self._margin_groups(ctx.N, active_pl)
+        if not margin:
+            return None
+        nu = max(ctx.k - len(active) - ctx.n_extra, 1)
+        gated = []
+        for (pl, group) in margin:
+            if len(active) + len(group) > ctx.m_max:
+                continue
+            profit = float(sum(ctx.margin_profit(group)))
+            gate = self.noise_gate * len(group) / nu * ctx.resid_norm2
+            if profit > gate:
+                gated.append((profit, pl, group))
+        if not gated:
+            return None
+        gated.sort(key=lambda t: -t[0])
+        chosen = [gated[0]]
+        if self.bulk > 0.0:
+            total = sum(t[0] for t in gated)
+            got = gated[0][0]
+            for t in gated[1:]:
+                if got >= self.bulk * total:
+                    break
+                if len(active) + sum(len(c[2]) for c in chosen) \
+                        + len(t[2]) > ctx.m_max:
+                    continue
+                chosen.append(t)
+                got += t[0]
+        new = [m for (_, _, g) in chosen for m in g]
+        label = "greedy+" + ",".join(f"({pl[0]},{pl[1]})"
+                                     for (_, pl, _) in chosen)
+        return (f"{label}#{len(ctx.history)}", active + new)
+
+    def baseline_sets(self, ctx):
+        """The a-priori sets: the seed and the budget-capped full hull
+        (never the adaptive trajectory)."""
+        hull = modes_up_to_level(ctx.N, self.max_level,
+                                 ell_max=self.ell_max)
+        out = [list(self.seed)]
+        if len(hull) <= ctx.m_max and len(hull) > len(self.seed):
+            out.append(hull)
+        return out

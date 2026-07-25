@@ -362,3 +362,36 @@ rest of the prototype stays pure numpy(+scipy).
 - `init_dictionary.local_spacing` still uses scipy's cKDTree for its
   k-NN query (ellipsoid_tree's KDTree could take it; not worth churn
   now).
+
+## The mode axis is a policy (ModePolicy), not a config list
+
+**Decision (2026-07-25, Nick):** mode growth is a pluggable strategy --
+`mode_policy.ModePolicy.propose(ctx)` -- because the PIG slice-38
+field runs showed the best growth ORDER is budget-dependent (complete
+shells win at k=20 where the counting rule caps m at 6; the ell-capped
+radial wedge ties shells at one sixth the fit cost at k=100). Points
+worth recording for the C++ port:
+
+- **Policies are stateless**: position and feedback come entirely from
+  `ctx.history` -- the port is a virtual interface with no lifecycle,
+  and the operator layer's baseline guard gets its a-priori sets from
+  a feedback-blind replay (`baseline_sets`), never from an adaptive
+  trajectory.
+- **The engine keeps every guard** (counting rule, admissibility,
+  patience/target, warm starts, selection); a policy only proposes.
+  Contracts engine-enforced: nested growth, unique labels, a hard
+  proposal cap; oversized proposals are recorded as skipped and the
+  policy is re-polled.
+- **Adaptive feedback is an exact projection, not a refit**: VarPro's
+  inner problem is linear, so the engine hands policies a margin
+  scorer computing exact one-step SSE reductions for candidate modes
+  at the current winner's theta (whitened feature eval + QR-projection
+  against the active design). MarginGreedy grows a downward-closed
+  (p, ell) frontier on these profits behind a noise gate
+  (profit > noise_gate * q/nu * ||r||^2) -- the guard against greedy
+  selection amplifying small-k validation noise (the released-mu
+  lesson at field scale).
+- Legacy fields (`mode_levels`/`mode_sets`/`modes`) resolve to
+  ShellLadder/ExplicitLadder/FixedSet; equivalence is pinned by
+  fingerprint tests, so the refactor is a provable no-op for existing
+  callers.

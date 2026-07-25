@@ -167,10 +167,30 @@ existing JVP/VJP composes with it for free -- no new derivative math.
    certifiably good, `mode_patience` stops the mode ladder; hard
    targets fail the certificates and buy the full grid. Structural
    facts (window, probes, masses, `spike_index`) are caller-declared,
-   never adjudicated; numerics stay in `VarProOptions`. `target_mass=`
+   never adjudicated; numerics stay in `VarProOptions`. THE MODE AXIS
+   IS A POLICY (`mode_policy.py`, entry 9b): the stream polls
+   `ModePolicy.propose()` for nested mode sets and supplies adaptive
+   feedback (an exact margin-profit scorer built from the current
+   winner's residual); `mode_levels`/`mode_sets`/`modes` resolve to
+   ShellLadder/ExplicitLadder/FixedSet, so legacy callers are
+   fingerprint-identical. `target_mass=`
    overrides the default target-mass inference (`m2_diag[spike_index]`,
    exact only square-equal-mass) -- rescales only the returned `(c, s)`;
    theta/scores/selection are invariant.
+9b. **`mode_policy.py`** -- the mode-growth policy axis
+    (docs/mode-policy-plan.md): stateless policies proposing nested
+    mode sets from `ctx.history`; engine keeps every guard. Built-ins:
+    `FixedSet`, `ShellLadder`, `ExplicitLadder`,
+    `WedgeLadder(max_level, ell_max)` (level-ordered ell-capped --
+    strongest fixed policy at k >= 40 on PIG), `RadialFirstLadder`,
+    and `MarginGreedy` (adaptive downward-closed frontier in the
+    (p, ell) lattice; exact one-step SSE profits via the engine's
+    margin scorer; a noise gate -- profit must beat
+    noise_gate * q/nu * ||r||^2 -- guards the small-k selection-noise
+    regime). `modes_up_to_level` gained `ell_max` (wedges).
+    PIG slice-38 evidence for the axis: best growth order is budget-
+    dependent (shells win at k=20, wedge ties shells at 1/6 cost at
+    k=100).
 10. **`operator_fit.py`** -- the whole-operator layer over (9), per
     `docs/operator-api-plan.md`: `fit_operator(x_cols, m1_diag,
     m2_diag, V, HV, sigma, mu0=, modes=, x_rows=, rows=, windows=,
@@ -206,9 +226,12 @@ Tests mirror this file-by-file (`test_lg_functions.py`,
 recovers a known $(\theta^*, c^*, s^*)$ from perturbed initialization --
 `test_probe_fit.py`, whose synthetic targets exercise the raw-data
 contract end to end, including nonuniform masses and the
-backprojection-rescues-bad-center workflow, and `test_operator_fit.py`,
-whose synthetic operator has $M_1 \ne M_2$ throughout so exact
-coefficient recovery also pins the target-mass routing).
+backprojection-rescues-bad-center workflow; `test_mode_policy.py`,
+whose fingerprint tests pin the legacy-config equivalence and whose
+MarginGreedy tests pin true-support recovery, the noise-gate stop, and
+the counting budget; and `test_operator_fit.py`, whose synthetic
+operator has $M_1 \ne M_2$ throughout so exact coefficient recovery
+also pins the target-mass routing).
 Examples: `examples/plot_lg_modes.py` (2D mode grid),
 `examples/lg_expansion_convergence.py` ($N=1,2,3$ convergence study).
 

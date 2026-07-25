@@ -8,6 +8,9 @@ Three kinds of check:
   2. CONTRACTS: nested growth enforced, label reuse rejected,
      oversized proposals skipped, the proposal cap terminates a
      runaway policy.
+  3. MarginGreedy: on an exactly-representable target the frontier
+     finds the truth's support; on pure noise the gate stops it at the
+     seed; the counting budget is respected.
 
 Run directly (`python test_mode_policy.py`) or via pytest.
 """
@@ -23,6 +26,7 @@ from lg_harmonics_table import TABLE
 from mode_policy import (
     FixedSet,
     LevelRecord,
+    MarginGreedy,
     ModePolicy,
     ModeSearchContext,
     RadialFirstLadder,
@@ -140,9 +144,55 @@ def test_policy_contracts_enforced():
         assert "counting rule" in str(e)
 
 
+def test_margin_greedy_finds_true_support():
+    """Truth = G + dipoles (+spike): from a Gaussian seed, the frontier
+    must admit the dipole group and recover the row; the quadrupole/
+    radial margin beyond it must fail the noise gate quickly (patience
+    or gate stop, no full-hull crawl)."""
+    rng = np.random.default_rng(3)
+    prob = _make_row(rng, k=100)
+    res = fit_from_probes(prob["x"], prob["m2"], prob["z"], prob["y"],
+                  prob["mu_true"], modes=None,
+                  spike_index=prob["spike_index"],
+                  config=ProbeFitConfig(mu="fixed", target_score=None,
+                                        mode_policy=MarginGreedy()))
+    assert set(MODES) <= set(res.modes)
+    assert res.score < 1e-5
+    assert len(res.modes) <= 8          # no runaway growth past truth
+
+
+def test_margin_greedy_noise_gate_stops_at_seed():
+    """A pure-noise target: the gate must refuse every margin group, so
+    the ladder ends at the seed set."""
+    rng = np.random.default_rng(4)
+    prob = _make_row(rng)
+    y_noise = 1e-3 * rng.standard_normal(len(prob["y"]))
+    res = fit_from_probes(prob["x"], prob["m2"], prob["z"], y_noise,
+                  prob["mu_true"], modes=None,
+                  spike_index=prob["spike_index"],
+                  config=ProbeFitConfig(mu="fixed", target_score=None,
+                                        mode_policy=MarginGreedy()))
+    assert res.modes == [(0, 0, 0)]
+
+
+def test_margin_greedy_respects_budget():
+    """k=14 caps m at 3: greedy may add at most the dipole pair."""
+    rng = np.random.default_rng(5)
+    prob = _make_row(rng, k=14)
+    res = fit_from_probes(prob["x"], prob["m2"], prob["z"], prob["y"],
+                  prob["mu_true"], modes=None,
+                  spike_index=prob["spike_index"],
+                  config=ProbeFitConfig(mu="fixed", target_score=None,
+                                        mode_policy=MarginGreedy()))
+    assert len(res.modes) <= 3
+
+
 def test_baseline_sets_replay_and_adaptive_override():
     shells = ShellLadder([0, 1, 2]).baseline_sets(_ctx())
     assert [len(s) for s in shells] == [1, 3, 6]
+    greedy = MarginGreedy(max_level=4, ell_max=2).baseline_sets(_ctx())
+    assert greedy[0] == [(0, 0, 0)]                 # seed
+    assert len(greedy) == 2 and len(greedy[1]) > 1  # budget-capped hull
 
 
 if __name__ == "__main__":
@@ -150,5 +200,8 @@ if __name__ == "__main__":
     test_wedge_ladder_sizes_and_ell_cap()
     test_radial_first_ladder_orders_radial_before_angular()
     test_policy_contracts_enforced()
+    test_margin_greedy_finds_true_support()
+    test_margin_greedy_noise_gate_stops_at_seed()
+    test_margin_greedy_respects_budget()
     test_baseline_sets_replay_and_adaptive_override()
     print("all mode_policy checks passed")

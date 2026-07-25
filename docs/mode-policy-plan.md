@@ -1,9 +1,12 @@
 # Mode-growth policies: the extensible ladder axis -- agreed design
 
-**Status: DESIGN AGREED (Nick + session 2026-07-25). Implementation in
-two reviewable steps: (1) the policy axis with feedback-blind built-ins
-(a pure refactor, provably a no-op against existing results), (2) the
-adaptive MarginGreedy policy behind a noise gate.**
+**Status: IMPLEMENTED (session 2026-07-25) as
+`prototype/mode_policy.py`** + the probe_fit policy-poll loop, in the
+two planned steps (the axis with feedback-blind built-ins, then
+MarginGreedy). Equivalence of the legacy config fields is pinned by
+fingerprint tests (`test_mode_policy.py`); this doc remains the design
+record. MarginGreedy's PIG benchmark against the fixed ladders is
+still owed before any default changes.
 
 ## Why
 
