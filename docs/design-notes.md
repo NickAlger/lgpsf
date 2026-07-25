@@ -418,3 +418,15 @@ guard via |det L| sum c^2 (a continuum identity that fails exactly at
 the coarse-mesh/boundary rows in question). Also the fast path: matvec
 now costs O(sum window) instead of O(R K). assemble_sparse's tau
 truncation now only trims the Gaussian tail INSIDE the window.
+
+## Operator-layer default policy: WedgeLadder(10, 2); adaptive parked
+
+**Decision (2026-07-25, Nick):** fit_operator with no mode source
+defaults to the level-ordered ell-capped wedge -- best or tied at
+every probe budget in the PIG smooth- and rough-beta benchmarks,
+cheapest at large k. MarginGreedy is parked with its evidence and the
+queued conditioning refinements recorded in docs/mode-policy-plan.md's
+addendum (the noise gate was half its problem; the profit score's
+near-redundancy normalization is the other half -- it can prefer
+ill-conditioned additions, the opposite of the selection-by-
+informedness motivation).

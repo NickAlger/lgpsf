@@ -183,19 +183,20 @@ existing JVP/VJP composes with it for free -- no new derivative math.
     `FixedSet`, `ShellLadder`, `ExplicitLadder`,
     `WedgeLadder(max_level, ell_max)` (level-ordered ell-capped --
     strongest fixed policy at k >= 40 on PIG), `RadialFirstLadder`,
-    and `MarginGreedy` (adaptive downward-closed frontier in the
-    (p, ell) lattice; exact one-step SSE profits via the engine's
-    margin scorer; a noise gate -- profit must beat
-    noise_gate * q/nu * ||r||^2 -- guards the small-k selection-noise
-    regime). `modes_up_to_level` gained `ell_max` (wedges).
-    PIG slice-38 evidence for the axis: best growth order is budget-
-    dependent (shells win at k=20, wedge ties shells at 1/6 cost at
-    k=100).
+    and `MarginGreedy` (adaptive downward-closed frontier; PARKED
+    per the PIG benchmark -- gate-free it ties the best fixed policy
+    at k=20 but trails the wedge ~2x at k>=40; needs the
+    novelty-floor/conditioning refinement, see the plan doc's
+    addendum). `modes_up_to_level` gained `ell_max` (wedges).
+    PIG evidence: best growth order is budget-dependent (shells win at
+    k=20, wedge ties shells at 1/6 cost at k=100); WedgeLadder(10, 2)
+    is the OPERATOR-LAYER DEFAULT when no mode source is given.
 10. **`operator_fit.py`** -- the whole-operator layer over (9), per
     `docs/operator-api-plan.md`: `fit_operator(x_cols, m1_diag,
     m2_diag, V, HV, sigma, mu0=, modes=, x_rows=, rows=, windows=,
     config=OperatorFitConfig(tau_window=10, spike=True,
-    row=ProbeFitConfig(...)))` -> `OperatorFit`. The fitted object is
+    row=ProbeFitConfig(...)))` -> `OperatorFit`. With NO mode source
+    given, defaults to `mode_policy=WedgeLadder(10, 2)`. The fitted object is
     the parametric two-component sum `H~ = M1 Phi~ M2 + M1 S` (smooth
     semi-discrete continuum kernel, rectangular by nature + sparse
     dof-tied spike, square by nature), NEVER a matrix. Geometry queries

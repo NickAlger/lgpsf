@@ -305,6 +305,21 @@ def test_operator_accepts_mode_policy():
     assert set(MODES) <= set(fit.row_modes(rho))
 
 
+def test_operator_default_mode_policy_is_wedge():
+    """No mode source given anywhere: the operator layer defaults to
+    WedgeLadder(10, 2), and the fit works out of the box."""
+    from lg_functions import modes_up_to_level
+    prob, _ = _square_case()
+    rho = 101
+    fit = fit_operator(prob["x"], prob["m1"], prob["m2"],
+                       prob["V"], prob["HV"],
+                       sigma=0.35 ** 2 * np.eye(2), rows=[rho])
+    assert fit.status[rho] in ("fit", "fallback_baseline")
+    assert fit.score[rho] < 1e-4
+    hull = set(modes_up_to_level(2, 10, ell_max=2))
+    assert set(fit.row_modes(rho)) <= hull
+
+
 def test_windows_override_and_failed_status():
     """An explicit per-row window is honored (entry rho overrides
     derivation; None entries derive as usual), and a non-SPD sigma row
@@ -340,5 +355,6 @@ if __name__ == "__main__":
     test_baseline_guard_ships_baseline()
     test_rectangular_smooth_only()
     test_operator_accepts_mode_policy()
+    test_operator_default_mode_policy_is_wedge()
     test_windows_override_and_failed_status()
     print("all operator_fit checks passed")

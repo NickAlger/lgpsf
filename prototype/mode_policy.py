@@ -221,7 +221,14 @@ class RadialFirstLadder(_SequencePolicy):
 
 
 class MarginGreedy(ModePolicy):
-    """The adaptive frontier: grow a downward-closed active set in the
+    """PARKED (2026-07-25, PIG slice-38 gate study; see the addendum in
+    docs/mode-policy-plan.md): at k=20 the gate-free variant ties the
+    best fixed policy, but at k >= 40 it trails the wedge ~2x at higher
+    cost; the profit score needs the novelty-floor/conditioning
+    refinement before this can compete. Kept as the working reference
+    for that follow-up.
+
+    The adaptive frontier: grow a downward-closed active set in the
     (p, ell) lattice by admitting the margin group(s) with the largest
     exact one-step profit, gated against the pure-noise expectation.
 

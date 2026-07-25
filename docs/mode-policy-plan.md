@@ -130,3 +130,35 @@ injection at the operator layer, per the operator-api plan.
 Default policy: unchanged behavior (shells via mode_levels) until the
 PIG benchmarks justify a new default; the slice-38 numbers suggest
 WedgeLadder(10, 2) as the strongest fixed default at k >= 40.
+
+## Addendum (2026-07-25): PIG benchmark verdict -- wedge default, MarginGreedy PARKED
+
+Full benchmark on the PIG white500 protocol (window-clipped + sym, 250
+held-out pairs):
+
+| policy \ k        | 20     | 40     | 100    |
+|-------------------|--------|--------|--------|
+| shells            | 0.0608 | 0.0320 | 0.0147 |
+| wedge (ell<=2)    | =shells| 0.0309 | 0.0150 |
+| radial-first      | 0.0808 | 0.0387 | --     |
+| greedy, gate 3    | 0.0696 | 0.0613 | 0.0521 |
+| greedy, gate 1/0.5| --     | --     | 0.0486 / 0.0455 |
+| greedy, gate 0    | 0.0601 | 0.0430 | 0.0319 |
+
+- **WedgeLadder(10, 2) is the operator-layer DEFAULT** (fit_operator
+  with no mode source): best or tied at every budget, cheapest at
+  large k, and it also carried the rough-beta slice-39 wins.
+- **MarginGreedy is PARKED.** The noise gate was half the problem
+  (monotone 0.052 -> 0.032 as it loosens to zero) but pure
+  profit-ordering with CV-only stopping still trails the wedge ~2x at
+  k >= 40, at higher cost (1.2 s/row) -- while TYING the best fixed
+  policy at k=20. Diagnosis (Nick's conditioning framing): the profit
+  score normalizes by the projected column norm, so near-redundant
+  (ill-conditioned) additions can score high on noise -- the opposite
+  of "features best informed by the data" -- plus max-over-margin
+  multiplicity and frozen-theta profits. Queued refinements when
+  unparked: novelty floor ||a_perp||^2/||a||^2 on admissions (or
+  profit x novelty ordering), collective/Doerfler gate, theta-refresh
+  of profits, and the counting-margin relaxation experiment (2 ->
+  1.5) once better-conditioned selection demonstrably delays
+  overfitting.

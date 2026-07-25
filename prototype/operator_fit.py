@@ -82,7 +82,7 @@ dual tree descent (points-tree x ellipsoid-tree). ellipsoid_tree
 takes points as rows, (K, N), so the boundary transposes -- the same
 layout flip docs/design-notes.md already prescribes for the Eigen side.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -93,7 +93,7 @@ from ellipsoid_transform import release_mu, theta_size
 from init_dictionary import theta_from_L
 from lg_ellipsoid_feature import eval_feature
 from lg_functions import modes_up_to_level
-from mode_policy import ModeSearchContext
+from mode_policy import ModeSearchContext, WedgeLadder
 from probe_fit import ProbeFitConfig, fit_from_probes, linear_cv_score
 from whitening import whiten_data, whiten_extra, whiten_probes, whitened_basis
 
@@ -238,9 +238,12 @@ def fit_operator(x_cols, m1_diag, m2_diag, V, HV, sigma, mu0=None,
         tau_window supplies the conservatism.
     mu0 : (R_all, N) initial centers; default = the row dofs' own
         coordinates (pass explicitly for e.g. advected kernels).
-    modes : explicit (p, ell, m) list -- required iff
-        config.row.mode_levels is None (same contract as
-        fit_from_probes).
+    modes : explicit (p, ell, m) list. At most one mode source may be
+        given (modes / config.row.mode_levels / .mode_sets /
+        .mode_policy); giving NONE selects the operator-layer default,
+        mode_policy=WedgeLadder(10, 2) -- the level-ordered ell-capped
+        wedge, best or tied at every probe budget in the PIG
+        benchmarks.
     x_rows : (N, R_all) row-dof coordinates for a rectangular fit;
         None (default) = square context, row dofs are the column dofs
         (required for the spike).
@@ -295,11 +298,17 @@ def fit_operator(x_cols, m1_diag, m2_diag, V, HV, sigma, mu0=None,
     n_mode_sources = sum(x is not None for x in
                          (modes, cfg.row.mode_levels, cfg.row.mode_sets,
                           cfg.row.mode_policy))
-    if n_mode_sources != 1:
-        raise ValueError("provide exactly one of `modes` (explicit list), "
+    if n_mode_sources > 1:
+        raise ValueError("provide at most one of `modes` (explicit list), "
                          "config.row.mode_levels (shell ladder), "
                          "config.row.mode_sets (explicit nested ladder), "
                          "or config.row.mode_policy")
+    row_cfg = cfg.row
+    if n_mode_sources == 0:
+        # the operator-layer default: the level-ordered ell-capped wedge
+        # -- best or tied at every probe budget in the PIG slice-38/39
+        # benchmarks, cheapest at large k (docs/mode-policy-plan.md)
+        row_cfg = replace(cfg.row, mode_policy=WedgeLadder(10, 2))
     if windows is not None and len(windows) != R_all:
         raise ValueError(f"windows must have one entry per row "
                          f"({R_all}), got {len(windows)}")
@@ -321,21 +330,21 @@ def fit_operator(x_cols, m1_diag, m2_diag, V, HV, sigma, mu0=None,
     P_fix = N + N * (N - 1) // 2 + N            # == theta_size(N, mu0=any)
     P_free = theta_size(N, None)
     n_extra_cfg = 1 if cfg.spike else 0
-    if cfg.row.mode_levels is not None:
+    if row_cfg.mode_levels is not None:
         base_sets = [modes_up_to_level(N, lev)
-                     for lev in sorted(cfg.row.mode_levels)]
-    elif cfg.row.mode_sets is not None:
-        base_sets = [[tuple(m) for m in ms] for ms in cfg.row.mode_sets]
-    elif cfg.row.mode_policy is not None:
+                     for lev in sorted(row_cfg.mode_levels)]
+    elif row_cfg.mode_sets is not None:
+        base_sets = [[tuple(m) for m in ms] for ms in row_cfg.mode_sets]
+    elif row_cfg.mode_policy is not None:
         # the a-priori baseline may never depend on an adaptive
         # trajectory: policies expose their feedback-blind sets
         base_sets = [
             [tuple(m) for m in ms]
-            for ms in cfg.row.mode_policy.baseline_sets(ModeSearchContext(
+            for ms in row_cfg.mode_policy.baseline_sets(ModeSearchContext(
                 N=N, k=k, n_extra=n_extra_cfg, P=P_fix))]
     else:
         base_sets = [list(modes)]
-    P_stream = P_free if cfg.row.mu == "free" else P_fix
+    P_stream = P_free if row_cfg.mu == "free" else P_fix
 
     col_tree = et.BallTree(x_cols.T, np.zeros(K_all))
 
@@ -435,7 +444,7 @@ def fit_operator(x_cols, m1_diag, m2_diag, V, HV, sigma, mu0=None,
             if searchable:
                 res = fit_from_probes(x_w, m2_w, z, y, mu_rho, modes=modes,
                                       spike_index=spike_pos,
-                                      sigma0=sigma[rho], config=cfg.row,
+                                      sigma0=sigma[rho], config=row_cfg,
                                       target_mass=m1_rho)
 
             # --- baseline guard --------------------------------------------
