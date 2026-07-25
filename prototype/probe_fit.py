@@ -99,9 +99,36 @@ from init_dictionary import (
     window_rungs,
     window_shape,
 )
-from lg_functions import modes_up_to_level
+from mode_policy import (
+    MAX_PROPOSALS,
+    ExplicitLadder,
+    FixedSet,
+    LevelRecord,
+    ModeSearchContext,
+    ShellLadder,
+)
 from varpro import VarProOptions, fit_varpro
 from whitening import whiten_data, whiten_extra, whiten_probes, whitened_basis
+
+
+def _resolve_mode_policy(cfg, modes):
+    """Exactly-one-of validation + resolution of the legacy config
+    fields into mode_policy instances."""
+    n_sources = sum(x is not None for x in
+                    (modes, cfg.mode_levels, cfg.mode_sets,
+                     cfg.mode_policy))
+    if n_sources != 1:
+        raise ValueError("provide exactly one of `modes` (explicit "
+                         "list), config.mode_levels (shell ladder), "
+                         "config.mode_sets (explicit nested ladder), "
+                         "or config.mode_policy")
+    if cfg.mode_policy is not None:
+        return cfg.mode_policy
+    if cfg.mode_levels is not None:
+        return ShellLadder(cfg.mode_levels)
+    if cfg.mode_sets is not None:
+        return ExplicitLadder(cfg.mode_sets)
+    return FixedSet(modes)
 
 
 def _quiet_fit(*args, **kwargs):
@@ -168,12 +195,16 @@ class ProbeFitConfig:
 
     mode_sets: Optional[List[List[tuple]]] = None
     """Explicit nested mode-set ladder: a list of (p, ell, m) lists,
-    ascending in size, each a superset of the previous (the nesting is
-    the caller's contract -- patience/warm-start semantics assume it).
-    This is the general ladder-policy hook: e.g. a radial-first wedge
-    (grow radial order p before angular order ell -- PIG slice-38
-    evidence: PSFs want radial depth, full shells waste budget on
-    high-ell modes) instead of the complete-shell ladder."""
+    ascending in size, each a superset of the previous (resolved to
+    mode_policy.ExplicitLadder)."""
+
+    mode_policy: Optional[object] = None
+    """A mode_policy.ModePolicy instance -- the general ladder axis
+    (docs/mode-policy-plan.md): shells, ell-capped wedges,
+    radial-first prefixes, adaptive MarginGreedy, or any user policy.
+    The policy PROPOSES mode sets; every structural guard and all
+    selection semantics stay in this engine. Exactly one of
+    {mode_policy, mode_levels, mode_sets, the `modes` argument}."""
 
     n_rungs: int = 6
     """Log-spaced circle scales from the local mesh spacing at mu0 to a
@@ -316,12 +347,7 @@ def fit_from_probes(x, m2_diag, z, y, mu0, modes=None,
                          f"{m2_diag.shape}, z {z.shape}, y {y.shape}")
     if cfg.mu not in ("fixed", "free", "fixed_then_release"):
         raise ValueError(f"unknown mu mode: {cfg.mu!r}")
-    n_sources = sum(x is not None
-                    for x in (modes, cfg.mode_levels, cfg.mode_sets))
-    if n_sources != 1:
-        raise ValueError("provide exactly one of `modes` (explicit list), "
-                         "config.mode_levels (shell ladder), or "
-                         "config.mode_sets (explicit nested ladder)")
+    policy = _resolve_mode_policy(cfg, modes)
 
     if target_mass is None:
         target_mass = (float(m2_diag[spike_index])
@@ -351,18 +377,6 @@ def fit_from_probes(x, m2_diag, z, y, mu0, modes=None,
     if cfg.window_shape_rungs:
         inits += window_rungs(radii, window_shape(x, m2_diag))
     inits += circle_rungs(radii, N)
-
-    # --- mode sets ---------------------------------------------------------
-    if cfg.mode_levels is not None:
-        levels = sorted(cfg.mode_levels)
-        mode_sets = [(f"level<={L}", modes_up_to_level(N, L))
-                     for L in levels]
-    elif cfg.mode_sets is not None:
-        mode_sets = [(f"set{i}(m={len(ms)})", [tuple(m) for m in ms])
-                     for i, ms in enumerate(cfg.mode_sets)]
-    else:
-        mode_sets = [("explicit", list(modes))]
-    modes_of = dict(mode_sets)
 
     ladder_fixed = cfg.mu in ("fixed", "fixed_then_release")
     enc_mu0 = mu0 if ladder_fixed else None
@@ -408,19 +422,77 @@ def fit_from_probes(x, m2_diag, z, y, mu0, modes=None,
         return (cfg.target_score is not None and c.admissible
                 and c.score <= cfg.target_score)
 
+    def make_margin_scorer(theta, active_modes):
+        """Exact one-step SSE reductions for candidate modes at a fixed
+        theta -- the adaptive policies' feedback. A projection against
+        the active whitened design, never a refit."""
+        b_eval_a = whitened_basis(N, x, target_mass, m2_diag,
+                                  active_modes, mu0=enc_mu0)[0]
+        with np.errstate(over="ignore", invalid="ignore"):
+            Phi = b_eval_a(theta)
+        X = z_hat @ Phi.T
+        if e_hat is not None:
+            X = np.hstack([X, z_hat @ e_hat.T])
+        if not np.all(np.isfinite(X)):
+            return None, 0.0
+        coef, *_ = np.linalg.lstsq(X, y_hat, rcond=None)
+        r = y_hat - X @ coef
+        Q = np.linalg.qr(X)[0]
+
+        def margin_profit(cand_modes):
+            b_eval_c = whitened_basis(N, x, target_mass, m2_diag,
+                                      [tuple(m) for m in cand_modes],
+                                      mu0=enc_mu0)[0]
+            with np.errstate(over="ignore", invalid="ignore"):
+                Ac = z_hat @ b_eval_c(theta).T
+            if not np.all(np.isfinite(Ac)):
+                return np.zeros(Ac.shape[1])
+            Ac = Ac - Q @ (Q.T @ Ac)
+            num = (Ac.T @ r) ** 2
+            den = np.einsum("ij,ij->j", Ac, Ac)
+            out = np.zeros(len(num))
+            good = den > 1e-30 * max(float(den.max()), 1e-300)
+            out[good] = num[good] / den[good]
+            return out
+
+        return margin_profit, float(r @ r)
+
     # --- the fixed-encoding (or free, if mu="free") candidate stream ------
     candidates = []
     skipped = []
+    history = []
+    modes_of = {}
     stop_reason = "exhausted"
     best_score = np.inf
     patience_left = cfg.mode_patience
     prev_level_best_theta = None
     stopped = False
+    margin_profit, resid_norm2 = None, 0.0
+    last_fit_modes = None
 
-    for mlabel, mlist in mode_sets:
+    while len(history) < MAX_PROPOSALS:
+        prop = policy.propose(ModeSearchContext(
+            N=N, k=k, n_extra=n_extra, P=P_fix, history=history,
+            margin_profit=margin_profit, resid_norm2=resid_norm2))
+        if prop is None:
+            break
+        mlabel, mlist = prop
+        mlist = [tuple(m) for m in mlist]
+        if any(rec.label == mlabel for rec in history):
+            raise ValueError(f"mode policy reused label {mlabel!r}")
+        if (last_fit_modes is not None
+                and not set(last_fit_modes) <= set(mlist)):
+            raise ValueError(
+                f"mode policy proposal {mlabel!r} does not contain the "
+                f"previously fitted set (nested growth is the contract)")
         if k < 2 * (len(mlist) + n_extra + P_fix):
             skipped.append(mlabel)
+            history.append(LevelRecord(mlabel, mlist, True, None))
             continue
+        if patience_left <= 0:
+            stop_reason = "mode_patience"
+            break
+        modes_of[mlabel] = mlist
         b_eval, b_vjp = basis(mlist, enc_mu0)
         level_inits = list(inits)
         if prev_level_best_theta is not None:
@@ -442,30 +514,33 @@ def fit_from_probes(x, m2_diag, z, y, mu0, modes=None,
                 break
         level_cands = candidates[level_start:]
         level_adm = [c for c in level_cands if c.admissible]
+        level_winner = None
         if level_adm:
-            level_best = min(c.score for c in level_adm)
-            if level_best < best_score:
-                best_score = level_best
+            i_best = min((i for i in range(level_start, len(candidates))
+                          if candidates[i].admissible),
+                         key=lambda i: candidates[i].score)
+            level_winner = candidates[i_best]
+            if level_winner.score < best_score:
+                best_score = level_winner.score
                 patience_left = cfg.mode_patience
-                i_best = min((i for i in range(level_start, len(candidates))
-                              if candidates[i].admissible),
-                             key=lambda i: candidates[i].score)
-                prev_level_best_theta = candidates[i_best].theta
+                prev_level_best_theta = level_winner.theta
             else:
                 patience_left -= 1
         else:
             patience_left -= 1
+        history.append(LevelRecord(mlabel, mlist, False, level_winner))
+        last_fit_modes = mlist
+        if level_winner is not None:
+            margin_profit, resid_norm2 = make_margin_scorer(
+                level_winner.theta, mlist)
         if stopped:
-            break
-        if patience_left <= 0 and mlabel != mode_sets[-1][0]:
-            stop_reason = "mode_patience"
             break
 
     if not candidates:
         raise ValueError(
-            f"every mode set failed the counting rule k >= 2*(m + "
-            f"{n_extra} + {P_fix}) at k={k}; smallest set has "
-            f"{min(len(m) for _, m in mode_sets)} modes")
+            f"no mode set passed the counting rule k >= 2*(m + "
+            f"{n_extra} + {P_fix}) at k={k} "
+            f"(skipped proposals: {skipped or 'none'})")
 
     winner = select(candidates)
 

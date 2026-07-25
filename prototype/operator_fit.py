@@ -82,6 +82,7 @@ from ellipsoid_transform import release_mu, theta_size
 from init_dictionary import theta_from_L
 from lg_ellipsoid_feature import eval_feature
 from lg_functions import modes_up_to_level
+from mode_policy import ModeSearchContext
 from probe_fit import ProbeFitConfig, fit_from_probes, linear_cv_score
 from whitening import whiten_data, whiten_extra, whiten_probes, whitened_basis
 
@@ -266,11 +267,13 @@ def fit_operator(x_cols, m1_diag, m2_diag, V, HV, sigma, mu0=None,
     if sigma.shape != (R_all, N, N):
         raise ValueError(f"sigma {sigma.shape} != (R={R_all}, N={N}, N={N})")
     n_mode_sources = sum(x is not None for x in
-                         (modes, cfg.row.mode_levels, cfg.row.mode_sets))
+                         (modes, cfg.row.mode_levels, cfg.row.mode_sets,
+                          cfg.row.mode_policy))
     if n_mode_sources != 1:
         raise ValueError("provide exactly one of `modes` (explicit list), "
-                         "config.row.mode_levels (shell ladder), or "
-                         "config.row.mode_sets (explicit nested ladder)")
+                         "config.row.mode_levels (shell ladder), "
+                         "config.row.mode_sets (explicit nested ladder), "
+                         "or config.row.mode_policy")
     if windows is not None and len(windows) != R_all:
         raise ValueError(f"windows must have one entry per row "
                          f"({R_all}), got {len(windows)}")
@@ -296,6 +299,13 @@ def fit_operator(x_cols, m1_diag, m2_diag, V, HV, sigma, mu0=None,
                      for lev in sorted(cfg.row.mode_levels)]
     elif cfg.row.mode_sets is not None:
         base_sets = [[tuple(m) for m in ms] for ms in cfg.row.mode_sets]
+    elif cfg.row.mode_policy is not None:
+        # the a-priori baseline may never depend on an adaptive
+        # trajectory: policies expose their feedback-blind sets
+        base_sets = [
+            [tuple(m) for m in ms]
+            for ms in cfg.row.mode_policy.baseline_sets(ModeSearchContext(
+                N=N, k=k, n_extra=n_extra_cfg, P=P_fix))]
     else:
         base_sets = [list(modes)]
     n_extra_cfg = 1 if cfg.spike else 0
