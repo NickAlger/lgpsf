@@ -189,3 +189,26 @@ if __name__ == "__main__":
     test_whitened_jac_matches_whitened_jvp_columns()
     test_whitened_regression_reproduces_row_model()
     print("all whitening checks passed")
+
+
+def test_whitened_basis_closures_match_direct_calls():
+    """The whitened_basis convenience closures must reproduce the direct
+    whitened_* calls exactly (it exists to kill partial boilerplate, not
+    to change any math)."""
+    from whitening import whitened_basis, whitened_jac_feature
+    rng = np.random.default_rng(9)
+    N, K = 2, 8
+    modes = _some_modes(N, max_ell=1, max_p=1)
+    theta = _random_theta(N, None, rng)
+    x = rng.uniform(-1.5, 1.5, size=(N, K))
+    m2 = rng.uniform(0.5, 2.0, size=K)
+    rm = 1.7
+    w = rng.standard_normal((len(modes), K))
+
+    b_eval, b_vjp, b_jac = whitened_basis(N, x, rm, m2, modes)
+    assert np.array_equal(b_eval(theta),
+                          whitened_eval_feature(theta, N, x, rm, m2, modes))
+    assert np.array_equal(b_vjp(theta, w),
+                          whitened_vjp_feature(theta, N, x, rm, m2, w, modes))
+    assert np.array_equal(b_jac(theta),
+                          whitened_jac_feature(theta, N, x, rm, m2, modes))

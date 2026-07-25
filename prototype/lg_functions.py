@@ -191,3 +191,20 @@ def grad_eval_lg_nd(p, ell, m, u):
     prefactor = norm * gaussian
     du = [prefactor * (R * dY[k] - u[k] * Y * (R - 2.0 * dR_dt)) for k in range(N)]
     return np.stack(du, axis=0)
+
+
+def modes_up_to_level(N, max_level):
+    """All (p, ell, m) with oscillator level 2p + ell <= max_level --
+    complete shells in energy order, the single-knob mode family used
+    throughout for nested mode ladders. Requires the harmonic table to
+    cover (N, ell) for every ell <= max_level (generated for N <= 4,
+    level <= 10)."""
+    modes = []
+    for ell in range(max_level + 1):
+        if (N, ell) not in TABLE:
+            break
+        _, rows = TABLE[(N, ell)]
+        for m in range(len(rows)):
+            for p in range((max_level - ell) // 2 + 1):
+                modes.append((p, ell, m))
+    return modes

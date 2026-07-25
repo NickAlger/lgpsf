@@ -174,6 +174,29 @@ the usual small-residual argument. Verified in
 test_varpro.py::test_kaufman_reverse_mode_matches_jac_built (reverse
 build vs an independent forward-built reference, machine precision).
 
+## Probe vocabulary and the module split (2026-07-24)
+
+**Decision:** `row_fit.py` became `probe_fit.py` (`fit_from_probes`,
+`ProbeFitConfig/Result`, `spike_index`), with two pieces split out:
+`init_dictionary.py` (hypothesis/init generation: ladders, window
+shape, oriented sigmas, geometry, ordering) and `probe_moments.py`
+(`backproject` + `raw_moments`). Two helpers were promoted downward:
+`lg_functions.modes_up_to_level` (was duplicated 4x across the repo and
+examples) and `whitening.whitened_basis` (the closure builder every
+consumer was hand-rolling).
+
+**Why the rename:** "row fit" misnamed the method twice over -- the
+windowing is done by the caller, and the method fits ANY function known
+only through inner products with random probe vectors; an operator row
+is the motivating example, not the definition. "Probe" was already the
+codebase's own vocabulary. Scope limit: `whitening.py`/`varpro.py` keep
+their internal row_mass/"row" language (the whitening derivation in
+docs/varpro-whitening-notes.tex is written in row terms); whitening.py
+carries a clarifying vocabulary note instead. **Why the split:** code
+outside fit_row kept re-implementing its pieces (the duplication test
+for a real boundary), and each module now maps 1:1 onto a future C++
+header.
+
 ## The row-fit orchestration layer: raw interface, holdout selection
 
 **Decisions (2026-07-24, `prototype/row_fit.py`; evidence: the

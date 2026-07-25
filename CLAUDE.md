@@ -134,35 +134,46 @@ existing JVP/VJP composes with it for free -- no new derivative math.
    `_ReducedProblem`'s docstring for the Kaufman<->GP<->Schur-complement
    relationships.
 
-7. **`row_fit.py`** -- the assembled general-purpose single-row fitting
-   layer, raw-data interface: `fit_row(x, m2_diag, z, y, mu0, modes,
-   diag_index=, sigma0=, config=RowFitConfig(...))` -> `RowFitResult`.
-   Whitens internally (masses *routed* here, mass math stays in
-   `whitening.py`). Architecture: one ORDERED CANDIDATE STREAM over the
-   data-adjudicated axes -- init family x scale (log-spaced circles +
-   scaled window-shape rungs + optional `sigma0`, tried likely-winners
-   first), nested mode-set ladder (`config.mode_levels`, counting-rule
+7. **`init_dictionary.py`** -- initial-ellipsoid hypothesis generation
+   as a standalone library (geometry + policy, no probes, no fitting):
+   `theta_from_L`, `window_shape` (mass-weighted covariance of the
+   batch geometry -- measures the window REGION, not mesh density),
+   `oriented_sigma`, `local_spacing`/`window_radius`, `ladder_scales`,
+   `mid_out` ordering, `circle_rungs`/`window_rungs`.
+8. **`probe_moments.py`** -- zero-matvec estimators from probe data:
+   `backproject` (unbiased raw-target estimate for iid-normal probes)
+   + `raw_moments` ((mu, Sigma) from raw values, which already carry
+   the lumped-mass quadrature weight so NO mass vector is needed; spike
+   excluded via `spike_index`; `rel_threshold`/`noise_mad` noise
+   thresholds). Future home of the parked conservative-field estimator
+   (`docs/probe-moment-ellipsoids.md`).
+9. **`probe_fit.py`** -- the general-purpose top layer: fit a target
+   function known only through inner products with random probe fields
+   (an operator row is the motivating example, not the definition).
+   `fit_from_probes(x, m2_diag, z, y, mu0, modes, spike_index=,
+   sigma0=, config=ProbeFitConfig(...))` -> `ProbeFitResult`. Whitens
+   internally (masses *routed* here, mass math stays in
+   `whitening.py`). One ORDERED CANDIDATE STREAM over the
+   data-adjudicated axes -- init family x scale (from
+   `init_dictionary`, `sigma0` first, rungs middle-out), nested
+   mode-set ladder (`config.mode_levels`, counting-rule
    `k >= 2(m+extra+P)` admissibility, jittered warm starts across
    levels), fixed vs released mu -- under ONE selection rule:
    window-containment admissibility, then linear-stage K-fold CV score
-   (never in-sample cost), then a simplicity tie-break (fewer modes,
-   then pinned mu, within `tie_delta`). Early stopping is one-sided
-   adaptive effort: `target_score` exits when a candidate is
-   certifiably good, `mode_patience` stops the mode ladder; hard rows
-   fail the certificates and buy the full grid. Structural facts
-   (window, probes, masses, `diag_index`) are caller-declared, never
-   adjudicated; numerics stay in `VarProOptions`. Companion
-   caller-invoked utilities `backproject_row` + `row_moments` estimate
-   (mu, Sigma) inits from the probes at zero matvecs -- raw row values
-   already carry the lumped-mass quadrature weight, so the moment
-   estimator needs no mass vector, only the diagonal excluded and noise
-   thresholds (`rel_threshold`, `noise_mad`).
+   (`linear_cv_score`, public -- can score a priori models with zero
+   fits; never in-sample cost), then a simplicity tie-break (fewer
+   modes, then pinned mu, within `tie_delta`). Early stopping is
+   one-sided adaptive effort: `target_score` exits when a candidate is
+   certifiably good, `mode_patience` stops the mode ladder; hard
+   targets fail the certificates and buy the full grid. Structural
+   facts (window, probes, masses, `spike_index`) are caller-declared,
+   never adjudicated; numerics stay in `VarProOptions`.
 
 Tests mirror this file-by-file (`test_lg_functions.py`,
 `test_ellipsoid_transform.py`, `test_lg_ellipsoid_feature.py`,
 `test_whitening.py`, `test_varpro.py` -- the latter's end-to-end check
 recovers a known $(\theta^*, c^*, s^*)$ from perturbed initialization --
-and `test_row_fit.py`, whose synthetic rows exercise the raw-data
+and `test_probe_fit.py`, whose synthetic targets exercise the raw-data
 contract end to end, including nonuniform masses and the
 backprojection-rescues-bad-center workflow).
 Examples: `examples/plot_lg_modes.py` (2D mode grid),
@@ -201,7 +212,7 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
   `varpro.py` is already library-free numpy).
 - Wedge/mode-selection (growing the LG basis by oscillator level,
   cross-validated, per the research plan) -- not reimplemented here;
-  `fit_row` takes an explicit mode list.
+  `fit_from_probes` takes an explicit mode list or a `mode_levels` ladder.
 - `ellipsoid_tree` integration. (The library HAS been validated against
   real PDE-Hessian probe data -- the glaciology rows, in the separate
   maintainer-local research repo -- reproducing and beating the research

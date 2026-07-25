@@ -2,6 +2,12 @@
 (column mass) appear anywhere in this codebase. See
 docs/varpro-whitening-notes.tex for the full derivation.
 
+(Vocabulary note: "row"/"row_mass" reflect the operator-row application
+the derivation was written for -- fitting one row of H = M1 Phi M2. The
+math only requires a target dof with a mass; higher layers (probe_fit)
+use the general "target function known through probe inner products"
+framing and route their masses through here unchanged.)
+
 Everything below is per-row: row_mass is a single scalar (M1)_rho,rho for
 whichever row is currently being fit; m2_diag is the array of column masses
 (M2)_jj for the row's local neighbor/support batch, same shape as the batch
@@ -69,6 +75,27 @@ def whitened_jac_feature(theta, N, x, row_mass, m2_diag, modes, mu0=None):
     over the trailing batch axes, indifferent to the extra P axis."""
     raw = jac_feature(theta, N, x, modes, mu0=mu0)
     return np.sqrt(row_mass) * np.sqrt(m2_diag) * raw
+
+
+def whitened_basis(N, x, row_mass, m2_diag, modes, mu0=None):
+    """Convenience closure builder: the whitened basis callables for one
+    target, in the exact shapes the fitting layers consume --
+    (eval(theta) -> (n_modes, K), vjp(theta, w_hat) -> (P, K),
+    jac(theta) -> (n_modes, P, K)). Kills the per-caller
+    functools.partial boilerplate."""
+    common = dict(N=N, x=x, row_mass=row_mass, m2_diag=m2_diag,
+                  modes=modes, mu0=mu0)
+
+    def b_eval(theta):
+        return whitened_eval_feature(theta, **common)
+
+    def b_vjp(theta, w_hat):
+        return whitened_vjp_feature(theta, w_hat=w_hat, **common)
+
+    def b_jac(theta):
+        return whitened_jac_feature(theta, **common)
+
+    return b_eval, b_vjp, b_jac
 
 
 def whitened_vjp_feature(theta, N, x, row_mass, m2_diag, w_hat, modes, mu0=None):

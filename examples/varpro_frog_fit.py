@@ -116,7 +116,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "prototype"))
 
 from ellipsoid_transform import unpack_theta
 from lg_ellipsoid_feature import eval_feature
-from lg_harmonics_table import TABLE
+from lg_functions import modes_up_to_level
 from varpro import VarProOptions, fit_varpro
 from whitening import (
     whiten_data,
@@ -183,16 +183,6 @@ CONFIGS = [
     (20, 1),     # few modes:        3 modes, crude but well-determined
     (20, 6),     # too many modes:  28 modes > 20 probes, underdetermined
 ]
-
-
-def modes_up_to_level(N, max_level):
-    modes = []
-    for ell in range(max_level + 1):
-        _, rows = TABLE[(N, ell)]
-        for m in range(len(rows)):
-            for p in range((max_level - ell) // 2 + 1):
-                modes.append((p, ell, m))
-    return modes
 
 
 def window_grid(n):
