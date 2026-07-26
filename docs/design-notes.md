@@ -1245,3 +1245,36 @@ Note this vindicates the standing warning at the top of the port plan in a
 direction worth recording: the Python measurement said the fit was
 basis-bound, and it still is in C++, but the SHARE went up rather than down
 once numpy's per-call dispatch overhead disappeared.
+
+## Whole-PIG fit in C++: ball and ellipsoid windows are indistinguishable (2026-07-26)
+
+Real PIG data, slice38's configuration (6557 nodes, white-500 archive, k=100,
+tau_window=5, levels [0,1,2], mu pinned), scored on the held-out 250..500 pool
+with slice38's metric. Detail in the maintainer-local `dev/pig-cxx-2026-07-26.md`.
+
+| | fit time (4 threads) | mean window | clipped error |
+|---|---|---|---|
+| ball (`window_aspect_cap = 1`) | 152.6 s | 387 | 0.0521 |
+| ellipsoid (`cap = infinity`) | 131.2 s | 318 | 0.0522 |
+
+Accuracy differs by two parts in a thousand; the ellipsoid is 14% faster on 18%
+fewer window points. **On this configuration and this basal-friction state the
+ellipsoid costs nothing and saves time** -- which is the first evidence either
+way since the archaeology. It is one configuration, not a sweep: intermediate
+caps are untried and the rough-beta state is untested.
+
+**Faithfulness.** The prototype on the same bytes and configuration agrees per
+row to a median 3.1% relative difference in CV score (worst 11.6%). Not
+bit-identical, and should not be -- the C++ uses deterministic round-robin folds
+where the prototype permutes, so the folds themselves differ, and the counting
+rule was corrected.
+
+**Not established:** the 0.052 is NOT comparable to the recorded 0.0147, which
+used shells to level 6 rather than slice38's default [0,1,2].
+
+**A bridge bug worth recording**, since anyone moving arrays between numpy and
+Eigen will meet it: `numpy.ndarray.tofile()` always writes C-order and silently
+IGNORES `asfortranarray`, so a Fortran-ordered array does not land as
+column-major. The first run gave CV ~0.97 and infinite errors; running the
+PROTOTYPE on the same dumped bytes reproduced the ~0.98, which located the fault
+in the bridge rather than in either implementation.
