@@ -335,13 +335,22 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
 
 ## Current status / what's not built yet
 
-- **The C++ port: DESIGN AGREED** -- `docs/cpp-port-plan.md` (deps,
-  threading, header-only, bindings, milestones M0-M6, the hand-rolled
-  LM contract, and the COMPILE MEMORY SAFETY rules: this machine has
-  been OOM-crashed by large `-j` builds -- read that section before
-  building any C++). Implementation starts in a fresh session; at port
-  start the prototype is FROZEN as the reference (its tests keep
-  running; new development lands C++-first).
+- **The C++ port: M0 COMPLETE, M1 next** -- `docs/cpp-port-plan.md`
+  (deps, threading, header-only, bindings, milestones M0-M6, the
+  hand-rolled LM contract, and the COMPILE MEMORY SAFETY rules: this
+  machine has been OOM-crashed by large `-j` builds -- **read that
+  section before building any C++**). Shipped in M0:
+  `include/lgpsf/detail/lg_harmonics_table.hpp` (generated alongside
+  the Python table by the same run of
+  `prototype/generate_lg_harmonics_table.py`, so they cannot drift),
+  `include/lgpsf/harmonic_polynomials.hpp`,
+  `include/lgpsf/lg_functions.hpp` (`Mode`, `genlaguerre`, `lg_norm`,
+  `modes_up_to_level`, `LGBasisAt` with values/grad/vjp, the
+  one-at-a-time reference functions, and the 2D `eval_lg` convention
+  oracle), plus `tests/pch.hpp`, `tests/test_helpers.hpp` and the two
+  intrinsic test files. Build with
+  `cmake --build build --target lgpsf_tests -j3` (NEVER a bare `-j`).
+  M1 is `ellipsoid_transform` + `lg_ellipsoid_feature` + `whitening`.
 - A hand-rolled Levenberg-Marquardt loop (port milestone M2): the
   prototype's outer loop delegates to scipy/MINPACK -- the one
   delegated numeric; everything else in `varpro.py` is library-free.

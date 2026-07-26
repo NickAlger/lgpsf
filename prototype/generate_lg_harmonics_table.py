@@ -253,12 +253,140 @@ def write_table_module(table, path):
         f.write("}\n")
 
 
+def _wrap(values, per_line, indent="    "):
+    """Emit a comma-separated literal list, per_line entries per line."""
+    lines = []
+    for start in range(0, len(values), per_line):
+        chunk = values[start:start + per_line]
+        lines.append(indent + ", ".join(chunk) + ",")
+    return "\n".join(lines) if lines else indent + "0"
+
+
+def write_table_header(table, path):
+    """Emit the same exact-rational table as a C++ header.
+
+    Layout (see docs/cpp-port-plan.md): NONZERO-MAJOR with two PARALLEL
+    blobs -- a double per term and dim int8 exponents per term -- walked
+    in lockstep, one linear pass per polynomial with no indirection.
+    Deliberately not interleaved into a {double; int8[N];} struct, whose
+    12-byte stride at N=4 would misalign every double after the first.
+
+    Flat `inline constexpr` arrays plus offset tables rather than nested
+    aggregate initializers: one large initializer of scalars is what g++
+    compiles cheaply, which matters under this project's compile-memory
+    rules.
+
+    Shells are indexed s = (N - 1) * (MAX_ELL + 1) + ell, so lookup is
+    arithmetic, not a map. Rows (basis polynomials) are numbered globally
+    in shell order.
+
+    Coefficients are written with %.17g, which round-trips IEEE double
+    exactly -- the emitted header holds the identical values to
+    lg_harmonics_table.py, and both are produced in the same run from the
+    same exact-rational computation so they cannot drift.
+    """
+    shell_row_begin = [0]
+    row_term_begin = [0]
+    row_exp_begin = [0]
+    coefficients = []
+    exponents = []
+
+    for N in DIMENSIONS:
+        for ell in range(MAX_ELL + 1):
+            exponent_rows, coeff_rows = table[(N, ell)]
+            for exps, vals in zip(exponent_rows, coeff_rows):
+                for alpha, coeff in zip(exps, vals):
+                    coefficients.append("%.17g" % coeff)
+                    exponents.extend(str(a) for a in alpha)
+                row_term_begin.append(len(coefficients))
+                row_exp_begin.append(len(exponents))
+            shell_row_begin.append(len(row_term_begin) - 1)
+
+    n_shells = len(DIMENSIONS) * (MAX_ELL + 1)
+    n_rows = len(row_term_begin) - 1
+    assert len(shell_row_begin) == n_shells + 1
+
+    with open(path, "w") as f:
+        f.write(f"""#pragma once
+// SPDX-License-Identifier: MIT
+// Part of lgpsf — https://github.com/NickAlger/lgpsf
+
+/// @file
+/// @brief GENERATED harmonic-polynomial coefficient table -- do not hand-edit.
+///
+/// Produced by `python prototype/generate_lg_harmonics_table.py`, which writes
+/// this header and the Python table in the same run from the same
+/// exact-rational computation (monomial harmonic projection + Gram-Schmidt
+/// against Gaussian moments), so the two cannot drift.
+///
+/// Each degree-ell harmonic polynomial in N variables is stored as its NONZERO
+/// terms only: 91.5% of the dense coefficients are exactly zero for structural
+/// reasons (exponent parity classes and the Gram-Schmidt staircase), and the
+/// generator drops them on an exact-rational `!= 0` test, never a numerical
+/// tolerance. See docs/design-notes.md.
+///
+/// Two parallel blobs, walked in lockstep: one double per term, and `dim`
+/// int8 exponents per term. Shell s = (N - 1) * (MAX_DEGREE + 1) + ell; rows
+/// (basis polynomials) are numbered globally in shell order.
+///
+/// Read this through lgpsf/harmonic_polynomials.hpp, its only intended
+/// consumer.
+
+namespace lgpsf {{
+namespace detail {{
+
+inline constexpr int kHarmonicMaxDimension = {max(DIMENSIONS)};
+inline constexpr int kHarmonicMaxDegree    = {MAX_ELL};
+inline constexpr int kHarmonicNumShells    = {n_shells};
+inline constexpr int kHarmonicNumRows      = {n_rows};
+inline constexpr int kHarmonicNumTerms     = {len(coefficients)};
+
+/// First row index of each shell; shell s owns rows [begin[s], begin[s + 1]).
+inline constexpr int kHarmonicShellRowBegin[kHarmonicNumShells + 1] = {{
+{_wrap([str(v) for v in shell_row_begin], 12)}
+}};
+
+/// Term range of each row, into kHarmonicCoefficient.
+inline constexpr int kHarmonicRowTermBegin[kHarmonicNumRows + 1] = {{
+{_wrap([str(v) for v in row_term_begin], 12)}
+}};
+
+/// Exponent range of each row, into kHarmonicExponent (dim entries per term).
+inline constexpr int kHarmonicRowExponentBegin[kHarmonicNumRows + 1] = {{
+{_wrap([str(v) for v in row_exp_begin], 12)}
+}};
+
+/// Term exponents, dim consecutive entries per term.
+inline constexpr signed char kHarmonicExponent[{len(exponents)}] = {{
+{_wrap(exponents, 32)}
+}};
+
+/// Term coefficients, %.17g so they round-trip exactly.
+inline constexpr double kHarmonicCoefficient[kHarmonicNumTerms] = {{
+{_wrap(coefficients, 6)}
+}};
+
+}} // end namespace detail
+}} // end namespace lgpsf
+""")
+
+
 if __name__ == "__main__":
     import os
     import time
 
     t0 = time.time()
     table = build_table()
-    out_path = os.path.join(os.path.dirname(__file__), "lg_harmonics_table.py")
-    write_table_module(table, out_path)
-    print(f"wrote {out_path} in {time.time() - t0:.1f}s")
+    elapsed = time.time() - t0
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    # Both outputs, one run, one exact-rational computation -- the Python
+    # table and the C++ header cannot drift apart.
+    py_path = os.path.join(here, "lg_harmonics_table.py")
+    hpp_path = os.path.join(here, os.pardir, "include", "lgpsf", "detail",
+                            "lg_harmonics_table.hpp")
+    write_table_module(table, py_path)
+    write_table_header(table, os.path.normpath(hpp_path))
+    print(f"built the table in {elapsed:.1f}s; wrote")
+    print(f"  {py_path}")
+    print(f"  {os.path.normpath(hpp_path)}")

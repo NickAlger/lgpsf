@@ -22,8 +22,6 @@
 
 #include <ellipsoid_tree/ellipsoid_tree.hpp>
 
-namespace lgpsf {
-
-// Public headers land here as they're added.
-
-} // namespace lgpsf
+#include "lgpsf/harmonic_polynomials.hpp"
+#include "lgpsf/lg_functions.hpp"
+// Further public headers land here as the port proceeds (docs/cpp-port-plan.md).

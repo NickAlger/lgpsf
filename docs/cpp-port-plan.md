@@ -284,7 +284,22 @@ the ellipsoid_psf way:
 
 ## Milestones (each a reviewable unit, riskiest early)
 
-- **M0** table codegen + harmonic_polynomials.hpp + lg_functions.hpp
+- **M0 -- DONE.** Shipped: the generator's C++ emission (both outputs in
+  one run, so the Python table and the header cannot drift),
+  `detail/lg_harmonics_table.hpp` (264 KB source, ~90 KB binary),
+  `harmonic_polynomials.hpp`, `lg_functions.hpp`, `tests/pch.hpp`,
+  `tests/test_helpers.hpp` (seeded generators + Golub-Welsch
+  Gauss-Hermite), and 24 test cases / 97k assertions across
+  `test_harmonic_polynomials.cpp` and `test_lg_functions.cpp`.
+  Regeneration is byte-stable. Two calibration notes for later
+  milestones: the C++ invariants land on the same numbers as the frozen
+  prototype computed independently (harmonicity 1.32225e-16 both sides),
+  and the LG orthonormality floor is the QUADRATURE, not the basis --
+  the Golub-Welsch rule is itself only good to ~3e-13 at n=12 relative
+  to the magnitudes it cancels, which is exactly the observed
+  orthonormality, so do not read ~1e-13 there as basis error.
+- **M0 (original spec)** table codegen + harmonic_polynomials.hpp +
+  lg_functions.hpp
   (+ PCH scaffolding). Accept: the prototype's intrinsic suites port
   and pass -- table well-formedness, parity/staircase structure,
   `dim H_ell` closed form, `Delta Y = 0`, homogeneity, sphere
