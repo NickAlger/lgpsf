@@ -1211,3 +1211,37 @@ holes in the running total, and the patch loop written to compensate was
 convoluted rather than correct. Carrying the offset forward before the skip is
 the fix. This is precisely the bookkeeping the function exists to own, which is
 an argument for it existing rather than against.
+
+## The C++ port is 8.4x the prototype single-threaded, 25x on four cores (2026-07-26)
+
+Measured at PIG scale on identical data -- 6561 columns, 100 probes, 100 rows,
+slice38's configuration, both running the BALL window so the work is the same
+(mean window 283 points, 100/100 rows shipped, either way). Full numbers in the
+maintainer-local `dev/timing-2026-07-26.md`.
+
+| | per row | vs prototype |
+|---|---|---|
+| Python prototype | 241.3 ms | 1x |
+| C++, 1 thread | 28.6 ms | 8.4x |
+| C++, 4 threads | 9.6 ms | 25.3x |
+
+Threading scales 1.92x on 2 and 3.00x on 4. The ellipsoid window (the C++
+default) is a further 1.6x, being roughly half the points -- less work rather
+than faster work.
+
+For the replay this is the difference between ~26 min and ~63 s for a
+whole-field fit, so a five-setting `window_aspect_cap` sweep costs about five
+minutes.
+
+**Where the time goes.** One row, 314-point window, 17 candidates: 25.6 ms.
+`fit_varpro` is 840 us per candidate and `linear_cv_score` 219 us, so ~70% of a
+row is the outer LM loop and ~15% is cross-validation. Within the LM, one
+iteration costs `values()` (13.0 us) plus `vjp()` (25.5 us), and ~20 iterations
+of that is ~770 us of the 840 -- **the LM is essentially all basis
+evaluation**, which is what the design predicted and what the prototype
+measured in Python (47% there).
+
+Note this vindicates the standing warning at the top of the port plan in a
+direction worth recording: the Python measurement said the fit was
+basis-bound, and it still is in C++, but the SHARE went up rather than down
+once numpy's per-call dispatch overhead disappeared.
