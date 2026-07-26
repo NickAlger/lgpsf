@@ -101,8 +101,8 @@ Hard rules for every session working on the C++ side:
 | harmonic_polynomials.py | harmonic_polynomials.hpp | the ONLY consumer of the table's format, in both languages; eval/grad/terms/`num_harmonics`/`max_degree`, plus the BATCHED `eval_harmonic_basis`/`grad_harmonic_basis` |
 | lg_functions.py | lg_functions.hpp | pure recurrences; `std::tgamma` for half-integer gammas; `struct Mode{int p, ell, m;}`; the batched `eval_lg_basis`/`grad_lg_basis` are the production path (below) |
 | ellipsoid_transform.py | ellipsoid_transform.hpp | **DONE (M1).** No `N` parameter and no optional `mu0`: `mu0` is required (the fitting layers already require it), so `N = mu0.size()`, and the sentinel becomes `enum class MuMode {Pinned, Fitted}`. Public `theta` vs internal `theta_hat` -- see design-notes |
-| lg_ellipsoid_feature.py | lg_ellipsoid_feature.hpp | eval/jvp/vjp/jac; jac is the fitting-core interface |
-| whitening.py | whitening.hpp | the ONLY masses layer (invariant preserved); `whitened_basis` closure-builder becomes a small basis object with eval/vjp/jac methods (or `std::function` triple) |
+| lg_ellipsoid_feature.py | lg_ellipsoid_feature.hpp | **DONE (M1).** `FeatureAt` + free wrappers; `jac()` is indexed by PARAMETER (num_params of (K, num_modes)), which is how Golub-Pereyra slices it. Does not retain `x` -- the pullback's derivatives need only `u` |
+| whitening.py | whitening.hpp | **DONE (M1).** The ONLY masses layer (invariant preserved). `whitened_basis` became `WhitenedBasis`, a functor with `operator()(theta_hat) -> WhitenedBasisAt` -- a concrete type, not `std::function`, so `varpro.hpp` templates on it |
 | varpro.py | varpro.hpp | BDCSVD inner solve, FWL, Kaufman one-sweep; **the hand-rolled LM lives here** (contract below); options/results as structs |
 | init_dictionary.py | init_dictionary.hpp | cKDTree k-NN -> ellipsoid_tree KDTree; labelled rungs as `std::pair<std::string, VectorXd>` |
 | probe_moments.py | probe_moments.hpp | trivial |
@@ -326,8 +326,19 @@ the ellipsoid_psf way:
   delta_ij` is a hard assertion covering table + recurrence +
   normalization + alpha bookkeeping at once -- 3e-15 in Python).
   Generated table byte-stable across reruns.
-- **M1** ellipsoid_transform + lg_ellipsoid_feature + whitening.
-  Accept: full tier-1 identity suite green in C++.
+- **M1 -- DONE.** `ellipsoid_transform.hpp`, `lg_ellipsoid_feature.hpp`,
+  `whitening.hpp`, and 25 test cases across their three test files; the
+  suite is at 49 cases / 98,496 assertions. Settled here: the
+  `theta`/`theta_hat` encoding split (design-notes), `mu0` required with
+  `enum class MuMode` in place of the planned optional, and no `N`
+  parameter anywhere. Two calibration notes: the whitened chain lands at
+  ~1e-15 adjoint consistency and ~2e-10 relative FD, so M2 can hold the
+  fitting core to tolerances that tight; and the row-model keystone was
+  verified to FAIL when `sqrt(m_rho)` is dropped from `whiten_extra`
+  (28 assertions), while the adjoint and FD checks pass right through
+  that bug -- so do not weaken it into a derivative check.
+- **M1 (original spec)** ellipsoid_transform + lg_ellipsoid_feature +
+  whitening. Accept: full tier-1 identity suite green in C++.
 - **M2** varpro.hpp incl. the hand-rolled LM. Accept: inner-LA tests
   vs brute-force references; synthetic recovery at tolerance; the
   max_nfev=1 semantic; sentinel behavior.

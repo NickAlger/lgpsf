@@ -335,7 +335,7 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
 
 ## Current status / what's not built yet
 
-- **The C++ port: M0 COMPLETE, M1 next** -- `docs/cpp-port-plan.md`
+- **The C++ port: M0 and M1 COMPLETE, M2 next** -- `docs/cpp-port-plan.md`
   (deps, threading, header-only, bindings, milestones M0-M6, the
   hand-rolled LM contract, and the COMPILE MEMORY SAFETY rules: this
   machine has been OOM-crashed by large `-j` builds -- **read that
@@ -350,7 +350,20 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
   oracle), plus `tests/pch.hpp`, `tests/test_helpers.hpp` and the two
   intrinsic test files. Build with
   `cmake --build build --target lgpsf_tests -j3` (NEVER a bare `-j`).
-  M1 is `ellipsoid_transform` + `lg_ellipsoid_feature` + `whitening`.
+  Shipped in M1: `ellipsoid_transform.hpp` (`EllipsoidFrame`,
+  `MuMode`, the two encodings, both stages and their JVP/VJP),
+  `lg_ellipsoid_feature.hpp` (`FeatureAt`), `whitening.hpp`
+  (`WhitenedBasis` -> `WhitenedBasisAt`, the masses layer). Suite:
+  49 cases / 98,496 assertions. **THE PARAMETER VECTOR HAS TWO
+  ENCODINGS in C++** (`docs/design-notes.md`): public `theta` is
+  absolute `[mu, log-diag, strict-lower]`, always `N(N+3)/2` long, and
+  `unpack_theta(theta)` needs nothing else -- that is what keeps
+  `fit_operator(mu0=None)` meaningful. Internal `theta_hat` is what the
+  fitting core sees: the center as a DISPLACEMENT from `mu0` when
+  fitted, absent when pinned. `mu0` is required everywhere (so `N =
+  mu0.size()`; there is no `N` parameter and no optional `mu0`), and
+  the fit/pin switch is `enum class MuMode`. M2 is `varpro.hpp`
+  including the hand-rolled LM.
 - A hand-rolled Levenberg-Marquardt loop (port milestone M2): the
   prototype's outer loop delegates to scipy/MINPACK -- the one
   delegated numeric; everything else in `varpro.py` is library-free.

@@ -3,7 +3,9 @@ add_executable(lgpsf_tests
     test_main.cpp
     test_harmonic_polynomials.cpp
     test_lg_functions.cpp
-    test_ellipsoid_transform.cpp)
+    test_ellipsoid_transform.cpp
+    test_lg_ellipsoid_feature.cpp
+    test_whitening.cpp)
 target_link_libraries(lgpsf_tests PRIVATE lgpsf::lgpsf)
 target_include_directories(lgpsf_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty)
 target_compile_options(lgpsf_tests PRIVATE
