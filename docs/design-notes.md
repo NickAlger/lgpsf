@@ -681,3 +681,59 @@ port. The price is the bit-identity certification -- this path is now
 pinned by a ~1e-15 tolerance test plus adjoint consistency
 (`<w, J du> == <vjp(w), du>`, worst gap 2.5e-14) rather than by exact
 equality.
+
+## The fitting core takes ONE basis callable, per theta, not three
+
+**Decision (2026-07-25, Nick):** `fit_varpro(z_hat, y_hat, basis,
+theta_init, e_hat=None, options=...)` -- where `basis(theta)` returns an
+object exposing `values()`, `vjp(w_hat)` and optionally `jac()` --
+replaces the previous `basis_eval` / `basis_vjp` / `basis_jac` triple.
+The object is built once per trial theta and held in the same one-entry
+cache as the inner solve, so the values and whatever derivative the step
+needs share one evaluation. Three layers mirror the three modules:
+`LGBasisAt` (r^2, the Gaussian, the shell index, harmonics, the Laguerre
+tables), `FeatureAt` (adds the pullback and the theta chain rule), and
+`WhitenedBasisAt` (adds the mass scaling, keeping masses confined). The
+free functions become thin wrappers over them, so each formula exists
+once.
+
+**Why an object and not a value-and-gradient call.** The usual
+`value_and_grad` pattern does not apply: the Kaufman cotangent is
+`w_hat[i, j] = c_i`, and `c` comes from the inner linear solve, which
+needs the values. So the sequence is values -> solve -> derivative, with
+caller work in between; there is nothing to fuse. What IS shared is a
+partial evaluation at a fixed theta, and an object with an explicit
+lifetime is the honest way to name that. A hidden one-entry cache behind
+the old triple would also have worked and needed no signature change --
+rejected because the C++ port hand-rolls LM (M2), where the loop
+naturally evaluates the residual at trial thetas and residual+Jacobian
+at accepted ones; the contract should be shaped for that call pattern,
+with scipy's separate `fun`/`jac` the thing that bends.
+
+**Capability, not optionality.** "Golub-Pereyra needs `basis_jac`"
+became "Golub-Pereyra needs an evaluation providing `jac()`", checked
+once at `fit_varpro` entry. `test_varpro.py` now builds a deliberately
+minimal `values()`-and-`vjp()`-only basis to pin that the default
+Kaufman path never reaches for more -- a sharper test than passing
+`basis_jac=None` was.
+
+**Also closed while here:** the gradient pass used to recompute a
+bit-identical `Y` when `values()` had already run -- i.e. exactly the
+VarPro order. `harmonic_basis(..., values=Y)` skips the value
+accumulation in that case.
+
+**Result: 1.04x on an end-to-end row fit** (2.49s -> 2.40s, stable over
+repeats), with theta, c, s and score **bit-for-bit identical** -- the
+acceptance criterion for a pure restructuring, verified by running the
+same fit in the pre- and post-change trees in separate subprocesses, plus
+all four feature functions across N and both mu encodings.
+
+The small win is the expected one, not a disappointment: this layer is
+dispatch-bound (see the overhead entry), the LG evaluation is ~35% of the
+fit, and B removes duplicated *arithmetic* -- one pullback, r^2, the
+Gaussian, the harmonics and the value-side Laguerre tables per accepted
+step -- rather than duplicated numpy calls. In C++, where arithmetic is
+what costs, the same removal is worth proportionally more. B was taken
+for the contract, not the clock; it must be settled before `varpro.hpp`
+freezes its interface, which is why it was done in the prototype now
+rather than discovered during M2.

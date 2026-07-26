@@ -148,7 +148,7 @@ def _axes_of(theta, N, mu0):
     return np.sqrt(np.linalg.eigvalsh(L @ L.T))
 
 
-def linear_cv_score(z_hat, y_hat, basis_eval, theta, e_hat=None,
+def linear_cv_score(z_hat, y_hat, basis, theta, e_hat=None,
                     n_folds=5, seed=0):
     """Linear-stage K-fold CV score of a model at a given theta: the
     linear coefficients are refit leave-fold-out at that theta and
@@ -160,7 +160,7 @@ def linear_cv_score(z_hat, y_hat, basis_eval, theta, e_hat=None,
     k = len(y_hat)
     y_norm = max(float(np.linalg.norm(y_hat)), 1e-300)
     with np.errstate(over="ignore", invalid="ignore"):
-        Phi = basis_eval(theta)
+        Phi = basis(theta).values()
     if not np.all(np.isfinite(Phi)):
         return np.inf
     A = z_hat @ Phi.T
@@ -387,9 +387,8 @@ def fit_from_probes(x, m2_diag, z, y, mu0, modes=None,
     rng = np.random.default_rng(cfg.seed)
 
     def basis(mlist, mu0_or_none):
-        b_eval, b_vjp, _ = whitened_basis(N, x, target_mass, m2_diag,
-                                          mlist, mu0=mu0_or_none)
-        return b_eval, b_vjp
+        return whitened_basis(N, x, target_mass, m2_diag,
+                              mlist, mu0=mu0_or_none)
 
     def admissible_of(theta, enc):
         axes = _axes_of(theta, N, enc)
@@ -398,15 +397,14 @@ def fit_from_probes(x, m2_diag, z, y, mu0, modes=None,
             ok = ok and bool(np.linalg.norm(theta[:N] - mu0) <= r_max)
         return ok
 
-    def run_candidate(label, mlabel, mlist, th0, enc, released,
-                      b_eval, b_vjp):
-        res = _quiet_fit(z_hat, y_hat, b_eval, b_vjp, th0,
+    def run_candidate(label, mlabel, mlist, th0, enc, released, b):
+        res = _quiet_fit(z_hat, y_hat, b, th0,
                          e_hat=e_hat, options=cfg.varpro)
         return CandidateFit(
             label=label, modes_label=mlabel, n_modes=len(mlist),
             released=released, theta_init=np.asarray(th0, dtype=float),
             theta=res.theta, c=res.c, s=res.s, cost=res.cost,
-            score=linear_cv_score(z_hat, y_hat, b_eval, res.theta,
+            score=linear_cv_score(z_hat, y_hat, b, res.theta,
                                   e_hat=e_hat, n_folds=cfg.cv_folds,
                                   seed=cfg.seed),
             axes=_axes_of(res.theta, N, enc), success=res.success,
@@ -430,10 +428,10 @@ def fit_from_probes(x, m2_diag, z, y, mu0, modes=None,
         """Exact one-step SSE reductions for candidate modes at a fixed
         theta -- the adaptive policies' feedback. A projection against
         the active whitened design, never a refit."""
-        b_eval_a = whitened_basis(N, x, target_mass, m2_diag,
-                                  active_modes, mu0=enc_mu0)[0]
+        basis_a = whitened_basis(N, x, target_mass, m2_diag,
+                                 active_modes, mu0=enc_mu0)
         with np.errstate(over="ignore", invalid="ignore"):
-            Phi = b_eval_a(theta)
+            Phi = basis_a(theta).values()
         X = z_hat @ Phi.T
         if e_hat is not None:
             X = np.hstack([X, z_hat @ e_hat.T])
@@ -444,11 +442,11 @@ def fit_from_probes(x, m2_diag, z, y, mu0, modes=None,
         Q = np.linalg.qr(X)[0]
 
         def margin_profit(cand_modes):
-            b_eval_c = whitened_basis(N, x, target_mass, m2_diag,
-                                      [tuple(m) for m in cand_modes],
-                                      mu0=enc_mu0)[0]
+            basis_c = whitened_basis(N, x, target_mass, m2_diag,
+                                     [tuple(m) for m in cand_modes],
+                                     mu0=enc_mu0)
             with np.errstate(over="ignore", invalid="ignore"):
-                Ac = z_hat @ b_eval_c(theta).T
+                Ac = z_hat @ basis_c(theta).values().T
             if not np.all(np.isfinite(Ac)):
                 return np.zeros(Ac.shape[1])
             Ac = Ac - Q @ (Q.T @ Ac)
@@ -497,7 +495,7 @@ def fit_from_probes(x, m2_diag, z, y, mu0, modes=None,
             stop_reason = "mode_patience"
             break
         modes_of[mlabel] = mlist
-        b_eval, b_vjp = basis(mlist, enc_mu0)
+        b = basis(mlist, enc_mu0)
         level_inits = list(inits)
         if prev_level_best_theta is not None:
             jitter = 0.05 * rng.standard_normal(prev_level_best_theta.shape)
@@ -510,7 +508,7 @@ def fit_from_probes(x, m2_diag, z, y, mu0, modes=None,
             else:
                 th0 = th_init if ladder_fixed else release_mu(th_init, mu0)
             cand = run_candidate(label, mlabel, mlist, th0, enc_mu0,
-                                 False, b_eval, b_vjp)
+                                 False, b)
             candidates.append(cand)
             if hit_target(cand):
                 stop_reason = "target"
@@ -552,7 +550,7 @@ def fit_from_probes(x, m2_diag, z, y, mu0, modes=None,
     if cfg.mu == "fixed_then_release" and stop_reason != "target":
         win_mlabel = candidates[winner].modes_label
         mlist = modes_of[win_mlabel]
-        b_eval_f, b_vjp_f = basis(mlist, None)
+        b_free = basis(mlist, None)
         seen = set()
         sources = sorted(
             (c for c in candidates
@@ -566,7 +564,7 @@ def fit_from_probes(x, m2_diag, z, y, mu0, modes=None,
             seen.add(key)
             cand = run_candidate(f"release({c.label})", win_mlabel, mlist,
                                  release_mu(c.theta, mu0), None, True,
-                                 b_eval_f, b_vjp_f)
+                                 b_free)
             candidates.append(cand)
             if hit_target(cand):
                 stop_reason = "target"

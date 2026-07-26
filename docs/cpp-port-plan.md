@@ -159,11 +159,29 @@ Gaussian is 8.1x redundant and `exp` is the dominant per-point
 primitive) and worse on the call-overhead component, which does not
 exist there.
 
-Known remaining redundancy, NOT addressed: `basis_eval` and `basis_vjp`
-are invoked at the same theta each LM iteration and share the pullback,
-`r2`, the Gaussian, every harmonic and the whole Laguerre table.
-Capturing it needs the fitting core's basis-callable contract to change;
-decide separately, ideally before M2 freezes `varpro.hpp`'s interface.
+### The fitting core's basis contract (settled 2026-07-25, prototype-first)
+
+`fit_varpro` takes ONE callable, `basis(theta) -> evaluation object` with
+`values()`, `vjp(w_hat)` and optionally `jac()`, not the old
+eval/vjp/jac triple. Port it that way: `varpro.hpp` should take a basis
+functor and hold its per-theta evaluation alongside the cached inner
+solve. Three thin layers mirror the headers -- `LGBasisAt` in
+lg_functions.hpp, `FeatureAt` in lg_ellipsoid_feature.hpp,
+`WhitenedBasisAt` in whitening.hpp -- with the free functions as
+wrappers.
+
+Why not a `value_and_grad`: the Kaufman cotangent `w_hat[i,j] = c_i`
+comes from the inner solve, which needs the values, so the order is
+values -> solve -> derivative with caller work in between. Nothing to
+fuse; what is shared is a partial evaluation at a fixed theta.
+
+This matters more in C++ than it did in Python (1.04x there, being
+dispatch-bound), and the HAND-ROLLED LM is why: its loop evaluates the
+residual at trial thetas and residual+Jacobian at accepted ones, so the
+object's lifetime falls out naturally instead of being forced by scipy's
+separate `fun`/`jac`. Golub-Pereyra support is a CAPABILITY of the
+evaluation (`jac()` present), checked once at entry -- not an optional
+constructor argument.
 
 ## The numerics map (what replaces scipy)
 

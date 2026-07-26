@@ -190,24 +190,40 @@ if __name__ == "__main__":
     print("all whitening checks passed")
 
 
-def test_whitened_basis_closures_match_direct_calls():
-    """The whitened_basis convenience closures must reproduce the direct
-    whitened_* calls exactly (it exists to kill partial boilerplate, not
-    to change any math)."""
+def test_whitened_basis_object_matches_direct_calls():
+    """whitened_basis(...)(theta) shares one pullback and one LG
+    evaluation across values/jvp/jac/vjp; it must still reproduce the
+    direct whitened_* calls EXACTLY. Sharing work is not licence to
+    change any number, so this is bit equality, not a tolerance."""
     from whitening import whitened_basis, whitened_jac_feature
     rng = np.random.default_rng(9)
     N, K = 2, 8
     modes = _some_modes(N, max_ell=1, max_p=1)
-    theta = _random_theta(N, None, rng)
     x = rng.uniform(-1.5, 1.5, size=(N, K))
     m2 = rng.uniform(0.5, 2.0, size=K)
     rm = 1.7
     w = rng.standard_normal((len(modes), K))
 
-    b_eval, b_vjp, b_jac = whitened_basis(N, x, rm, m2, modes)
-    assert np.array_equal(b_eval(theta),
-                          whitened_eval_feature(theta, N, x, rm, m2, modes))
-    assert np.array_equal(b_vjp(theta, w),
-                          whitened_vjp_feature(theta, N, x, rm, m2, w, modes))
-    assert np.array_equal(b_jac(theta),
-                          whitened_jac_feature(theta, N, x, rm, m2, modes))
+    for mu0 in [None, rng.uniform(-1, 1, size=N)]:
+        theta = _random_theta(N, mu0, rng)
+        dtheta = rng.standard_normal(theta.shape)
+        basis = whitened_basis(N, x, rm, m2, modes, mu0=mu0)
+        at = basis(theta)
+
+        assert np.array_equal(
+            at.values(),
+            whitened_eval_feature(theta, N, x, rm, m2, modes, mu0=mu0))
+        assert np.array_equal(
+            at.vjp(w),
+            whitened_vjp_feature(theta, N, x, rm, m2, w, modes, mu0=mu0))
+        assert np.array_equal(
+            at.jac(),
+            whitened_jac_feature(theta, N, x, rm, m2, modes, mu0=mu0))
+        assert np.array_equal(
+            at.jvp(dtheta),
+            whitened_jvp_feature(theta, dtheta, N, x, rm, m2, modes, mu0=mu0))
+
+        # asking twice must give the identical object contents, and asking
+        # for values after a derivative must not disturb them
+        assert np.array_equal(at.values(), at.values())
+        assert np.array_equal(at.vjp(w), at.vjp(w))

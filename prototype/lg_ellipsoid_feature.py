@@ -23,15 +23,66 @@ loops over the mode list and over N are plain Python loops, per the
 """
 import numpy as np
 
-from lg_functions import eval_lg_basis, grad_lg_basis, vjp_lg_basis
+from lg_functions import LGBasisAt
 from ellipsoid_transform import eval_T, jvp_T, vjp_T, jacobian_tensor_forward
+
+
+class FeatureAt:
+    """The feature basis evaluated at one theta: the pullback u and the
+    LG evaluation on it, shared across the values and every derivative.
+
+    The VarPro loop needs the values and a derivative at the SAME theta,
+    with a linear solve in between (the Kaufman cotangent is built from
+    the values), so they cannot be fused into one value-and-gradient
+    call. An object with an explicit lifetime is what that dependency
+    calls for instead: build it once per trial theta, ask it for what the
+    step needs, discard it.
+
+    The free functions below are thin wrappers for single-quantity
+    callers; the fitting core holds the object.
+    """
+
+    def __init__(self, theta, N, x, modes, mu0=None):
+        self.theta = theta
+        self.N = N
+        self.x = x
+        self.modes = modes
+        self.mu0 = mu0
+        self.u = eval_T(theta, N, x, mu0=mu0)
+        self.lg = LGBasisAt(modes, self.u)
+
+    def values(self):
+        """(len(modes), *batch_shape)."""
+        return self.lg.values()
+
+    def jvp(self, dtheta):
+        """Directional theta-derivative, (len(modes), *batch_shape)."""
+        du = jvp_T(self.theta, dtheta, self.N, self.x, mu0=self.mu0)
+        grad = self.lg.grad()
+        return np.stack([np.sum(grad[i] * du, axis=0)
+                         for i in range(len(self.modes))], axis=0)
+
+    def jac(self):
+        """Full theta-Jacobian, (len(modes), P, *batch_shape)."""
+        dU = jacobian_tensor_forward(self.theta, self.N, self.x, mu0=self.mu0)
+        P = dU.shape[1]
+        grad = self.lg.grad()
+        out = []
+        for i in range(len(self.modes)):
+            rows = [np.sum(grad[i] * dU[:, q], axis=0) for q in range(P)]
+            out.append(np.stack(rows, axis=0))
+        return np.stack(out, axis=0)
+
+    def vjp(self, w):
+        """<w, d(values)/dtheta> per point, (P, *batch_shape)."""
+        combined = self.lg.vjp(w)
+        return vjp_T(self.theta, self.N, self.x, combined, mu0=self.mu0)
 
 
 def eval_feature(theta, N, x, modes, mu0=None):
     """phi_i(x; theta) = psi_i(T(theta, x)) for each (p, ell, m) in modes.
     Returns an array of shape (len(modes), *batch_shape)."""
-    u = eval_T(theta, N, x, mu0=mu0)
-    return eval_lg_basis(modes, u)
+    return FeatureAt(theta, N, x, modes, mu0=mu0).values()
 
 
 def jvp_feature(theta, dtheta, N, x, modes, mu0=None):
@@ -39,13 +90,7 @@ def jvp_feature(theta, dtheta, N, x, modes, mu0=None):
     dtheta, at fixed x. Chain rule:
         d/dtheta psi_i(T(theta,x)) = grad_u(psi_i)(u) . jvp_T(theta,dtheta,x).
     Returns an array of shape (len(modes), *batch_shape)."""
-    u = eval_T(theta, N, x, mu0=mu0)
-    du = jvp_T(theta, dtheta, N, x, mu0=mu0)  # (N, *batch_shape)
-    grad = grad_lg_basis(modes, u)             # (len(modes), N, *batch_shape)
-    out = []
-    for i in range(len(modes)):
-        out.append(np.sum(grad[i] * du, axis=0))  # (*batch_shape,)
-    return np.stack(out, axis=0)
+    return FeatureAt(theta, N, x, modes, mu0=mu0).jvp(dtheta)
 
 
 def jac_feature(theta, N, x, modes, mu0=None):
@@ -65,15 +110,7 @@ def jac_feature(theta, N, x, modes, mu0=None):
     cheap: dT/dtheta_q (P small jvp_T calls inside
     jacobian_tensor_forward) and the final grad . dT/dtheta_q contraction.
     """
-    u = eval_T(theta, N, x, mu0=mu0)
-    dU = jacobian_tensor_forward(theta, N, x, mu0=mu0)  # (N, P, *batch_shape)
-    P = dU.shape[1]
-    grad = grad_lg_basis(modes, u)  # (len(modes), N, *batch_shape)
-    out = []
-    for i in range(len(modes)):
-        rows = [np.sum(grad[i] * dU[:, q], axis=0) for q in range(P)]
-        out.append(np.stack(rows, axis=0))  # (P, *batch_shape)
-    return np.stack(out, axis=0)
+    return FeatureAt(theta, N, x, modes, mu0=mu0).jac()
 
 
 def vjp_feature(theta, N, x, w, modes, mu0=None):
@@ -83,6 +120,4 @@ def vjp_feature(theta, N, x, w, modes, mu0=None):
     gradient weighted by its own cotangent entry into a single
     u-space cotangent, then push that through vjp_T -- the reverse-mode
     counterpart of jvp_feature's per-mode chain rule."""
-    u = eval_T(theta, N, x, mu0=mu0)
-    combined = vjp_lg_basis(modes, u, w)  # (N, *batch_shape)
-    return vjp_T(theta, N, x, combined, mu0=mu0)
+    return FeatureAt(theta, N, x, modes, mu0=mu0).vjp(w)

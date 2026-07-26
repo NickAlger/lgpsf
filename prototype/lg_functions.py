@@ -24,7 +24,7 @@ import numpy as np
 
 from harmonic_polynomials import (
     eval_harmonic, eval_harmonic_basis, grad_harmonic, grad_harmonic_basis,
-    max_degree, num_harmonics,
+    harmonic_basis, max_degree, num_harmonics,
 )
 
 
@@ -169,6 +169,143 @@ def grad_eval_lg_nd(p, ell, m, u):
     return prefactor * (L * dY - u * Y * (L - 2.0 * dL_dt))
 
 
+class LGBasisAt:
+    """The LG basis for one mode set, evaluated at one point batch u.
+
+    Holds everything that does not depend on WHICH quantity is asked for
+    -- r^2, the Gaussian, the shell index, the harmonic values and the
+    Laguerre tables -- so that values, gradients and vector-Jacobian
+    products at the same u share them instead of each recomputing them.
+    That matters because the VarPro loop needs the values and a
+    derivative at the SAME theta, with a linear solve in between (the
+    Kaufman cotangent is built from the values), so the two cannot be
+    fused into a single value-and-gradient call.
+
+    Construct one per point batch, ask it for what you need, discard it.
+    The free functions below are thin wrappers for callers that want just
+    one quantity, so there is exactly one implementation of each formula.
+
+    Laziness: the harmonic values are computed on first use, the harmonic
+    GRADIENTS only when a derivative is requested (a plain CV score never
+    pays for them), and each Laguerre table is extended in place as
+    deeper radial orders are needed -- the recurrence continues from the
+    values already stored, so an extension is bit-identical to having
+    built the deeper table up front.
+    """
+
+    def __init__(self, modes, u):
+        self.modes = list(modes)
+        self.u = np.asarray(u, dtype=float)
+        self.N = self.u.shape[0]
+        self.r2 = np.sum(self.u * self.u, axis=0)
+        self.gauss = np.exp(-0.5 * self.r2)
+        self.shells, self.shell_of = _shell_index(self.modes)
+        self._tables = {}      # ell -> [L_0^alpha(r2), ..., L_maxp^alpha(r2)]
+        self._Y = None
+        self._dY = None
+
+    # ---------------------------------------------------------- internals
+
+    def _table(self, ell, max_p):
+        """L_p^alpha(ell) for p = 0..max_p, extending any existing table."""
+        alpha = ell + self.N / 2.0 - 1.0
+        table = self._tables.get(ell)
+        if table is None:
+            table = [np.ones_like(self.r2)]
+            self._tables[ell] = table
+        if max_p >= 1 and len(table) == 1:
+            table.append(1.0 + alpha - self.r2)
+        for k in range(len(table) - 1, max_p):
+            table.append(((2 * k + 1 + alpha - self.r2) * table[k]
+                          - (k + alpha) * table[k - 1]) / (k + 1))
+        return table
+
+    def _radial(self, p, ell):
+        """(L, L - 2 L') for one (p, ell). The derivative identity
+        d/dt L_p^alpha = -L_{p-1}^(alpha+1) with alpha(ell) + 1 =
+        alpha(ell + 1) means both come from this same table family."""
+        L = self._table(ell, p)[p]
+        dL_dt = -self._table(ell + 1, p - 1)[p - 1] if p >= 1 else 0.0
+        return L, L - 2.0 * dL_dt
+
+    def _harmonics(self, with_gradient):
+        """Y (and dY when asked), computed at most once each. If values()
+        already ran, the gradient pass is told so and skips recomputing a
+        bit-identical Y -- the values-then-derivative order is exactly the
+        VarPro pattern, so that redundancy would otherwise be paid on
+        every accepted step."""
+        if with_gradient:
+            if self._dY is None:
+                self._Y, self._dY = harmonic_basis(
+                    self.shells, self.u, with_gradient=True, values=self._Y)
+            return self._Y, self._dY
+        if self._Y is None:
+            self._Y = eval_harmonic_basis(self.shells, self.u)
+        return self._Y, None
+
+    # ------------------------------------------------------------- public
+
+    def values(self):
+        """psi_i(u) for each mode: shape (len(modes), *batch_shape)."""
+        if not self.modes:
+            return np.zeros((0,) + self.u.shape[1:])
+        Y, _ = self._harmonics(False)
+        radial = {}
+        out = []
+        for i, (p, ell, m) in enumerate(self.modes):
+            if (p, ell) not in radial:
+                radial[(p, ell)] = self._table(ell, p)[p] * self.gauss
+            out.append(lg_norm(p, ell, self.N) * Y[self.shell_of[i]]
+                       * radial[(p, ell)])
+        return np.stack(out, axis=0)
+
+    def grad(self):
+        """Per-mode spatial gradients, uncontracted: shape
+        (len(modes), N, *batch_shape). Needed by the exact Golub-Pereyra
+        VarPro variant and by the theta-Jacobian; use vjp() instead when
+        the result is only going to be contracted."""
+        if not self.modes:
+            return np.zeros((0,) + self.u.shape)
+        Y, dY = self._harmonics(True)
+        radial = {}
+        out = []
+        for i, (p, ell, m) in enumerate(self.modes):
+            if (p, ell) not in radial:
+                L, envelope = self._radial(p, ell)
+                radial[(p, ell)] = (L, envelope,
+                                    lg_norm(p, ell, self.N) * self.gauss)
+            L, envelope, prefactor = radial[(p, ell)]
+            si = self.shell_of[i]
+            out.append(prefactor * (L * dY[si] - self.u * Y[si] * envelope))
+        return np.stack(out, axis=0)
+
+    def vjp(self, w):
+        """grad_u sum_i w_i psi_i, shape (N, *batch_shape), regrouped by
+        shell -- see vjp_lg_basis for the derivation and its numerical
+        status."""
+        if not self.modes:
+            return np.zeros_like(self.u)
+        Y, dY = self._harmonics(True)
+        A = np.zeros((len(self.shells),) + self.u.shape[1:])
+        B = np.zeros((len(self.shells),) + self.u.shape[1:])
+        radial = {}
+        for i, (p, ell, m) in enumerate(self.modes):
+            if (p, ell) not in radial:
+                radial[(p, ell)] = self._radial(p, ell)
+            L, envelope = radial[(p, ell)]
+            weight = lg_norm(p, ell, self.N) * w[i]
+            s = self.shell_of[i]
+            A[s] = A[s] + weight * L
+            B[s] = B[s] + weight * envelope
+
+        angular = np.zeros_like(self.u)
+        radial_part = np.zeros(self.u.shape[1:])
+        for s in range(len(self.shells)):
+            angular = angular + A[s] * dY[s]
+            radial_part = radial_part + Y[s] * B[s]
+        return self.gauss * (angular - self.u * radial_part)
+
+
 def eval_lg_basis(modes, u):
     """Evaluate a whole mode SET at once: shape (len(modes), *batch_shape),
     in the given mode order.
@@ -190,25 +327,12 @@ def eval_lg_basis(modes, u):
     Bit-identical to stacking eval_lg_nd over the same modes (pinned by
     test_lg_functions.py): every shared quantity is the same expression
     evaluated once instead of many times, with no reassociation.
+
+    A convenience wrapper over LGBasisAt for callers wanting only the
+    values; use the object directly when values and a derivative are both
+    needed at the same u, so the shared work is paid for once.
     """
-    u = np.asarray(u, dtype=float)
-    N = u.shape[0]
-    if len(modes) == 0:
-        return np.zeros((0,) + u.shape[1:])
-
-    r2 = np.sum(u * u, axis=0)
-    gauss = np.exp(-0.5 * r2)
-    shells, shell_of = _shell_index(modes)
-    Y = eval_harmonic_basis(shells, u)
-    tables = _laguerre_tables(modes, N, r2, with_derivative=False)
-
-    radial = {}
-    out = []
-    for i, (p, ell, m) in enumerate(modes):
-        if (p, ell) not in radial:
-            radial[(p, ell)] = tables[ell][p] * gauss
-        out.append(lg_norm(p, ell, N) * Y[shell_of[i]] * radial[(p, ell)])
-    return np.stack(out, axis=0)
+    return LGBasisAt(modes, u).values()
 
 
 def grad_lg_basis(modes, u):
@@ -224,30 +348,9 @@ def grad_lg_basis(modes, u):
     second recurrence per mode for this.
 
     Returns per-mode gradients, uncontracted; see grad_harmonic_basis.
+    A convenience wrapper over LGBasisAt.grad().
     """
-    u = np.asarray(u, dtype=float)
-    N = u.shape[0]
-    if len(modes) == 0:
-        return np.zeros((0,) + u.shape)
-
-    r2 = np.sum(u * u, axis=0)
-    gauss = np.exp(-0.5 * r2)
-    shells, shell_of = _shell_index(modes)
-    Y, dY = grad_harmonic_basis(shells, u)
-    tables = _laguerre_tables(modes, N, r2, with_derivative=True)
-
-    radial = {}
-    out = []
-    for i, (p, ell, m) in enumerate(modes):
-        if (p, ell) not in radial:
-            L = tables[ell][p]
-            dL_dt = -tables[ell + 1][p - 1] if p >= 1 else 0.0
-            radial[(p, ell)] = (L, L - 2.0 * dL_dt,
-                                lg_norm(p, ell, N) * gauss)
-        L, envelope, prefactor = radial[(p, ell)]
-        si = shell_of[i]
-        out.append(prefactor * (L * dY[si] - u * Y[si] * envelope))
-    return np.stack(out, axis=0)
+    return LGBasisAt(modes, u).grad()
 
 
 def vjp_lg_basis(modes, u, w):
@@ -287,39 +390,10 @@ def vjp_lg_basis(modes, u, w):
     not by numerics.
 
     grad_lg_basis remains for consumers that need the per-mode tensor,
-    including the exact Golub-Pereyra VarPro variant.
+    including the exact Golub-Pereyra VarPro variant. A convenience
+    wrapper over LGBasisAt.vjp().
     """
-    u = np.asarray(u, dtype=float)
-    N = u.shape[0]
-    if len(modes) == 0:
-        return np.zeros_like(u)
-
-    r2 = np.sum(u * u, axis=0)
-    gauss = np.exp(-0.5 * r2)
-    shells, shell_of = _shell_index(modes)
-    Y, dY = grad_harmonic_basis(shells, u)
-    tables = _laguerre_tables(modes, N, r2, with_derivative=True)
-
-    envelopes = {}
-    A = np.zeros((len(shells),) + u.shape[1:])
-    B = np.zeros((len(shells),) + u.shape[1:])
-    for i, (p, ell, m) in enumerate(modes):
-        if (p, ell) not in envelopes:
-            L = tables[ell][p]
-            dL_dt = -tables[ell + 1][p - 1] if p >= 1 else 0.0
-            envelopes[(p, ell)] = (L, L - 2.0 * dL_dt)
-        L, envelope = envelopes[(p, ell)]
-        weight = lg_norm(p, ell, N) * w[i]
-        s = shell_of[i]
-        A[s] = A[s] + weight * L
-        B[s] = B[s] + weight * envelope
-
-    angular = np.zeros_like(u)          # sum_s A_s grad_Y_s, shape (N, *batch)
-    radial = np.zeros(u.shape[1:])      # sum_s Y_s B_s,      shape (*batch)
-    for s in range(len(shells)):
-        angular = angular + A[s] * dY[s]
-        radial = radial + Y[s] * B[s]
-    return gauss * (angular - u * radial)
+    return LGBasisAt(modes, u).vjp(w)
 
 
 def _shell_index(modes):
@@ -334,35 +408,6 @@ def _shell_index(modes):
             shells.append((ell, m))
         shell_of.append(position[(ell, m)])
     return shells, shell_of
-
-
-def _laguerre_table(alpha, x, max_p):
-    """[L_0^alpha(x), ..., L_max_p^alpha(x)] from a single pass of
-    genlaguerre's recurrence. Each step depends only on the previous two,
-    so the retained intermediates are bit-identical to calling
-    genlaguerre once per p -- the one-at-a-time path computes and throws
-    away exactly these."""
-    table = [np.ones_like(x)]
-    if max_p >= 1:
-        table.append(1.0 + alpha - x)
-    for k in range(1, max_p):
-        table.append(((2 * k + 1 + alpha - x) * table[k]
-                      - (k + alpha) * table[k - 1]) / (k + 1))
-    return table
-
-
-def _laguerre_tables(modes, N, r2, with_derivative):
-    """One Laguerre table per angular order the mode set needs, each run
-    only as deep in p as that order requires. with_derivative also
-    provides the ell + 1 tables that d/dt L_p^alpha = -L_{p-1}^(alpha+1)
-    reads from."""
-    depth = {}
-    for (p, ell, _) in modes:
-        depth[ell] = max(depth.get(ell, 0), p)
-        if with_derivative and p >= 1:
-            depth[ell + 1] = max(depth.get(ell + 1, 0), p - 1)
-    return {ell: _laguerre_table(ell + N / 2.0 - 1.0, r2, max_p)
-            for ell, max_p in depth.items()}
 
 
 def modes_up_to_level(N, max_level, ell_max=None):

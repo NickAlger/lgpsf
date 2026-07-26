@@ -210,11 +210,11 @@ class OperatorFit:
 # The fit
 # ---------------------------------------------------------------------------
 
-def _linear_fit(z_hat, y_hat, b_eval, theta, e_hat):
+def _linear_fit(z_hat, y_hat, basis, theta, e_hat):
     """Full-data linear coefficients at a fixed theta (the baseline's
     one lstsq): returns (c, s) with s empty if e_hat is None. Mirrors
     linear_cv_score's design matrix exactly."""
-    Phi = b_eval(theta)
+    Phi = basis(theta).values()
     X = z_hat @ Phi.T
     if e_hat is not None:
         X = np.hstack([X, z_hat @ e_hat.T])
@@ -421,14 +421,13 @@ def fit_operator(x_cols, m1_diag, m2_diag, V, HV, sigma, mu0=None,
             for mlist in base_sets:
                 if k < 2 * (len(mlist) + n_extra + P_fix):
                     continue
-                b_eval = whitened_basis(N, x_w, m1_rho, m2_w, mlist,
-                                        mu0=mu_rho)[0]
-                sc = linear_cv_score(z_hat, y_hat, b_eval, theta_base,
+                b = whitened_basis(N, x_w, m1_rho, m2_w, mlist, mu0=mu_rho)
+                sc = linear_cv_score(z_hat, y_hat, b, theta_base,
                                      e_hat=e_hat, n_folds=cfg.row.cv_folds,
                                      seed=cfg.row.seed)
                 if sc < base_score:
                     base_score = sc
-                    base_c, base_s = _linear_fit(z_hat, y_hat, b_eval,
+                    base_c, base_s = _linear_fit(z_hat, y_hat, b,
                                                  theta_base, e_hat)
                     base_modes = mlist
             if base_modes is None:

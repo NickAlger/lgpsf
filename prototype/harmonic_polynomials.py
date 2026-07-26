@@ -143,20 +143,7 @@ def eval_harmonic_basis(shells, u):
     loop: the same powers multiplied in the same order, with the a == 0
     factors (which are exactly 1.0) skipped rather than materialized.
     """
-    u = np.asarray(u, dtype=float)
-    N = u.shape[0]
-    terms = [harmonic_terms(N, ell, m) for (ell, m) in shells]
-    powers = _power_tables(u, max((ell for (ell, _) in shells), default=0))
-
-    Y = np.zeros((len(shells),) + u.shape[1:])
-    for i, (exponents, coeffs) in enumerate(terms):
-        for alpha, coeff in zip(exponents, coeffs):
-            term = coeff
-            for k, a in enumerate(alpha):
-                if a:
-                    term = term * powers[k][a]
-            Y[i] = Y[i] + term
-    return Y
+    return harmonic_basis(shells, u, with_gradient=False)[0]
 
 
 def grad_harmonic_basis(shells, u):
@@ -170,20 +157,39 @@ def grad_harmonic_basis(shells, u):
     Jacobian), and the exact Golub-Pereyra VarPro variant needs the
     uncontracted tensor.
     """
+    return harmonic_basis(shells, u, with_gradient=True)
+
+
+def harmonic_basis(shells, u, with_gradient=False, values=None):
+    """(Y, dY) for a list of (ell, m) at once -- the general form that
+    eval_harmonic_basis and grad_harmonic_basis name the common cases of.
+    dY is None unless with_gradient.
+
+    `values` lets a caller that already holds Y for these shells skip the
+    value accumulation entirely and get only the gradients -- the case
+    that arises whenever a basis object is asked for values first and a
+    derivative afterwards, which is exactly the VarPro pattern. Without
+    it the gradient loop would recompute a bit-identical Y.
+    """
     u = np.asarray(u, dtype=float)
     N = u.shape[0]
     terms = [harmonic_terms(N, ell, m) for (ell, m) in shells]
     powers = _power_tables(u, max((ell for (ell, _) in shells), default=0))
 
-    Y = np.zeros((len(shells),) + u.shape[1:])
-    dY = np.zeros((len(shells),) + u.shape)
+    want_values = values is None
+    Y = np.zeros((len(shells),) + u.shape[1:]) if want_values else values
+    dY = np.zeros((len(shells),) + u.shape) if with_gradient else None
+
     for i, (exponents, coeffs) in enumerate(terms):
         for alpha, coeff in zip(exponents, coeffs):
-            term = coeff
-            for k, a in enumerate(alpha):
-                if a:
-                    term = term * powers[k][a]
-            Y[i] = Y[i] + term
+            if want_values:
+                term = coeff
+                for k, a in enumerate(alpha):
+                    if a:
+                        term = term * powers[k][a]
+                Y[i] = Y[i] + term
+            if not with_gradient:
+                continue
 
             for k in range(N):
                 a_k = alpha[k]

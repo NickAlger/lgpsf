@@ -151,8 +151,16 @@ existing JVP/VJP composes with it for free -- no new derivative math.
    user-supplied raw arrays, plus whitened wrappers around (4)'s
    eval/JVP/VJP/Jacobian.
 6. **`varpro.py`** -- the generic, mass-free VarPro fitting core,
-   **implemented**: `fit_varpro(z_hat, y_hat, basis_eval, basis_vjp,
-   theta_init, e_hat=None, basis_jac=None, options)` -> `VarProResult`.
+   **implemented**: `fit_varpro(z_hat, y_hat, basis, theta_init,
+   e_hat=None, options)` -> `VarProResult`, where `basis(theta)` returns
+   a per-theta evaluation object (`values()`, `vjp(w_hat)`, optionally
+   `jac()`) held in the same one-entry cache as the inner solve -- ONE
+   callable, not an eval/vjp/jac triple, because the values and the
+   derivative are needed at the same theta with the linear solve in
+   between (the Kaufman cotangent is built from the values), so they
+   cannot be fused but can share one evaluation. Golub-Pereyra is a
+   capability of the evaluation (`jac()` present), not an optional
+   argument.
    Internally: Frisch-Waugh-Lovell preprocessing of the theta-independent
    extra block (project it out once, back-solve its coefficients `s` at
    the end); an SVD-based inner solve (`_inner_solve` -- the "projection"

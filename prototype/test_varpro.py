@@ -57,7 +57,6 @@ Run directly (`python test_varpro.py`) or via pytest.
 """
 import os
 import sys
-from functools import partial
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -65,12 +64,7 @@ import numpy as np
 
 from ellipsoid_transform import theta_size
 from harmonic_polynomials import num_harmonics
-from whitening import (
-    whiten_extra,
-    whitened_eval_feature,
-    whitened_jac_feature,
-    whitened_vjp_feature,
-)
+from whitening import whiten_extra, whitened_basis
 from varpro import (
     VarProOptions,
     _ReducedProblem,
@@ -245,22 +239,34 @@ def _make_problem(rng, N=2, mu0=None, num_extra=1, k=24, K=16):
         E[d, d] = 1.0  # one-hot spikes at the first num_extra batch points
     e_hat = whiten_extra(E, row_mass, m2_diag)
 
-    common = dict(N=N, x=x, row_mass=row_mass, m2_diag=m2_diag,
-                  modes=modes, mu0=mu0)
-
-    def basis_vjp(theta, w_hat):
-        return whitened_vjp_feature(theta, w_hat=w_hat, **common)
+    basis = whitened_basis(N, x, row_mass, m2_diag, modes, mu0=mu0)
 
     return dict(
         theta=theta,
         P=theta_size(N, mu0),
         z_hat=z_hat,
         e_hat=e_hat,
-        basis_eval=partial(whitened_eval_feature, **common),
-        basis_vjp=basis_vjp,
-        basis_jac=partial(whitened_jac_feature, **common),
+        basis=basis,
         k=k,
     )
+
+
+class _ValuesAndVjpOnly:
+    """A basis evaluation exposing only values() and vjp() -- the minimal
+    contract the default (Kaufman) path is allowed to need."""
+
+    def __init__(self, at):
+        self._at = at
+
+    def values(self):
+        return self._at.values()
+
+    def vjp(self, w_hat):
+        return self._at.vjp(w_hat)
+
+
+def _without_jac(basis):
+    return lambda theta: _ValuesAndVjpOnly(basis(theta))
 
 
 def test_reduced_jacobian_golub_pereyra_matches_fd():
@@ -276,8 +282,7 @@ def test_reduced_jacobian_golub_pereyra_matches_fd():
         prob = _make_problem(rng, N=N, mu0=mu0)
         y_hat = rng.standard_normal(prob["k"])
         rp = _ReducedProblem(prob["z_hat"], y_hat, prob["e_hat"],
-                             prob["basis_eval"], prob["basis_vjp"], ridge=0.0,
-                             basis_jac=prob["basis_jac"])
+                             prob["basis"], ridge=0.0)
         theta = prob["theta"]
 
         J = rp.jacobian(theta, variant="golub-pereyra")
@@ -301,8 +306,7 @@ def test_kaufman_vs_golub_pereyra_structure():
     prob = _make_problem(rng, N=2)
     y_hat = rng.standard_normal(prob["k"])  # large residual, so the term matters
     rp = _ReducedProblem(prob["z_hat"], y_hat, prob["e_hat"],
-                         prob["basis_eval"], prob["basis_vjp"], ridge=0.0,
-                         basis_jac=prob["basis_jac"])
+                         prob["basis"], ridge=0.0)
     theta = prob["theta"]
 
     J_K = rp.jacobian(theta, variant="kaufman")
@@ -324,15 +328,14 @@ def test_variants_coincide_at_zero_residual():
     rng = np.random.default_rng(8)
     prob = _make_problem(rng, N=2)
     theta = prob["theta"]
-    A0 = prob["z_hat"] @ prob["basis_eval"](theta).T
+    A0 = prob["z_hat"] @ prob["basis"](theta).values().T
     B = prob["z_hat"] @ prob["e_hat"].T
     c_true = rng.uniform(-1, 1, size=A0.shape[1])
     s_true = rng.uniform(-1, 1, size=B.shape[1])
     y_hat = A0 @ c_true + B @ s_true
 
     rp = _ReducedProblem(prob["z_hat"], y_hat, prob["e_hat"],
-                         prob["basis_eval"], prob["basis_vjp"], ridge=0.0,
-                         basis_jac=prob["basis_jac"])
+                         prob["basis"], ridge=0.0)
     r = rp.residual(theta)
     assert np.max(np.abs(r)) < 1e-9 * max(1.0, np.max(np.abs(y_hat)))
 
@@ -354,8 +357,7 @@ def test_reduced_gradient_adjoint_consistency():
         prob = _make_problem(rng, N=2, mu0=mu0)
         y_hat = rng.standard_normal(prob["k"])
         rp = _ReducedProblem(prob["z_hat"], y_hat, prob["e_hat"],
-                             prob["basis_eval"], prob["basis_vjp"], ridge=0.0,
-                             basis_jac=prob["basis_jac"])
+                             prob["basis"], ridge=0.0)
         theta = prob["theta"]
 
         r = rp.residual(theta)
@@ -364,7 +366,7 @@ def test_reduced_gradient_adjoint_consistency():
 
         c = rp._solve_at(theta).c
         w_feat = c[:, None] * (prob["z_hat"].T @ r)[None, :]  # (n_modes, K)
-        g_rev = -np.sum(prob["basis_vjp"](theta, w_feat), axis=1)
+        g_rev = -np.sum(prob["basis"](theta).vjp(w_feat), axis=1)
 
         assert np.allclose(g_fwd_K, g_rev, rtol=1e-8, atol=1e-10), mu0
         assert np.allclose(g_fwd_GP, g_rev, rtol=1e-8, atol=1e-10), mu0
@@ -385,15 +387,15 @@ def test_kaufman_reverse_mode_matches_jac_built():
         mu0 = None if fit_mu else rng.uniform(-1, 1, size=2)
         prob = _make_problem(rng, N=2, mu0=mu0)
         y_hat = rng.standard_normal(prob["k"])
-        # constructed WITHOUT basis_jac: the default path must not need it
+        # a basis WITHOUT jac(): the default path must not need it
         rp = _ReducedProblem(prob["z_hat"], y_hat, prob["e_hat"],
-                             prob["basis_eval"], prob["basis_vjp"], ridge=0.0)
+                             _without_jac(prob["basis"]), ridge=0.0)
         theta = prob["theta"]
 
         J_K = rp.jacobian(theta)  # default variant, reverse-mode build
 
         sol = rp._solve_at(theta)
-        dPhi = prob["basis_jac"](theta)  # (n_modes, P, K)
+        dPhi = prob["basis"](theta).jac()  # (n_modes, P, K)
         cols = []
         for q in range(prob["P"]):
             dA_tilde = _project_out(rp.Q_B, prob["z_hat"] @ dPhi[:, q].T)
@@ -405,7 +407,7 @@ def test_kaufman_reverse_mode_matches_jac_built():
 
         try:
             rp.jacobian(theta, variant="golub-pereyra")
-            assert False, "expected ValueError for golub-pereyra without basis_jac"
+            assert False, "expected ValueError for golub-pereyra without jac()"
         except ValueError:
             pass
 
@@ -420,12 +422,12 @@ def test_inner_solve_cached_between_residual_and_jacobian():
     y_hat = rng.standard_normal(prob["k"])
     n_evals = {"count": 0}
 
-    def counting_eval(theta):
+    def counting_basis(theta):
         n_evals["count"] += 1
-        return prob["basis_eval"](theta)
+        return prob["basis"](theta)
 
     rp = _ReducedProblem(prob["z_hat"], y_hat, prob["e_hat"],
-                         counting_eval, prob["basis_vjp"], ridge=0.0)
+                         counting_basis, ridge=0.0)
     theta = prob["theta"]
 
     rp.residual(theta)
@@ -449,7 +451,7 @@ def test_fit_varpro_recovers_synthetic_row():
         for use_extra in [True, False]:
             prob = _make_problem(rng, N=2, num_extra=1)
             theta_true = prob["theta"]
-            A0 = prob["z_hat"] @ prob["basis_eval"](theta_true).T
+            A0 = prob["z_hat"] @ prob["basis"](theta_true).values().T
             c_true = rng.uniform(-1, 1, size=A0.shape[1])
             y_hat = A0 @ c_true
             e_hat = None
@@ -463,10 +465,9 @@ def test_fit_varpro_recovers_synthetic_row():
             theta_init = theta_true + rng.uniform(-0.05, 0.05, size=prob["P"])
             result = fit_varpro(
                 prob["z_hat"], y_hat,
-                prob["basis_eval"], prob["basis_vjp"],
+                prob["basis"],
                 theta_init,
                 e_hat=e_hat,
-                basis_jac=prob["basis_jac"],
                 options=VarProOptions(ridge=0.0, jacobian=variant),
             )
 
@@ -492,12 +493,12 @@ def test_fit_varpro_result_self_consistency():
 
     result = fit_varpro(
         prob["z_hat"], y_hat,
-        prob["basis_eval"], prob["basis_vjp"],
+        prob["basis"],
         theta_init,
         e_hat=prob["e_hat"],
     )  # default options: kaufman, ridge=1e-8
 
-    A = prob["z_hat"] @ prob["basis_eval"](result.theta).T
+    A = prob["z_hat"] @ prob["basis"](result.theta).values().T
     B = prob["z_hat"] @ prob["e_hat"].T
     r_recomputed = y_hat - A @ result.c - B @ result.s
     assert np.allclose(r_recomputed, result.residual, rtol=1e-9, atol=1e-11)
@@ -505,7 +506,7 @@ def test_fit_varpro_result_self_consistency():
     assert np.max(np.abs(B.T @ result.residual)) < 1e-8
 
     rp = _ReducedProblem(prob["z_hat"], y_hat, prob["e_hat"],
-                         prob["basis_eval"], prob["basis_vjp"], ridge=1e-8)
+                         prob["basis"], ridge=1e-8)
     cost_init = 0.5 * float(np.sum(rp.residual(theta_init) ** 2))
     assert result.cost <= cost_init + 1e-12
 
@@ -519,7 +520,7 @@ def test_fit_varpro_callback_traces_iterates():
     rng = np.random.default_rng(15)
     prob = _make_problem(rng, N=2)
     theta_true = prob["theta"]
-    A0 = prob["z_hat"] @ prob["basis_eval"](theta_true).T
+    A0 = prob["z_hat"] @ prob["basis"](theta_true).values().T
     c_true = rng.uniform(-1, 1, size=A0.shape[1])
     y_hat = A0 @ c_true
     theta_init = theta_true + rng.uniform(-0.05, 0.05, size=prob["P"])
@@ -527,7 +528,7 @@ def test_fit_varpro_callback_traces_iterates():
     history = []
     result = fit_varpro(
         prob["z_hat"], y_hat,
-        prob["basis_eval"], prob["basis_vjp"],
+        prob["basis"],
         theta_init,
         options=VarProOptions(ridge=0.0),
         callback=lambda th, c, r: history.append((th, c, 0.5 * float(r @ r))),
@@ -555,7 +556,7 @@ def test_reduced_problem_survives_overflow_theta():
     prob = _make_problem(rng, N=2)
     y_hat = rng.standard_normal(prob["k"])
     rp = _ReducedProblem(prob["z_hat"], y_hat, prob["e_hat"],
-                         prob["basis_eval"], prob["basis_vjp"], ridge=0.0)
+                         prob["basis"], ridge=0.0)
 
     theta_bad = prob["theta"].copy()
     theta_bad[2] = theta_bad[3] = -400.0  # log-diagonals: L ~ e^-400
@@ -575,9 +576,9 @@ def test_fit_varpro_input_validation():
     prob = _make_problem(rng, N=2)
     y_hat = rng.standard_normal(prob["k"])
 
-    # golub-pereyra without basis_jac must fail fast, before optimizing
+    # golub-pereyra on a basis without jac() must fail fast, before optimizing
     try:
-        fit_varpro(prob["z_hat"], y_hat, prob["basis_eval"], prob["basis_vjp"],
+        fit_varpro(prob["z_hat"], y_hat, _without_jac(prob["basis"]),
                    prob["theta"], e_hat=prob["e_hat"],
                    options=VarProOptions(jacobian="golub-pereyra"))
         assert False, "expected ValueError"
@@ -587,8 +588,8 @@ def test_fit_varpro_input_validation():
     # fewer probes than theta parameters: method='lm' can't run
     few = 2
     try:
-        fit_varpro(prob["z_hat"][:few], y_hat[:few], prob["basis_eval"],
-                   prob["basis_vjp"], prob["theta"])
+        fit_varpro(prob["z_hat"][:few], y_hat[:few], prob["basis"],
+                   prob["theta"])
         assert False, "expected ValueError"
     except ValueError:
         pass
@@ -598,8 +599,7 @@ def test_fit_varpro_input_validation():
     theta_bad[2] = theta_bad[3] = -400.0
     try:
         with np.errstate(over="ignore", invalid="ignore"):
-            fit_varpro(prob["z_hat"], y_hat, prob["basis_eval"],
-                       prob["basis_vjp"], theta_bad)
+            fit_varpro(prob["z_hat"], y_hat, prob["basis"], theta_bad)
         assert False, "expected ValueError"
     except ValueError:
         pass

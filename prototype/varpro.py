@@ -285,26 +285,31 @@ class _ReducedProblem:
         linearize). The operations don't commute, by exactly this term.
     """
 
-    def __init__(self, z_hat, y_hat, e_hat, basis_eval, basis_vjp, ridge,
-                 basis_jac=None):
+    def __init__(self, z_hat, y_hat, e_hat, basis, ridge):
         self.z_hat = np.asarray(z_hat, dtype=float)
         self.y_hat = np.asarray(y_hat, dtype=float)
         e_hat = np.asarray(e_hat, dtype=float)
         self.B = self.z_hat @ e_hat.T                  # (k, num_extra)
         self.Q_B = _orthonormal_range(self.B)
         self.y_tilde = _project_out(self.Q_B, self.y_hat)
-        self.basis_eval = basis_eval
-        self.basis_vjp = basis_vjp
-        self.basis_jac = basis_jac                     # only the GP variant needs it
+        self.basis = basis
         self.ridge = ridge
         self._cached_theta = None
         self._cached_solve = None
+        self._cached_at = None  # the basis evaluation the solve came from
         self._n_modes = None  # learned from the first successful evaluation
 
+    def basis_at(self, theta):
+        """The basis object for this theta, from the same one-entry cache
+        the inner solve uses -- so the values and the derivative the outer
+        loop asks for next share one evaluation."""
+        self._solve_at(theta)
+        return self._cached_at
+
     def design_matrix(self, theta):
-        """A(theta) = Z_hat basis_eval(theta)^T, shape (k, n_modes) --
+        """A(theta) = Z_hat values(theta)^T, shape (k, n_modes) --
         before residualization (the back-solve for s needs the raw A)."""
-        return self.z_hat @ self.basis_eval(theta).T
+        return self.z_hat @ self.basis(theta).values().T
 
     def _solve_at(self, theta):
         theta = np.asarray(theta, dtype=float)
@@ -314,12 +319,15 @@ class _ReducedProblem:
             # evaluation), or np.linalg.inv(L) raises outright when the
             # log-Cholesky diagonals underflow the determinant to zero.
             try:
-                A_tilde = _project_out(self.Q_B, self.design_matrix(theta))
+                at = self.basis(theta)
+                A_tilde = _project_out(self.Q_B, self.z_hat @ at.values().T)
                 usable = bool(np.all(np.isfinite(A_tilde)))
                 if usable:
                     self._n_modes = A_tilde.shape[1]
             except np.linalg.LinAlgError:
+                at = None
                 usable = False
+            self._cached_at = at
             if usable:
                 self._cached_solve = _inner_solve(A_tilde, self.y_tilde, self.ridge)
             else:
@@ -356,21 +364,22 @@ class _ReducedProblem:
         if variant not in ("kaufman", "golub-pereyra"):
             raise ValueError(f"unknown jacobian variant: {variant!r}")
         sol = self._solve_at(theta)
+        at = self._cached_at  # same evaluation the values above came from
 
         # Kaufman term in one reverse sweep: cotangent w_hat[i, j] = c_i.
         K = self.z_hat.shape[1]
         w_hat = np.broadcast_to(sol.c[:, None], (sol.c.shape[0], K))
-        G = self.basis_vjp(theta, w_hat)               # (P, K)
+        G = at.vjp(w_hat)                              # (P, K)
         V = self.z_hat @ G.T                           # (k, P), columns dA_q c
         J = -_project_out(sol.U, _project_out(self.Q_B, V))
 
         if variant == "golub-pereyra":
-            if self.basis_jac is None:
+            if not hasattr(at, "jac"):
                 raise ValueError(
-                    "variant='golub-pereyra' needs the basis_jac callable "
-                    "(its second term has no reverse-mode collapse); this "
-                    "problem was constructed without one")
-            dPhi = self.basis_jac(theta)               # (n_modes, P, K)
+                    "variant='golub-pereyra' needs a basis whose evaluation "
+                    "provides jac() (its second term has no reverse-mode "
+                    "collapse); this basis provides only values() and vjp()")
+            dPhi = at.jac()                            # (n_modes, P, K)
             for q in range(dPhi.shape[1]):
                 dA_tilde = _project_out(self.Q_B, self.z_hat @ dPhi[:, q].T)
                 # -pinv(A~)^T dA~_q^T r, from the stored SVD pieces:
@@ -383,11 +392,9 @@ class _ReducedProblem:
 def fit_varpro(
     z_hat: np.ndarray,
     y_hat: np.ndarray,
-    basis_eval: Callable[[np.ndarray], np.ndarray],
-    basis_vjp: Callable[[np.ndarray, np.ndarray], np.ndarray],
+    basis: Callable[[np.ndarray], object],
     theta_init: np.ndarray,
     e_hat: Optional[np.ndarray] = None,
-    basis_jac: Optional[Callable[[np.ndarray], np.ndarray]] = None,
     options: Optional[VarProOptions] = None,
     callback: Optional[Callable[[np.ndarray, np.ndarray, np.ndarray], None]] = None,
 ) -> VarProResult:
@@ -405,22 +412,32 @@ def fit_varpro(
         neighbor/support batch. k = number of probes, K = batch size.
     y_hat : (k,) array
         This row's whitened response to each probe.
-    basis_eval : theta (P,) -> (n_modes, K)
-        Whitened smooth-basis values at theta, e.g.
-        functools.partial(whitened_eval_feature, N=N, x=x,
-        row_mass=row_mass, m2_diag=m2_diag, modes=modes, mu0=mu0).
-    basis_vjp : (theta (P,), w_hat (n_modes, K)) -> (P, K)
-        Batched reverse mode: <w_hat, d(basis_eval)/dtheta> per point,
-        deliberately NOT summed over the batch -- e.g. a closure over
-        whitening.whitened_vjp_feature. This is the primary derivative
-        callable: the default (Kaufman) Jacobian is ONE such call with
-        cotangent w_hat[i, j] = c_i, because contracting the mode axis
-        against the current linear coefficients turns all P Jacobian
-        columns into the theta-gradient of a single scalar-per-point
-        function (the fitted smooth model, c frozen) -- the gradient
-        regime, where reverse mode does everything in one sweep. The cost
-        gradient J^T r is that same sweep contracted once more. See
-        _ReducedProblem.jacobian and docs/design-notes.md (2026-07-24).
+    basis : theta (P,) -> basis evaluation object
+        ONE callable, built e.g. by whitening.whitened_basis(...), which
+        given a theta returns an object exposing
+
+            values()      -> (n_modes, K)   whitened basis values
+            vjp(w_hat)    -> (P, K)         <w_hat, d(values)/dtheta> per
+                                            point, NOT summed over the batch
+            jac()         -> (n_modes, P, K)  optional; only the
+                                            golub-pereyra variant needs it
+
+        A single per-theta object rather than three independent callables
+        because the values and the derivative are needed at the SAME
+        theta, with the inner linear solve in between (the Kaufman
+        cotangent is built from the values) -- so they cannot be fused
+        into one value-and-gradient call, but they can and should share
+        one evaluation. This class holds that object in the same
+        one-entry cache as the inner solve.
+
+        vjp is the primary derivative: the default (Kaufman) Jacobian is
+        ONE such call with cotangent w_hat[i, j] = c_i, because
+        contracting the mode axis against the current linear coefficients
+        turns all P Jacobian columns into the theta-gradient of a single
+        scalar-per-point function (the fitted smooth model, c frozen) --
+        the gradient regime, where reverse mode does everything in one
+        sweep. The cost gradient J^T r is that same sweep contracted once
+        more. See _ReducedProblem.jacobian and docs/design-notes.md.
     theta_init : (P,) array
         Starting guess for the outer Levenberg-Marquardt iteration (e.g.
         from a smoothed-beta heuristic ellipsoid) -- domain-specific, so
@@ -430,14 +447,6 @@ def fit_varpro(
         diagonal spike. None (the default) means no extra basis at all --
         equivalent to passing an empty (0, K) array; the returned s is
         then empty.
-    basis_jac : theta (P,) -> (n_modes, P, K), optional
-        Full theta-Jacobian of basis_eval, e.g.
-        functools.partial(whitened_jac_feature, ...). Required only for
-        options.jacobian = "golub-pereyra", whose second term
-        W[i, q] = sum_j dPhi_hat[i, q, j] (Z_hat^T r)_j keeps both the
-        mode and theta axes alive -- a bilinear (n_modes x P) block with
-        no reverse-mode collapse, for which forward mode (P sweeps,
-        P < n_modes) is the natural choice.
     options : VarProOptions, optional
     callback : (theta (P,), c (n_modes,), residual (k,)) -> None, optional
         Called at theta_init, at each *accepted* Levenberg-Marquardt
@@ -485,20 +494,20 @@ def fit_varpro(
         raise ValueError(
             f"Levenberg-Marquardt (method='lm') needs at least as many "
             f"probes as theta parameters; got k={k} probes < P={P}")
-    if options.jacobian == "golub-pereyra" and basis_jac is None:
-        raise ValueError(
-            "options.jacobian='golub-pereyra' requires the basis_jac "
-            "callable (see its parameter docstring)")
-
-    reduced = _ReducedProblem(z_hat, y_hat, e_hat, basis_eval, basis_vjp,
-                              options.ridge, basis_jac=basis_jac)
+    reduced = _ReducedProblem(z_hat, y_hat, e_hat, basis, options.ridge)
     try:
-        init_ok = bool(np.all(np.isfinite(reduced.design_matrix(theta_init))))
+        init_at = basis(theta_init)
+        init_ok = bool(np.all(np.isfinite(init_at.values())))
     except np.linalg.LinAlgError:
+        init_at = None
         init_ok = False
+    if options.jacobian == "golub-pereyra" and not hasattr(init_at, "jac"):
+        raise ValueError(
+            "options.jacobian='golub-pereyra' requires a basis whose "
+            "evaluation provides jac() (see the basis parameter docstring)")
     if not init_ok:
         raise ValueError(
-            "basis_eval(theta_init) produced non-finite values -- check "
+            "basis(theta_init).values() produced non-finite values -- check "
             "theta_init's scaling (e.g. log-Cholesky diagonal entries far "
             "outside the geometry of the point batch)")
 
