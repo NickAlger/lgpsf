@@ -19,7 +19,7 @@ import numpy as np
 from harmonic_polynomials import num_harmonics
 from lg_functions import (
     eval_lg_basis, eval_lg_nd, genlaguerre, grad_eval_lg_nd, grad_lg_basis,
-    modes_up_to_level,
+    modes_up_to_level, vjp_lg_basis,
 )
 
 FD_STEP = 1e-5
@@ -188,12 +188,74 @@ def test_batched_handles_empty_mode_set():
     u = np.zeros((2, 7))
     assert eval_lg_basis([], u).shape == (0, 7)
     assert grad_lg_basis([], u).shape == (0, 2, 7)
+    assert vjp_lg_basis([], u, np.zeros((0, 7))).shape == (2, 7)
+
+
+def test_vjp_matches_the_contracted_gradient():
+    """vjp_lg_basis regroups sum_i w_i grad psi_i by shell instead of
+    accumulating per mode. That reassociates the sum, so -- unlike the
+    other batched paths -- this one is checked to roundoff rather than
+    exactly. Accuracy is a wash between the two forms (measured against an
+    extended-precision reference, both sit at ~1.5 ulp); the regrouping is
+    for operation count and memory, not numerics."""
+    rng = np.random.default_rng(6)
+    worst = 0.0
+    for N in [1, 2, 3, 4]:
+        for modes in _mode_sets(N):
+            for K in [1, 13, 200]:
+                u = rng.normal(size=(N, K))
+                w = rng.normal(size=(len(modes), K))
+
+                got = vjp_lg_basis(modes, u, w)
+                grad = grad_lg_basis(modes, u)
+                want = np.zeros_like(u)
+                for i in range(len(modes)):
+                    want = want + w[i] * grad[i]
+
+                assert got.shape == want.shape
+                scale = max(float(np.max(np.abs(want))), 1e-300)
+                err = float(np.max(np.abs(got - want))) / scale
+                worst = max(worst, err)
+                assert err < 1e-12, (
+                    f"N={N}, {len(modes)} modes, K={K}: relative "
+                    f"disagreement {err:.3e}")
+    print(f"  worst relative disagreement vs the per-mode sum: {worst:.3e}")
+
+
+def test_vjp_is_adjoint_to_the_gradient():
+    """<w, J du> == <vjp(w), du> for random w, du -- the adjoint-consistency
+    half of this repo's derivative-testing convention (the finite-difference
+    half reaches vjp_lg_basis through grad_eval_lg_nd, which is FD-checked
+    and which grad_lg_basis reproduces exactly)."""
+    rng = np.random.default_rng(7)
+    worst = 0.0
+    for N in [1, 2, 3, 4]:
+        for modes in _mode_sets(N):
+            K = 17
+            u = rng.normal(size=(N, K))
+            w = rng.normal(size=(len(modes), K))
+            du = rng.normal(size=(N, K))
+
+            grad = grad_lg_basis(modes, u)                   # (m, N, K)
+            directional = np.sum(grad * du, axis=1)          # (m, K)
+            lhs = float(np.sum(w * directional))
+            rhs = float(np.sum(vjp_lg_basis(modes, u, w) * du))
+
+            scale = max(abs(lhs), abs(rhs), 1e-300)
+            err = abs(lhs - rhs) / scale
+            worst = max(worst, err)
+            assert err < 1e-11, (
+                f"N={N}, {len(modes)} modes: <w, J du>={lhs!r} vs "
+                f"<vjp(w), du>={rhs!r}, relative gap {err:.3e}")
+    print(f"  worst adjoint-consistency gap: {worst:.3e}")
 
 
 if __name__ == "__main__":
     test_genlaguerre_matches_closed_forms()
     test_batched_matches_one_at_a_time_exactly()
     test_batched_handles_empty_mode_set()
+    test_vjp_matches_the_contracted_gradient()
+    test_vjp_is_adjoint_to_the_gradient()
     test_modes_are_orthonormal_in_L2()
     test_gradient_matches_finite_differences()
     print("all LG mode checks passed")

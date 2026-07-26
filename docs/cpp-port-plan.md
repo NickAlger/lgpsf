@@ -139,9 +139,17 @@ reference and the tier-2 exactness oracle. Port notes:
   MULTIPLICATION in C++ (faster and no less accurate than `std::pow` for
   small exponents; this is the deliberate break from Python
   bit-identity). Skip `a == 0` factors rather than materializing ones.
-- Return gradients per-mode and UNCONTRACTED: the Golub-Pereyra variant
-  needs the `(n_modes, P, K)` tensor, and the three feature-layer
-  consumers contract differently.
+- Return gradients per-mode and UNCONTRACTED from `grad_lg_basis`: the
+  Golub-Pereyra variant needs the `(n_modes, P, K)` tensor, and
+  `jvp_feature`/`jac_feature` contract differently.
+- ALSO port `vjp_lg_basis(modes, u, w)`, which computes
+  `sum_i w_i grad psi_i` by regrouping per SHELL (see design-notes): one
+  `(N, K)` multiply-add per shell instead of several per mode, and the
+  `(n_modes, N, K)` tensor never allocated. Worth 1.55-2.35x on the VJP
+  in isolation -- only 1.02x end-to-end in Python because that layer is
+  dispatch-bound, but C++ is arithmetic-bound so this is one of the
+  places the port should beat the prototype by more than the constant
+  factor. Accuracy is a wash, NOT an improvement; do not re-derive that.
 - No prepared-point-batch object: batched free functions are stateless,
   so points stay plain matrices in every signature.
 

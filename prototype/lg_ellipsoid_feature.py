@@ -23,7 +23,7 @@ loops over the mode list and over N are plain Python loops, per the
 """
 import numpy as np
 
-from lg_functions import eval_lg_basis, grad_lg_basis
+from lg_functions import eval_lg_basis, grad_lg_basis, vjp_lg_basis
 from ellipsoid_transform import eval_T, jvp_T, vjp_T, jacobian_tensor_forward
 
 
@@ -84,8 +84,5 @@ def vjp_feature(theta, N, x, w, modes, mu0=None):
     u-space cotangent, then push that through vjp_T -- the reverse-mode
     counterpart of jvp_feature's per-mode chain rule."""
     u = eval_T(theta, N, x, mu0=mu0)
-    grad = grad_lg_basis(modes, u)  # (len(modes), N, *batch_shape)
-    combined = np.zeros_like(u)  # (N, *batch_shape)
-    for k in range(len(modes)):
-        combined = combined + w[k] * grad[k]
+    combined = vjp_lg_basis(modes, u, w)  # (N, *batch_shape)
     return vjp_T(theta, N, x, combined, mu0=mu0)

@@ -109,6 +109,10 @@ existing JVP/VJP composes with it for free -- no new derivative math.
    one-at-a-time path, which is retained as the readable reference and
    the exactness oracle. Gradients come back per-mode and UNCONTRACTED
    -- the exact Golub-Pereyra VarPro variant needs that tensor.
+   `vjp_lg_basis(modes, u, w)` gives $\nabla_u\sum_i w_i\psi_i$ by
+   regrouping the sum per SHELL (one $(N,K)$ op per shell, not per mode;
+   the $(n_{modes},N,K)$ tensor is never built) -- the only path that is
+   tolerance-certified rather than bit-identical.
    `modes_up_to_level` (raises rather than truncating past the generated
    table).
 1b. **`harmonic_polynomials.py`** -- the harmonic polynomials

@@ -625,9 +625,59 @@ kept as a permanent test (batched == one-at-a-time), not just
 scaffolding: a tolerance there would hide precisely the drift the test
 exists to catch.
 
-**Not done, recorded:** `basis_eval` and `basis_vjp` are called at the
-SAME theta each LM iteration (1,528 and 1,128 calls in the profiled
-fit) and share the pullback, r^2, the Gaussian, every harmonic and the
-whole Laguerre table. Capturing that would roughly halve the remaining
-LG cost, but it requires changing the fitting core's basis-callable
-contract -- a separate decision.
+**Not done here, taken up separately:** `basis_eval` and `basis_vjp` are
+called at the SAME theta each LM iteration (1,528 and 1,128 calls in the
+profiled fit) and share the pullback, r^2, the Gaussian, every harmonic
+and the whole Laguerre table. Capturing that requires changing the
+fitting core's basis-callable contract.
+
+## The VarPro VJP regroups by shell, not by mode
+
+**Decision (2026-07-25, Nick):** `vjp_lg_basis(modes, u, w)` -- the
+u-gradient of the pointwise-weighted sum `sum_i w_i psi_i` -- computes
+that sum by collecting terms per SHELL rather than forming each mode's
+gradient and adding them. Substituting the product rule into the sum and
+collecting by shell $s$:
+
+$$\sum_i w_i\nabla\psi_i = g\Big[\sum_s A_s\nabla Y_s - u\sum_s Y_s B_s\Big],\quad
+A_s=\sum_{i\in s} C_i w_i L_{p_i},\ \ B_s=\sum_{i\in s} C_i w_i(L_{p_i}-2L'_{p_i})$$
+
+$A_s$ and $B_s$ are scalar fields, so only the harmonic gradients carry
+the leading $N$ axis: one $(N, K)$ multiply-add per SHELL instead of
+several per MODE, the $u$ term collapses to a single multiply for the
+whole sum, and the $(n_{modes}, N, K)$ tensor is never materialized.
+
+This is the natural form of the object: the gradient of a weighted sum
+of modes IS a per-shell quantity. `grad_lg_basis` stays for consumers
+needing the per-mode tensor -- `jvp_feature`, `jac_feature`, and
+decisively the exact Golub-Pereyra VarPro variant, whose second term has
+no reverse-mode collapse. Only `vjp_feature` changed, so the entire
+Golub-Pereyra path is provably untouched (verified bit-identical over 60
+calls).
+
+**Two claims that did NOT survive measurement, recorded so they are not
+re-argued:**
+
+- **"Better numerical properties" is false.** Against an independently
+  written 80-bit extended-precision reference, the regrouped and
+  per-mode forms sit at the same ~1.5 ulp: median relative error
+  3.26e-16 vs 3.22e-16, and neither wins consistently (11/8/1 over a
+  sweep of mode sets and batch sizes). The regrouping does not remove
+  roundings, it relocates them into the $A_s$/$B_s$ accumulation. The
+  reference was written from the formulas rather than by running
+  `grad_lg_basis` at higher precision, so it cannot share a mistake with
+  either path under test.
+- **The end-to-end Python win is ~nothing: 1.02x.** In isolation the VJP
+  is 1.55-2.35x faster (best when shells << modes: N=3 wedge, 46 modes /
+  9 shells -> 2.35x), but a real fit lives at 1-13 modes with ~5 shells,
+  and Python is dispatch-bound (see the overhead entry). The
+  microbenchmark's top rungs are not where the fit spends its time.
+
+**Kept anyway, on C++ grounds**: C++ is arithmetic-bound, where the
+1.55-2.35x is real rather than diluted; the avoided
+$(n_{modes}, N, K)$ allocation matters more in a threaded per-row loop;
+and the prototype's job is to be the reference implementation for the
+port. The price is the bit-identity certification -- this path is now
+pinned by a ~1e-15 tolerance test plus adjoint consistency
+(`<w, J du> == <vjp(w), du>`, worst gap 2.5e-14) rather than by exact
+equality.

@@ -250,6 +250,78 @@ def grad_lg_basis(modes, u):
     return np.stack(out, axis=0)
 
 
+def vjp_lg_basis(modes, u, w):
+    """The u-gradient of the pointwise-weighted sum sum_i w_i psi_i --
+    i.e. the vector-Jacobian product of eval_lg_basis with respect to u.
+
+    w has the shape of eval_lg_basis' output, (len(modes), *batch_shape);
+    the result has the shape of u, (N, *batch_shape).
+
+    Computed by REGROUPING THE SUM OVER SHELLS rather than forming every
+    mode's gradient and adding them up. Substituting the product rule
+
+        grad psi_i = C_i g [ L_p grad_Y_s - u Y_s (L_p - 2 L'_p) ],
+        g = exp(-r^2/2),  s = s(i) the shell (ell, m) of mode i,
+
+    into sum_i w_i grad psi_i and collecting terms by shell gives
+
+        sum_i w_i grad psi_i = g [ sum_s A_s grad_Y_s  -  u sum_s Y_s B_s ]
+        A_s = sum_{i in s} C_i w_i L_{p_i}
+        B_s = sum_{i in s} C_i w_i (L_{p_i} - 2 L'_{p_i})
+
+    with A_s and B_s scalar fields. Only the harmonic gradients carry the
+    leading N axis, so the cost is one (N, *batch) multiply-add per SHELL
+    instead of several per MODE, the u-term collapses to a single multiply
+    for the whole sum, and the (len(modes), N, *batch) tensor is never
+    materialized. On the operator-layer default that is ~2.6x fewer vector
+    operations and ~2.6x less memory than contracting grad_lg_basis.
+
+    NOT bit-identical to `sum_k w[k] * grad_lg_basis(modes, u)[k]`: the
+    regrouping reassociates the sum. Accuracy is a WASH, not an
+    improvement -- measured against an independent extended-precision
+    reference the two paths sit at the same ~1.5 ulp and neither wins
+    consistently (median relative error 3.26e-16 regrouped vs 3.22e-16
+    per-mode over a sweep of mode sets and batch sizes). The regrouping
+    does not remove roundings, it moves them into the A_s/B_s
+    accumulation. This form is justified by operation count and memory,
+    not by numerics.
+
+    grad_lg_basis remains for consumers that need the per-mode tensor,
+    including the exact Golub-Pereyra VarPro variant.
+    """
+    u = np.asarray(u, dtype=float)
+    N = u.shape[0]
+    if len(modes) == 0:
+        return np.zeros_like(u)
+
+    r2 = np.sum(u * u, axis=0)
+    gauss = np.exp(-0.5 * r2)
+    shells, shell_of = _shell_index(modes)
+    Y, dY = grad_harmonic_basis(shells, u)
+    tables = _laguerre_tables(modes, N, r2, with_derivative=True)
+
+    envelopes = {}
+    A = np.zeros((len(shells),) + u.shape[1:])
+    B = np.zeros((len(shells),) + u.shape[1:])
+    for i, (p, ell, m) in enumerate(modes):
+        if (p, ell) not in envelopes:
+            L = tables[ell][p]
+            dL_dt = -tables[ell + 1][p - 1] if p >= 1 else 0.0
+            envelopes[(p, ell)] = (L, L - 2.0 * dL_dt)
+        L, envelope = envelopes[(p, ell)]
+        weight = lg_norm(p, ell, N) * w[i]
+        s = shell_of[i]
+        A[s] = A[s] + weight * L
+        B[s] = B[s] + weight * envelope
+
+    angular = np.zeros_like(u)          # sum_s A_s grad_Y_s, shape (N, *batch)
+    radial = np.zeros(u.shape[1:])      # sum_s Y_s B_s,      shape (*batch)
+    for s in range(len(shells)):
+        angular = angular + A[s] * dY[s]
+        radial = radial + Y[s] * B[s]
+    return gauss * (angular - u * radial)
+
+
 def _shell_index(modes):
     """The distinct (ell, m) shells of a mode list, in order of first
     appearance, plus the per-mode index into that list."""
