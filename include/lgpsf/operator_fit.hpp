@@ -43,14 +43,32 @@
 /// ellipsoid preserves its aspect and orientation exactly, which is what the
 /// row layer's window-shape initialization family is built to exploit.
 ///
-/// `WindowShape::Ball` does not switch to a different query type. It replaces
-/// `sigma` with the ISOTROPIC covariance `lambda_max(sigma) * I` and takes the
-/// same ellipsoid path -- which is that ellipsoid's bounding sphere at the same
-/// tau. Keeping one query type is what makes "the flag changes only the
-/// anisotropy, never the scale" a structural fact rather than a claim: both
-/// options are `{x : (x - mu0)^T A^-1 (x - mu0) <= tau_window^2}`, differing
-/// only in `A`, so `tau_window` means the same thing under both and the two
-/// are directly comparable.
+/// How much of that anisotropy to keep is ONE CONTINUOUS KNOB,
+/// `window_aspect_cap`, which caps the window's axis ratio by flooring the
+/// eigenvalues of `sigma` at `lambda_max / cap^2`:
+///
+///     cap = 1          every axis becomes lambda_max: an isotropic window,
+///                      i.e. the ellipsoid's bounding sphere at the same tau
+///     cap = infinity   the floor is zero: the caller's ellipsoid, untouched
+///     cap = kappa      the axis ratio is min(the prior's, kappa)
+///
+/// so the two endpoints are the ball and the ellipsoid and everything between
+/// is reachable. The query is always an ellipsoid,
+/// `{x : (x - mu0)^T A^-1 (x - mu0) <= tau_window^2}` -- only `A` changes --
+/// so the cap moves the SHAPE and never the scale, and `tau_window` means the
+/// same thing at every setting.
+///
+/// What the knob really trades is how much trust is placed in the prior's
+/// ORIENTATION. A sphere is conservative in every direction regardless of
+/// whether the prior points the right way; the caller's ellipsoid is
+/// conservative only along the axes the prior nominates. At cap kappa the
+/// window still extends `tau_window * a_max / kappa` in its narrowest
+/// direction, which bounds the damage from a badly rotated prior while taking
+/// most of the point-count saving -- and the saving is the product of the
+/// capped axis ratios, so it compounds with dimension.
+///
+/// (Flooring eigenvalues to bound an aspect ratio is the same device
+/// `window_shape` already uses on degenerate windows.)
 ///
 /// Windows for ALL rows come from ONE dual-tree descent -- the column-point
 /// tree against a tree of every row's query ellipsoid -- rather than a query
@@ -65,14 +83,9 @@
 /// right thing to do when the window is a sphere and that family can recover
 /// nothing from it. So: **the ball is known to perform well and the ellipsoid
 /// is not yet measured at field scale.** The C++ side restores the intended
-/// default and keeps the ball one flag away, so the comparison can be run
-/// cheaply once the port is finished. Until then, treat neither as settled.
-///
-/// A ball is the orientation-agnostic choice: it is conservative in every
-/// direction regardless of whether the prior's orientation is right. The
-/// ellipsoid transfers that trust to the prior's shape, in exchange for far
-/// fewer points per row -- the ratio is the product of the axis ratios, so it
-/// compounds with dimension.
+/// default and reaches the ball by setting `window_aspect_cap = 1`, so the
+/// comparison -- and everything between the two -- can be run cheaply once the
+/// port is finished. Until then, treat neither endpoint as settled.
 
 #include <algorithm>
 #include <cmath>
@@ -99,18 +112,33 @@
 
 namespace lgpsf {
 
-/// The geometry of a row's fit window.
-enum class WindowShape
+/// `sigma` with its axis ratio capped at `aspect_cap`, by flooring the
+/// eigenvalues at `lambda_max / aspect_cap^2`.
+///
+/// The eigenvectors are untouched, so the orientation always survives; only
+/// how elongated the shape may be changes. `aspect_cap == 1` returns
+/// `lambda_max * I` (isotropic), `aspect_cap == infinity` returns `sigma`
+/// unchanged, and the resulting axis ratio is `min(the input's, aspect_cap)`.
+inline Eigen::MatrixXd capped_covariance( const Eigen::Ref<const Eigen::MatrixXd>& sigma,
+                                          double aspect_cap )
 {
-    /// The caller's `sigma[rho]` inflated by `tau_window`. The design intent,
-    /// and what the row layer's window-shape initialization family expects.
-    Ellipsoid,
-    /// The same ellipsoid made ISOTROPIC -- sigma replaced by
-    /// lambda_max(sigma) I, which is its bounding sphere at the same tau.
-    /// Orientation-agnostic, and what every PIG field-scale experiment so far
-    /// has used. Still an ellipsoid query, so only the shape changes.
-    Ball
-};
+    if ( !(aspect_cap >= 1.0) )
+    {
+        throw std::invalid_argument(
+            "lgpsf::capped_covariance: aspect_cap must be >= 1 (1 is an isotropic "
+            "window); got " + std::to_string(aspect_cap));
+    }
+    if ( std::isinf(aspect_cap) )
+    {
+        return sigma;
+    }
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(sigma);
+    Eigen::VectorXd values = solver.eigenvalues();  // ascending
+    const double floor = values(values.size() - 1) / (aspect_cap * aspect_cap);
+    values = values.cwiseMax(floor);
+    return solver.eigenvectors() * values.asDiagonal()
+           * solver.eigenvectors().transpose();
+}
 
 /// What happened to a row.
 enum class RowStatus
@@ -155,7 +183,11 @@ struct OperatorFitConfig
     /// with the parameter.
     double tau_window = 10.0;
 
-    WindowShape window = WindowShape::Ellipsoid;
+    /// Caps the window's axis ratio: 1 gives an isotropic window (a ball),
+    /// infinity (the default) gives the caller's ellipsoid untouched, and any
+    /// value between trades point count against robustness to a badly oriented
+    /// prior. See the file comment.
+    double window_aspect_cap = std::numeric_limits<double>::infinity();
 
     /// Model the diagonal spike. Requires the square dof context (no separate
     /// row coordinates), since the spike is tied to the row's own dof.
@@ -341,6 +373,12 @@ inline OperatorFit fit_operator(
         throw std::invalid_argument(
             "lgpsf::fit_operator: config.row.mode_policy is required");
     }
+    if ( !(config.window_aspect_cap >= 1.0) )
+    {
+        throw std::invalid_argument(
+            "lgpsf::fit_operator: window_aspect_cap must be >= 1 (1 is an "
+            "isotropic window, infinity the caller's ellipsoid untouched)");
+    }
     if ( x_rows && x_rows->rows() != num_rows )
     {
         throw std::invalid_argument(
@@ -447,16 +485,9 @@ inline OperatorFit fit_operator(
                 continue;
             }
 
-            Eigen::MatrixXd query_shape = covariance;
-            if ( config.window == WindowShape::Ball )
-            {
-                // the isotropic ellipsoid with the same largest axis
-                Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(covariance);
-                query_shape = solver.eigenvalues()(dim - 1)
-                              * Eigen::MatrixXd::Identity(dim, dim);
-            }
-            queries.push_back(
-                ellipsoid_tree::Ellipsoid{centers.row(rho).transpose(), query_shape});
+            queries.push_back(ellipsoid_tree::Ellipsoid{
+                centers.row(rho).transpose(),
+                capped_covariance(covariance, config.window_aspect_cap)});
             query_row.push_back(static_cast<int>(rho));
         }
 

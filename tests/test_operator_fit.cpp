@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <limits>
 #include <vector>
 
 #include "doctest/doctest.h"
@@ -24,7 +25,7 @@ using lgpsf::OperatorFit;
 using lgpsf::OperatorFitConfig;
 using lgpsf::RowStatus;
 using lgpsf::WhitenedBasis;
-using lgpsf::WindowShape;
+using lgpsf::capped_covariance;
 using lgpsf::fit_operator;
 using lgpsf::modes_up_to_level;
 using lgpsf::theta_hat_size;
@@ -295,56 +296,124 @@ TEST_CASE("the baseline guard means a shipped row is never worse than the prior"
     CHECK(searched > 0);
 }
 
-TEST_CASE("the ellipsoid window is the default and the ball is its bounding sphere")
+TEST_CASE("the aspect cap spans the ball and the ellipsoid continuously")
 {
-    // The two differ only in anisotropy: same tau, same scale, so the ball
-    // contains the ellipsoid and the point counts differ by the axis ratio.
+    // The cap floors sigma's eigenvalues at lambda_max / cap^2, so cap = 1 is
+    // isotropic, cap = infinity is the caller's ellipsoid untouched, and the
+    // resulting axis ratio is min(the input's, cap). Orientation never moves.
+    Eigen::MatrixXd sigma(2, 2);
+    const double angle = 0.4;
+    Eigen::Matrix2d rotation;
+    rotation << std::cos(angle), -std::sin(angle), std::sin(angle), std::cos(angle);
+    Eigen::Matrix2d axes = Eigen::Matrix2d::Zero();
+    axes(0, 0) = 64.0;  // semi-axes 8 and 1: an 8:1 prior
+    axes(1, 1) = 1.0;
+    sigma = rotation * axes * rotation.transpose();
+
+    const auto aspect_of = []( const Eigen::MatrixXd& a ) {
+        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(a);
+        return std::sqrt(solver.eigenvalues()(1) / solver.eigenvalues()(0));
+    };
+    CHECK(aspect_of(sigma) == doctest::Approx(8.0));
+
+    // the endpoints
+    const Eigen::MatrixXd ball = capped_covariance(sigma, 1.0);
+    CHECK(aspect_of(ball) == doctest::Approx(1.0));
+    CHECK((ball - 64.0 * Eigen::MatrixXd::Identity(2, 2)).cwiseAbs().maxCoeff() < 1e-9);
+    CHECK((capped_covariance(sigma, std::numeric_limits<double>::infinity()) - sigma)
+              .cwiseAbs().maxCoeff() == 0.0);
+
+    // everything between, and the cap is never exceeded
+    for ( double cap : {1.0, 1.5, 2.0, 4.0, 8.0, 16.0} )
+    {
+        const Eigen::MatrixXd capped = capped_covariance(sigma, cap);
+        CHECK(aspect_of(capped) == doctest::Approx(std::min(cap, 8.0)));
+        // the largest axis is untouched: the cap moves shape, never scale
+        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(capped);
+        CHECK(solver.eigenvalues()(1) == doctest::Approx(64.0));
+        // and the orientation survives -- asked only where it is defined,
+        // since cap = 1 is isotropic and an isotropic covariance has no
+        // orientation to preserve (any orthonormal basis diagonalizes it)
+        if ( cap > 1.0 )
+        {
+            Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> original(sigma);
+            CHECK(std::abs(std::abs(solver.eigenvectors().col(1).dot(
+                      original.eigenvectors().col(1))) - 1.0) < 1e-9);
+        }
+    }
+
+    CHECK_THROWS_AS(capped_covariance(sigma, 0.5), std::invalid_argument);
+}
+
+TEST_CASE("tightening the cap nests the windows and shrinks them")
+{
+    // cap = 1 is the bounding sphere, so it contains every tighter window; the
+    // point count falls monotonically as the cap is raised toward the prior's
+    // own shape.
     std::mt19937 gen(3);
     const Synthetic op = make_operator(gen, 11, 30, 3, 3.0);
 
-    OperatorFitConfig ellipsoid = config_for(op);
-    CHECK(ellipsoid.window == WindowShape::Ellipsoid);  // the design intent
-    // tau must be small enough that the windows are smaller than the mesh,
-    // or both shapes swallow everything and the comparison says nothing
-    ellipsoid.tau_window = 2.0;
-    OperatorFitConfig ball = ellipsoid;
-    ball.window = WindowShape::Ball;
+    std::vector<double> caps{1.0, 1.5, 3.0, std::numeric_limits<double>::infinity()};
+    std::vector<OperatorFit> fits;
+    std::vector<std::size_t> totals;
+    for ( double cap : caps )
+    {
+        OperatorFitConfig config = config_for(op);
+        // tau must be small enough that windows are smaller than the mesh, or
+        // every setting swallows the grid and the comparison says nothing
+        config.tau_window = 1.5;
+        config.window_aspect_cap = cap;
+        fits.push_back(run(op, config));
+        std::size_t total = 0;
+        for ( Eigen::Index rho = 0; rho < fits.back().num_rows(); ++rho )
+        {
+            total += fits.back().row_window(static_cast<int>(rho)).size();
+        }
+        totals.push_back(total);
+    }
+    MESSAGE("window points by cap 1 / 1.5 / 3 / inf: " << totals[0] << " / "
+            << totals[1] << " / " << totals[2] << " / " << totals[3]);
 
-    const OperatorFit with_ellipsoid = run(op, ellipsoid);
-    const OperatorFit with_ball = run(op, ball);
+    // the default really is the uncapped ellipsoid
+    CHECK(config_for(op).window_aspect_cap
+          == std::numeric_limits<double>::infinity());
+    // monotone non-increasing, and strictly smaller at the ends
+    for ( std::size_t i = 1; i < totals.size(); ++i )
+    {
+        CHECK(totals[i] <= totals[i - 1]);
+    }
+    CHECK(totals.back() < totals.front());
+    // the prior's aspect is 3, so capping AT 3 already gives the full ellipsoid
+    CHECK(totals[2] == totals[3]);
 
-    std::size_t total_ellipsoid = 0, total_ball = 0;
-    for ( Eigen::Index rho = 0; rho < with_ellipsoid.num_rows(); ++rho )
+    // nesting, row by row: a looser cap contains a tighter one
+    for ( Eigen::Index rho = 0; rho < fits[0].num_rows(); ++rho )
     {
         if ( !op.gate[static_cast<std::size_t>(rho)] )
         {
             continue;
         }
-        const std::vector<int> a = with_ellipsoid.row_window(static_cast<int>(rho));
-        const std::vector<int> b = with_ball.row_window(static_cast<int>(rho));
-        total_ellipsoid += a.size();
-        total_ball += b.size();
-
-        // the ball is the circumscribed sphere, so it contains the ellipsoid
-        for ( int column : a )
+        const std::vector<int> widest = fits[0].row_window(static_cast<int>(rho));
+        for ( std::size_t i = 1; i < fits.size(); ++i )
         {
-            CHECK(std::find(b.begin(), b.end(), column) != b.end());
+            for ( int column : fits[i].row_window(static_cast<int>(rho)) )
+            {
+                CHECK(std::find(widest.begin(), widest.end(), column) != widest.end());
+            }
         }
-        // both contain the row's own dof, so the spike has somewhere to live
-        CHECK(std::find(a.begin(), a.end(), static_cast<int>(rho)) != a.end());
+        // every window keeps the row's own dof, so the spike has a home
+        CHECK(std::find(widest.begin(), widest.end(), static_cast<int>(rho))
+              != widest.end());
     }
-    MESSAGE("window points: ellipsoid " << total_ellipsoid << ", ball " << total_ball
-                                        << " (axis ratio 3)");
-    CHECK(total_ellipsoid < total_ball);
 
-    // both recover the operator; this test is about geometry, not accuracy
-    for ( Eigen::Index rho = 0; rho < with_ellipsoid.num_rows(); ++rho )
+    for ( const OperatorFit& fit : fits )
     {
-        if ( op.gate[static_cast<std::size_t>(rho)] )
+        for ( Eigen::Index rho = 0; rho < fit.num_rows(); ++rho )
         {
-            CHECK(with_ellipsoid.status[static_cast<std::size_t>(rho)]
-                  != RowStatus::Failed);
-            CHECK(with_ball.status[static_cast<std::size_t>(rho)] != RowStatus::Failed);
+            if ( op.gate[static_cast<std::size_t>(rho)] )
+            {
+                CHECK(fit.status[static_cast<std::size_t>(rho)] != RowStatus::Failed);
+            }
         }
     }
 }

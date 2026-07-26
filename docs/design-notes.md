@@ -900,12 +900,38 @@ at the returned point. The prototype's own de-duplication workaround -- against
 the extra Jacobian evaluations scipy inserts at arbitrary points -- is indeed
 unnecessary here; this is a different gap.
 
-## The operator window: ellipsoid by default, ball on request (2026-07-26, C++)
+## The operator window: one aspect-ratio cap spanning ball to ellipsoid (2026-07-26, C++)
 
 **Decision** (Nick, `include/lgpsf/operator_fit.hpp`, M4). The fit window is
-the caller's `sigma[rho]` inflated by `tau_window`, an ELLIPSOID.
-`WindowShape::Ball` is available and makes it isotropic. The C++ default is
-the ellipsoid; the Python prototype's operator layer shipped a ball.
+the caller's `sigma[rho]` inflated by `tau_window`, with its axis ratio capped
+by ONE CONTINUOUS KNOB, `window_aspect_cap`, which floors sigma's eigenvalues
+at `lambda_max / cap^2`:
+
+| cap | window |
+|---|---|
+| 1 | isotropic -- the ellipsoid's bounding sphere at the same tau (the ball) |
+| kappa | axis ratio `min(the prior's, kappa)` |
+| infinity (**default**) | the caller's ellipsoid, untouched |
+
+The two endpoints are exactly the ball and the ellipsoid, so this REPLACES what
+began as a boolean and strictly extends it. The query is always an ellipsoid
+and only `A` changes, so the cap moves the SHAPE and never the scale --
+`tau_window` means the same thing at every setting, which is what makes the
+ball-vs-ellipsoid comparison a one-variable experiment. The eigenvectors are
+untouched, so orientation always survives (undefined at cap = 1, where the
+result is isotropic -- a fact a test asserted before it was true).
+
+What the knob trades is how much trust goes on the prior's ORIENTATION. A
+sphere is conservative in every direction whether or not the prior points the
+right way; the caller's ellipsoid is conservative only along the axes the prior
+nominates. At cap kappa the window still extends `tau * a_max / kappa` in its
+narrowest direction, bounding the damage from a badly rotated prior while
+taking most of the point-count saving. (Flooring eigenvalues to bound an aspect
+ratio is the same device `window_shape` already uses on degenerate windows.)
+
+Measured, 3:1 prior, tau = 1.5, window points at cap 1 / 1.5 / 3 / infinity:
+**363 / 331 / 205 / 205** -- monotone, and capping AT the prior's own aspect is
+correctly a no-op.
 
 **The archaeology, because the evidence is split.** The row layer was designed
 on the ellipsoid premise -- `8e64243` justifies the window-shape init family
@@ -937,18 +963,14 @@ deployed operator's truncation -- `slice38` measured that error floor directly.
 So: **the ball is known to perform well, and the ellipsoid is not yet measured
 at field scale.**
 
-**The resolution.** Default to the intended ellipsoid, keep the ball one flag
-away, and settle it by experiment once the C++ port makes the PIG replay cheap.
-Neither is settled until then.
+**The resolution.** Default to the intended ellipsoid (`cap = infinity`), reach
+the validated ball at `cap = 1`, and settle it by experiment once the C++ port
+makes the PIG replay cheap -- with the intermediate settings available, which a
+boolean would not have given. Neither endpoint is settled until then.
 
-**Two implementation points.** The ball is NOT a different query type: it is
-the same ellipsoid query with `sigma` replaced by `lambda_max(sigma) * I`.
-That makes "the flag changes only the anisotropy, never the scale" structural
--- both are `{x : (x-mu0)^T A^-1 (x-mu0) <= tau^2}`, differing only in `A` --
-so the comparison has exactly one variable. And windows for ALL rows come from
-ONE dual-tree descent (column-point tree against a tree of every row's query
-ellipsoid), not a query per row, matching how the deployed sparsity pattern is
-already derived.
+**Implementation point.** Windows for ALL rows come from ONE dual-tree descent
+(column-point tree against a tree of every row's query ellipsoid), not a query
+per row, matching how the deployed sparsity pattern is already derived.
 
 **Testing note worth keeping.** The "bit-identical across thread counts" check
 first failed for a reason that had nothing to do with threads: the output
