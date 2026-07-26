@@ -408,14 +408,18 @@ inline OperatorFit fit_operator(
         throw std::invalid_argument("lgpsf::fit_operator: mu0 must be (num_rows, N)");
     }
 
-    // The counting rule uses the PINNED parameter count, matching the row
-    // layer, so the baseline guard and the search consider identical mode sets
-    // -- which is exactly what makes the guard a comparison rather than a race
-    // between two different model classes.
-    const int counting_params = theta_hat_size(dim, MuMode::Pinned);
     const int num_extra_config = config.spike ? 1 : 0;
     const MuMode ladder_mode =
         ( config.row.mu == MuPolicy::Free ) ? MuMode::Fitted : MuMode::Pinned;
+
+    // Each counting rule counts the parameters ACTUALLY BEING FIT. The
+    // baseline is a linear fit in the pinned encoding, so it counts N(N+1)/2;
+    // the search counts its own stream encoding, which is N(N+3)/2 when the
+    // center is fitted. (The Python prototype used the free count for both --
+    // an unintended slip that went uncaught because it is conservative,
+    // skipping more levels rather than fewer.)
+    const int baseline_params = theta_hat_size(dim, MuMode::Pinned);
+    const int search_params = theta_hat_size(dim, ladder_mode);
 
     // Randomness lives HERE and only here: one split and one jitter table for
     // the whole fit, built before any row is touched, so every row and the
@@ -436,7 +440,7 @@ inline OperatorFit fit_operator(
     baseline_ctx.dim = dim;
     baseline_ctx.num_probes = static_cast<int>(num_probes);
     baseline_ctx.num_extra = num_extra_config;
-    baseline_ctx.num_params = counting_params;
+    baseline_ctx.num_params = baseline_params;
     const std::vector<std::vector<Mode>> baseline_sets =
         config.row.mode_policy->baseline_sets(baseline_ctx);
 
@@ -585,7 +589,7 @@ inline OperatorFit fit_operator(
                     {
                         if ( static_cast<int>(num_probes)
                              < 2 * (static_cast<int>(modes.size()) + num_extra
-                                    + counting_params) )
+                                    + baseline_params) )
                         {
                             continue;
                         }
@@ -617,7 +621,7 @@ inline OperatorFit fit_operator(
                             searchable
                             || static_cast<int>(num_probes)
                                    >= 2 * (static_cast<int>(modes.size()) + num_extra
-                                           + counting_params);
+                                           + search_params);
                     }
                     std::optional<ProbeFitResult> searched;
                     if ( searchable )

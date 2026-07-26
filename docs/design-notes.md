@@ -978,3 +978,28 @@ arrays are NaN-padded for rows with no shipped model, and `NaN != NaN`, so
 Eigen's `operator==` reported a difference between a run and ITSELF. The
 integer and status arrays passed precisely because they carry no NaN. Compare
 NaN-padded arrays with a NaN-aware helper.
+
+## The counting rule counts what is actually fit (2026-07-26, C++)
+
+**Decision** (Nick). `k >= 2 (m + n_extra + P)` uses the parameter count of the
+fit it guards: `N(N+1)/2` in the pinned encoding, `N(N+3)/2` with the center
+fitted. The baseline guard is a linear fit in the pinned encoding, so it counts
+the former; the search counts its own stream encoding.
+
+**The prototype had this wrong**, and it is an unintended slip rather than a
+choice. `operator_fit.py:330` reads
+
+    P_fix = N + N * (N - 1) // 2 + N            # == theta_size(N, mu0=any)
+
+whose comment asserts the expression is encoding-independent. It is not -- it
+is the FREE count (5 vs 3 at N=2, 9 vs 6 at N=3, 14 vs 10 at N=4), so
+`P_fix == P_free`, `P_stream` was a no-op, and the baseline guard was held to a
+stricter budget than the search it guards. Uncaught because the error is
+conservative: a too-large P only ever skips more mode levels, never admits one
+it should not -- the same reason the ball window went unnoticed.
+
+Worth noting for the C++ side too: an earlier version of `probe_fit.hpp` copied
+the prototype's pinned-count-regardless-of-policy behavior and justified it as
+keeping pinned and released candidates comparable. That justification was
+post-hoc rationalization of a bug, which is a good reminder that a plausible
+reason can always be found for whatever the code already does.
