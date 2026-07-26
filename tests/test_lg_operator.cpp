@@ -18,6 +18,7 @@
 #include "lgpsf/lg_operator.hpp"
 #include "test_helpers.hpp"
 
+using lgpsf::LGExpansion;
 using lgpsf::LGOperator;
 using lgpsf::Mode;
 using lgpsf::MuMode;
@@ -293,4 +294,107 @@ TEST_CASE("the row-parallel helpers are bit-identical across thread counts")
             CHECK(one(rho) == four(rho));
         }
     }
+}
+
+TEST_CASE("an expansion decodes and evaluates on its own")
+{
+    std::mt19937 gen(4);
+    const LGOperator op = hand_built(gen);
+    const int rho = model_rows(op).front();
+
+    const lgpsf::LGExpansion expansion = lgpsf::row_expansion(op, rho);
+    CHECK(lgpsf::validate(expansion).empty());
+    CHECK(expansion.dim() == 2);
+    CHECK(expansion.num_modes() == op.row_modes(rho).size());
+
+    // it carries its own ellipsoid: no reference center, no mu mode
+    const lgpsf::EllipsoidFrame frame = expansion.frame();
+    CHECK((frame.mu - op.mu.row(rho).transpose()).cwiseAbs().maxCoeff() < 1e-12);
+
+    // and its smooth part is the operator's raw kernel for that row
+    const Eigen::MatrixXd probes = test_helpers::uniform_points(20, 2, gen, -1.0, 1.0);
+    CHECK((lgpsf::eval_expansion(expansion, probes)
+           - lgpsf::eval_kernel_unrestricted(op, {rho}, probes).col(0))
+              .cwiseAbs().maxCoeff() < 1e-12);
+
+    // the spike travels with it, as the second component
+    REQUIRE(expansion.s.size() == 1);
+    CHECK(expansion.s(0) == op.s(rho));
+}
+
+TEST_CASE("validate catches a malformed expansion")
+{
+    std::mt19937 gen(5);
+    const lgpsf::LGExpansion good = lgpsf::row_expansion(hand_built(gen), 40);
+    REQUIRE(lgpsf::validate(good).empty());
+
+    lgpsf::LGExpansion mismatched = good;
+    mismatched.c = Eigen::VectorXd::Zero(good.c.size() + 1);
+    CHECK(!lgpsf::validate(mismatched).empty());
+
+    lgpsf::LGExpansion bad_theta = good;
+    bad_theta.theta = Eigen::VectorXd::Zero(4);  // no N has N(N+3)/2 == 4
+    CHECK(!lgpsf::validate(bad_theta).empty());
+
+    lgpsf::LGExpansion off_table = good;
+    off_table.modes[0] = lgpsf::Mode{0, 99, 0};
+    CHECK(!lgpsf::validate(off_table).empty());
+
+    lgpsf::LGExpansion infinite = good;
+    infinite.c(0) = std::numeric_limits<double>::infinity();
+    CHECK(!lgpsf::validate(infinite).empty());
+}
+
+TEST_CASE("an operator can be built from per-row expansions")
+{
+    // The hand-construction path: an operator row IS an expansion plus a window
+    // plus the masses, so a caller with a physics-based approximation writes
+    // expansions and lets build_operator do the bookkeeping -- mode-set
+    // de-duplication, coefficient padding, window offsets.
+    std::mt19937 gen(6);
+    const LGOperator original = hand_built(gen);
+
+    std::vector<std::optional<lgpsf::OperatorRow>> rows(
+        static_cast<std::size_t>(original.num_rows()));
+    for ( int rho : model_rows(original) )
+    {
+        lgpsf::OperatorRow row;
+        row.model = lgpsf::row_expansion(original, rho);
+        row.window_center = original.window_center.row(rho).transpose();
+        row.window_covariance.resize(2, 2);
+        for ( int i = 0; i < 2; ++i )
+        {
+            for ( int j = 0; j < 2; ++j )
+            {
+                row.window_covariance(i, j) = original.window_covariance(rho, i * 2 + j);
+            }
+        }
+        row.window_columns = original.row_window(rho);
+        rows[static_cast<std::size_t>(rho)] = std::move(row);
+    }
+
+    const LGOperator rebuilt =
+        lgpsf::build_operator(original.x_cols, original.m1_diag, original.m2_diag,
+                              original.spike, rows);
+
+    CHECK(validate(rebuilt).empty());
+    CHECK(rebuilt.mode_set_id == original.mode_set_id);
+    CHECK(rebuilt.window_indptr == original.window_indptr);
+    CHECK(rebuilt.window_indices == original.window_indices);
+    CHECK(rebuilt.mode_sets.size() == 1u);  // de-duplicated, not appended per row
+
+    // and it is the same operator
+    const Eigen::MatrixXd v =
+        test_helpers::randn_points(static_cast<int>(original.num_cols()), 2, gen);
+    CHECK((matvec(rebuilt, v) - matvec(original, v)).cwiseAbs().maxCoeff() < 1e-12);
+    CHECK(Eigen::MatrixXd(assemble_sparse(rebuilt, 40.0))
+              .isApprox(Eigen::MatrixXd(assemble_sparse(original, 40.0)), 1e-12));
+
+    // a malformed expansion is refused rather than stored
+    std::vector<std::optional<lgpsf::OperatorRow>> broken = rows;
+    broken[static_cast<std::size_t>(model_rows(original).front())]->model.c =
+        Eigen::VectorXd::Zero(1);
+    CHECK_THROWS_AS(lgpsf::build_operator(original.x_cols, original.m1_diag,
+                                          original.m2_diag, original.spike, broken),
+                    std::invalid_argument);
 }

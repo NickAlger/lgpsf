@@ -606,12 +606,14 @@ inline OperatorFit fit_operator(
                     if ( searched && searched->score < baseline_score )
                     {
                         outcome.status = RowStatus::Fit;
-                        outcome.theta = searched->theta;
-                        outcome.mu = searched->mu;
-                        outcome.L = searched->L;
-                        outcome.c = searched->c;
-                        outcome.modes = searched->modes;
-                        outcome.s = searched->s.size() ? searched->s(0) : 0.0;
+                        const EllipsoidFrame shipped = searched->model.frame();
+                        outcome.theta = searched->model.theta;
+                        outcome.mu = shipped.mu;
+                        outcome.L = shipped.L;
+                        outcome.c = searched->model.c;
+                        outcome.modes = searched->model.modes;
+                        outcome.s =
+                            searched->model.s.size() ? searched->model.s(0) : 0.0;
                         outcome.score = searched->score;
                         outcome.released = searched->released;
                     }

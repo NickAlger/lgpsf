@@ -74,6 +74,7 @@
 
 #include "lgpsf/ellipsoid_transform.hpp"
 #include "lgpsf/lg_ellipsoid_feature.hpp"
+#include "lgpsf/lg_expansion.hpp"
 #include "lgpsf/lg_functions.hpp"
 
 namespace lgpsf {
@@ -732,6 +733,159 @@ inline std::vector<std::string> validate( const LGOperator& fit )
         }
     }
     return problems;
+}
+
+/// One row's contribution when building an operator directly.
+struct OperatorRow
+{
+    LGExpansion model;
+
+    /// The row's window as a REGION, pre-scaled so membership is
+    /// `(x - center)^T covariance^-1 (x - center) <= 1`.
+    /// `ellipsoid_from_points` (init_dictionary.hpp) builds one from a chosen
+    /// set of columns.
+    Eigen::VectorXd window_center;
+    Eigen::MatrixXd window_covariance;
+
+    /// The same window as sorted column indices.
+    std::vector<int> window_columns;
+};
+
+/// Assemble an `LGOperator` from per-row expansions.
+///
+/// The intended entry point for building an operator WITHOUT fitting one -- a
+/// physics-based approximation, say. An operator row is exactly an expansion
+/// plus a window plus the masses, and this does the bookkeeping that makes
+/// filling the flat arrays by hand error-prone: de-duplicating mode sets into a
+/// dense id table, padding `c` to the widest row, accumulating the window
+/// offsets, and marking unmodeled rows with NaN.
+///
+/// `rows` has one entry per operator row; an unset entry means no model there.
+inline LGOperator build_operator(
+    const Eigen::Ref<const Eigen::MatrixXd>& x_cols,
+    const Eigen::Ref<const Eigen::VectorXd>& m1_diag,
+    const Eigen::Ref<const Eigen::VectorXd>& m2_diag, bool spike,
+    const std::vector<std::optional<OperatorRow>>& rows,
+    const std::optional<Eigen::MatrixXd>& x_rows = std::nullopt )
+{
+    const int dim = static_cast<int>(x_cols.cols());
+    const Eigen::Index num_rows = m1_diag.size();
+    if ( static_cast<Eigen::Index>(rows.size()) != num_rows )
+    {
+        throw std::invalid_argument(
+            "lgpsf::build_operator: rows must have one entry per operator row");
+    }
+    if ( x_cols.rows() != m2_diag.size() )
+    {
+        throw std::invalid_argument(
+            "lgpsf::build_operator: x_cols and m2_diag must agree on the column count");
+    }
+
+    LGOperator out;
+    out.dim = dim;
+    out.x_cols = x_cols;
+    out.x_rows = x_rows;
+    out.m1_diag = m1_diag;
+    out.m2_diag = m2_diag;
+    out.spike = spike;
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    out.theta = Eigen::MatrixXd::Constant(num_rows, theta_size(dim), nan);
+    out.mu = Eigen::MatrixXd::Constant(num_rows, dim, nan);
+    out.L = Eigen::MatrixXd::Constant(num_rows, dim * dim, nan);
+    out.s = Eigen::VectorXd::Zero(num_rows);
+    out.window_center = Eigen::MatrixXd::Constant(num_rows, dim, nan);
+    out.window_covariance = Eigen::MatrixXd::Constant(num_rows, dim * dim, nan);
+    out.mode_set_id.assign(static_cast<std::size_t>(num_rows), -1);
+    out.window_indptr.assign(static_cast<std::size_t>(num_rows) + 1, 0);
+
+    std::size_t widest = 0;
+    for ( Eigen::Index rho = 0; rho < num_rows; ++rho )
+    {
+        const std::optional<OperatorRow>& row = rows[static_cast<std::size_t>(rho)];
+        if ( row )
+        {
+            widest = std::max(widest, row->model.modes.size());
+        }
+    }
+    out.c = Eigen::MatrixXd::Zero(num_rows, static_cast<Eigen::Index>(widest));
+
+    for ( Eigen::Index rho = 0; rho < num_rows; ++rho )
+    {
+        // Carry the window offset forward FIRST, so an unmodeled row leaves a
+        // zero-length window rather than a hole in the running total.
+        out.window_indptr[static_cast<std::size_t>(rho) + 1] =
+            out.window_indptr[static_cast<std::size_t>(rho)];
+
+        const std::optional<OperatorRow>& row = rows[static_cast<std::size_t>(rho)];
+        if ( !row )
+        {
+            continue;
+        }
+        const std::vector<std::string> problems = validate(row->model);
+        if ( !problems.empty() )
+        {
+            throw std::invalid_argument("lgpsf::build_operator: row "
+                                        + std::to_string(rho) + ": " + problems.front());
+        }
+        if ( row->model.dim() != dim )
+        {
+            throw std::invalid_argument(
+                "lgpsf::build_operator: row " + std::to_string(rho)
+                + "'s expansion has a different spatial dimension");
+        }
+
+        out.theta.row(rho) = row->model.theta.transpose();
+        const EllipsoidFrame frame = row->model.frame();
+        out.mu.row(rho) = frame.mu.transpose();
+        for ( int i = 0; i < dim; ++i )
+        {
+            for ( int j = 0; j < dim; ++j )
+            {
+                out.L(rho, i * dim + j) = frame.L(i, j);
+                out.window_covariance(rho, i * dim + j) = row->window_covariance(i, j);
+            }
+        }
+        out.window_center.row(rho) = row->window_center.transpose();
+        out.c.row(rho).head(row->model.c.size()) = row->model.c.transpose();
+        out.s(rho) = ( row->model.s.size() > 0 ) ? row->model.s(0) : 0.0;
+
+        const auto found = std::find(out.mode_sets.begin(), out.mode_sets.end(),
+                                     row->model.modes);
+        if ( found == out.mode_sets.end() )
+        {
+            out.mode_set_id[static_cast<std::size_t>(rho)] =
+                static_cast<int>(out.mode_sets.size());
+            out.mode_sets.push_back(row->model.modes);
+        }
+        else
+        {
+            out.mode_set_id[static_cast<std::size_t>(rho)] =
+                static_cast<int>(found - out.mode_sets.begin());
+        }
+
+        std::vector<int> window = row->window_columns;
+        std::sort(window.begin(), window.end());
+        out.window_indptr[static_cast<std::size_t>(rho) + 1] +=
+            static_cast<int>(window.size());
+        out.window_indices.insert(out.window_indices.end(), window.begin(),
+                                  window.end());
+    }
+    return out;
+}
+
+/// The expansion carried by row rho, as a standalone object.
+inline LGExpansion row_expansion( const LGOperator& fit, int rho )
+{
+    LGExpansion out;
+    out.modes = fit.row_modes(rho);
+    out.theta = fit.theta.row(rho).transpose();
+    out.c = fit.c.row(rho).head(static_cast<Eigen::Index>(out.modes.size())).transpose();
+    if ( fit.spike )
+    {
+        out.s = Eigen::VectorXd::Constant(1, fit.s(rho));
+    }
+    return out;
 }
 
 /// Rows of several operators over the SAME columns, end to end.

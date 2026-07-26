@@ -403,9 +403,13 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
   merely unverified), and `fit_operator` returns `OperatorFit { model;
   diagnostics; }`, and **the model half is `LGOperator`, defined in its
   own `lg_operator.hpp` which depends on none of the fitting stack** --
-  so an operator can be built from a physics-based approximation,
-  merged with `concatenate_rows`, checked with `validate`, and applied
-  or assembled without the fitter ever being included. M5 is bindings + the PIG
+  so an operator can be built from a physics-based approximation
+  (`build_operator`, from per-row `LGExpansion`s), merged with
+  `concatenate_rows`, checked with `validate`, and applied or assembled
+  without the fitter ever being included. **`LGExpansion`**
+  (`lg_expansion.hpp`) is one target's model -- absolute theta, its mode
+  list, `c` and `s` -- and is both the per-row content of an `LGOperator`
+  and the model half of `CandidateFit`/`ProbeFitResult`. M5 is bindings + the PIG
   slice-38/39 replay.
 - A hand-rolled Levenberg-Marquardt loop (port milestone M2): the
   prototype's outer loop delegates to scipy/MINPACK -- the one

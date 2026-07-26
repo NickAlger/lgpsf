@@ -74,6 +74,7 @@
 #include "lgpsf/ellipsoid_transform.hpp"
 #include "lgpsf/exceptions.hpp"
 #include "lgpsf/init_dictionary.hpp"
+#include "lgpsf/lg_expansion.hpp"
 #include "lgpsf/mode_policy.hpp"
 #include "lgpsf/varpro.hpp"
 #include "lgpsf/whitening.hpp"
@@ -287,18 +288,22 @@ struct ProbeFitConfig
     }();
 };
 
-/// One scored entry of the candidate table.
+/// One scored entry of the candidate table: the model it found, and how it
+/// went. The same separation the operator layer makes -- nothing about the
+/// search is needed to evaluate the model, and `model` decodes on its own.
 struct CandidateFit
 {
+    LGExpansion model;
+
     std::string label;        ///< "circle r=..", "window r=..", "sigma0", "warm(..)", "release(..)".
     std::string modes_label;
-    int num_modes = 0;
+
+    /// Whether this candidate's center was fitted. Pure provenance: `model`
+    /// stores absolute parameters, so nothing needs this to decode it.
     bool released = false;
 
+    /// The starting point, in the stream's internal encoding.
     Eigen::VectorXd theta_hat_init;
-    Eigen::VectorXd theta_hat;
-    Eigen::VectorXd c;
-    Eigen::VectorXd s;
 
     /// In-sample whitened cost -- a diagnostic, NEVER used for selection.
     double cost = 0.0;
@@ -312,22 +317,18 @@ struct CandidateFit
     /// False if the fit violates window containment -- impossible or runaway,
     /// by the conservativeness of the window.
     bool admissible = true;
+
+    std::size_t num_modes() const { return model.modes.size(); }
 };
 
-/// The winning candidate, plus the full audit trail.
+/// The winning model, plus the full audit trail.
 struct ProbeFitResult
 {
-    Eigen::VectorXd mu;  ///< Fitted (or pinned) center.
-    Eigen::MatrixXd L;   ///< Cholesky factor of the fitted covariance.
-    Eigen::VectorXd c;   ///< Smooth kernel coefficients.
-    Eigen::VectorXd s;   ///< Extra-basis coefficients; empty with no spike.
+    /// The winner. Its `theta` is the PUBLIC absolute encoding, so the ellipsoid
+    /// comes from `model.frame()` -- no mu0, no mode.
+    LGExpansion model;
 
-    /// The winning parameters in the PUBLIC absolute encoding, so they decode
-    /// with `unpack_theta` alone -- no mu0, no mode. See ellipsoid_transform.hpp.
-    Eigen::VectorXd theta;
-
-    std::vector<Mode> modes;
-    bool released = false;
+    bool released = false;  ///< Whether the winner's center was fitted.
 
     double score = std::numeric_limits<double>::infinity();
     StopReason stop_reason = StopReason::Exhausted;
@@ -546,9 +547,9 @@ inline ProbeFitResult fit_from_probes(
         CandidateFit candidate;
         candidate.label = label;
         candidate.modes_label = modes_label;
-        candidate.num_modes = static_cast<int>(modes.size());
         candidate.released = released;
         candidate.theta_hat_init = start;
+        candidate.model.modes = modes;
 
         VarProResult fit;
         try
@@ -560,17 +561,18 @@ inline ProbeFitResult fit_from_probes(
             // An unusable starting point -- a ladder rung far outside the
             // batch geometry. Expected and survivable: the candidate simply
             // scores as unusable and the stream moves on.
-            candidate.theta_hat = start;
-            candidate.c = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(modes.size()));
-            candidate.s = Eigen::VectorXd::Zero(e_hat.cols());
+            candidate.model.theta = to_theta(start, mu0, mode);
+            candidate.model.c =
+                Eigen::VectorXd::Zero(static_cast<Eigen::Index>(modes.size()));
+            candidate.model.s = Eigen::VectorXd::Zero(e_hat.cols());
             candidate.axes = Eigen::VectorXd::Zero(dim);
             candidate.admissible = false;
             return candidate;
         }
 
-        candidate.theta_hat = fit.theta_hat;
-        candidate.c = fit.c;
-        candidate.s = fit.s;
+        candidate.model.theta = to_theta(fit.theta_hat, mu0, mode);
+        candidate.model.c = fit.c;
+        candidate.model.s = fit.s;
         candidate.cost = fit.cost;
         candidate.success = fit.success;
         candidate.num_iterations = fit.num_iterations;
@@ -713,8 +715,8 @@ inline ProbeFitResult fit_from_probes(
             const CandidateFit& incumbent = pool[static_cast<std::size_t>(winner)];
             const bool better =
                 !have
-                || std::make_tuple(candidate.num_modes, candidate.released, i)
-                       < std::make_tuple(incumbent.num_modes, incumbent.released,
+                || std::make_tuple(candidate.num_modes(), candidate.released, i)
+                       < std::make_tuple(incumbent.num_modes(), incumbent.released,
                                          winner);
             if ( better )
             {
@@ -847,7 +849,9 @@ inline ProbeFitResult fit_from_probes(
         {
             best_score = candidates[static_cast<std::size_t>(level_winner)].score;
             patience_left = config.mode_patience;
-            warm_start = candidates[static_cast<std::size_t>(level_winner)].theta_hat;
+            warm_start = to_theta_hat(
+                candidates[static_cast<std::size_t>(level_winner)].model.theta, mu0,
+                ladder_mode);
             have_warm_start = true;
         }
         else
@@ -860,7 +864,9 @@ inline ProbeFitResult fit_from_probes(
         if ( level_winner >= 0 )
         {
             scorer = make_margin_scorer(
-                candidates[static_cast<std::size_t>(level_winner)].theta_hat,
+                to_theta_hat(
+                    candidates[static_cast<std::size_t>(level_winner)].model.theta,
+                    mu0, ladder_mode),
                 proposal->modes);
         }
         last_fit_modes = proposal->modes;
@@ -919,17 +925,21 @@ inline ProbeFitResult fit_from_probes(
             for ( const Eigen::VectorXd& previous : seen )
             {
                 duplicate = duplicate
-                            || (previous - source.theta_hat).cwiseAbs().maxCoeff() < 1e-8;
+                            || (previous - source.model.theta).cwiseAbs().maxCoeff() < 1e-8;
             }
             if ( duplicate )
             {
                 continue;
             }
-            seen.push_back(source.theta_hat);
+            seen.push_back(source.model.theta);
 
+            // Re-encoding the absolute parameters against mu0 in the fitted
+            // mode is exactly release_mu of the pinned ones: a pinned
+            // candidate's center IS mu0, so the displacement comes out zero.
             candidates.push_back(run_candidate(
                 "release(" + source.label + ")", winning_label, winning_modes,
-                release_mu(source.theta_hat, dim), MuMode::Fitted, true, free_basis));
+                to_theta_hat(source.model.theta, mu0, MuMode::Fitted),
+                MuMode::Fitted, true, free_basis));
             if ( hit_target(candidates.back()) )
             {
                 stop_reason = StopReason::Target;
@@ -940,23 +950,9 @@ inline ProbeFitResult fit_from_probes(
     }
 
     const CandidateFit& champion = candidates[static_cast<std::size_t>(winner)];
-    const MuMode champion_mode = champion.released ? MuMode::Fitted : ladder_mode;
-    const EllipsoidFrame frame =
-        unpack_theta_hat(champion.theta_hat, mu0, champion_mode);
 
     ProbeFitResult result;
-    result.mu = frame.mu;
-    result.L = frame.L;
-    result.c = champion.c;
-    result.s = champion.s;
-    result.theta = to_theta(champion.theta_hat, mu0, champion_mode);
-    for ( const auto& entry : modes_of )
-    {
-        if ( entry.first == champion.modes_label )
-        {
-            result.modes = entry.second;
-        }
-    }
+    result.model = champion.model;
     result.released = champion.released;
     result.score = champion.score;
     result.stop_reason = stop_reason;

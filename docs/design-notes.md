@@ -1162,3 +1162,52 @@ silent.
 never calls the fitter: every operator in it is written down by hand. That is
 what makes the independence a property of the build rather than a claim in a
 comment.
+
+## LGExpansion: the row model as its own type (2026-07-26, C++)
+
+**Decision** (Nick, M4). `CandidateFit` and `ProbeFitResult` were the same
+model-plus-diagnostics mixture `OperatorFit` had been, one layer down. The
+model half is now `LGExpansion` (`lg_expansion.hpp`).
+
+**Two things the split closed that were not on the list.** `released` was not a
+diagnostic: it told you whether `theta_hat` was Pinned- or Fitted-encoded, so
+it was needed to DECODE the candidate. Storing the absolute `theta`, as
+`LGOperator` does, makes the model self-decoding and drops `released` to
+provenance. And a `CandidateFit` was not self-describing -- it stored
+`num_modes` and `modes_label` but not the mode list, which lived in the
+engine's `modes_of` map, so a candidate's model could not be evaluated from the
+candidate.
+
+**The spike.** Held inside the expansion, not beside it. The tempting argument
+for excluding it -- `s` weights a discrete dof-tied correction, not a function
+of `x` -- loses to the fact that `c` and `s` are FITTED JOINTLY: the projection
+in variable projection couples them, so separating them at the type level would
+imply an independence the mathematics denies. `LGOperator` holds both for the
+same reason. The distinction is carried by the documentation rather than the
+type system.
+
+One asymmetry recorded so nobody "fixes" it: `c` is self-describing because its
+mode list travels with it, while `s` is meaningless without the caller's extra
+basis, which the expansion does NOT carry. A mode list is tens of integer
+triples; an extra basis is a `(K, num_extra)` array the caller owns, and
+storing it would give every candidate of every row a copy of the batch.
+
+**The name.** Not `LGFunction`, which reads as a single mode. "Expansion" says
+the informative thing -- a sum over a basis, not a basis element -- and does
+not over-commit the way `LGKernel` would, since `probe_fit` is deliberately
+general about what is being fit.
+
+**What it bought beyond tidiness.** An `LGOperator` row IS an `LGExpansion`
+plus a window plus the masses, so that relationship became expressible:
+`build_operator` assembles an operator from per-row expansions, doing the
+bookkeeping that makes filling the flat arrays by hand error-prone, and
+`row_expansion` extracts one back out. That is the ergonomic form of the
+physics-based construction path -- previously it meant filling twelve parallel
+arrays consistently, which is why `validate` had to exist.
+
+**A bug the round-trip test caught immediately.** The first `build_operator`
+skipped unmodeled rows without carrying the CSR window offset forward, leaving
+holes in the running total, and the patch loop written to compensate was
+convoluted rather than correct. Carrying the offset forward before the skip is
+the fix. This is precisely the bookkeeping the function exists to own, which is
+an argument for it existing rather than against.

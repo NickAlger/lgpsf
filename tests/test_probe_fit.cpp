@@ -276,14 +276,14 @@ TEST_CASE("a fit recovers the target it was built from")
                          << result.score << ", winner '"
                          << result.candidates[result.winner].label << "'");
     CHECK(result.score < 1e-6);
-    CHECK((result.c - target.c_true).cwiseAbs().maxCoeff() < 1e-5);
-    CHECK((result.s - target.s_true).cwiseAbs().maxCoeff() < 1e-5);
+    CHECK((result.model.c - target.c_true).cwiseAbs().maxCoeff() < 1e-5);
+    CHECK((result.model.s - target.s_true).cwiseAbs().maxCoeff() < 1e-5);
 
     // the recovered ellipsoid is the one the data was built from
     const lgpsf::EllipsoidFrame truth =
         lgpsf::unpack_theta_hat(target.theta_hat_true, target.mu0, MuMode::Pinned);
-    CHECK((result.mu - truth.mu).cwiseAbs().maxCoeff() < 1e-6);
-    CHECK((result.L * result.L.transpose() - truth.L * truth.L.transpose())
+    CHECK((result.model.frame().mu - truth.mu).cwiseAbs().maxCoeff() < 1e-6);
+    CHECK((result.model.frame().L * result.model.frame().L.transpose() - truth.L * truth.L.transpose())
               .cwiseAbs().maxCoeff() < 1e-6);
 }
 
@@ -301,10 +301,10 @@ TEST_CASE("the returned parameters decode on their own")
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
                         target.spike_index, config, std::nullopt, target.mass);
 
-    const lgpsf::EllipsoidFrame decoded = unpack_theta(result.theta);
-    CHECK((decoded.mu - result.mu).cwiseAbs().maxCoeff() < 1e-12);
-    CHECK((decoded.L - result.L).cwiseAbs().maxCoeff() < 1e-12);
-    CHECK(result.theta.size() == lgpsf::theta_size(2));
+    const lgpsf::EllipsoidFrame decoded = unpack_theta(result.model.theta);
+    CHECK((decoded.mu - result.model.frame().mu).cwiseAbs().maxCoeff() < 1e-12);
+    CHECK((decoded.L - result.model.frame().L).cwiseAbs().maxCoeff() < 1e-12);
+    CHECK(result.model.theta.size() == lgpsf::theta_size(2));
 }
 
 TEST_CASE("the default pins the center")
@@ -319,7 +319,7 @@ TEST_CASE("the default pins the center")
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
                         target.spike_index, config, std::nullopt, target.mass);
     CHECK_FALSE(result.released);
-    CHECK((result.mu - target.mu0).cwiseAbs().maxCoeff() == 0.0);
+    CHECK((result.model.frame().mu - target.mu0).cwiseAbs().maxCoeff() == 0.0);
     for ( const CandidateFit& candidate : result.candidates )
     {
         CHECK_FALSE(candidate.released);
@@ -355,7 +355,7 @@ TEST_CASE("releasing the center is available on request")
     const ProbeFitResult free_fit =
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
                         target.spike_index, config, std::nullopt, target.mass);
-    CHECK((free_fit.mu - target.mu0).cwiseAbs().maxCoeff() < 1e-4);
+    CHECK((free_fit.model.frame().mu - target.mu0).cwiseAbs().maxCoeff() < 1e-4);
 }
 
 TEST_CASE("admissibility is exactly the window-containment rule")
@@ -383,7 +383,7 @@ TEST_CASE("admissibility is exactly the window-containment rule")
         bool expected = candidate.axes.maxCoeff() <= radius;
         if ( candidate.released )
         {
-            expected = expected && candidate.theta_hat.head(2).norm() <= radius;
+            expected = expected && candidate.model.theta.head(2).norm() <= radius;
         }
         CHECK(candidate.admissible == expected);
     }
@@ -440,7 +440,7 @@ TEST_CASE("the counting rule skips levels the probes cannot support")
     const int budget = 24 / 2 - 1 - theta_hat_size(2, MuMode::Pinned);
     for ( const CandidateFit& candidate : result.candidates )
     {
-        CHECK(candidate.num_modes <= budget);
+        CHECK(candidate.num_modes() <= budget);
     }
 }
 
@@ -483,9 +483,9 @@ TEST_CASE("the simplicity tie-break prefers the smaller mode set")
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
                         target.spike_index, config, std::nullopt, target.mass);
 
-    MESSAGE("tie-break chose " << result.modes.size() << " modes at score "
+    MESSAGE("tie-break chose " << result.model.modes.size() << " modes at score "
                                << result.score);
-    CHECK(result.modes.size() == modes_up_to_level(2, 0).size());
+    CHECK(result.model.modes.size() == modes_up_to_level(2, 0).size());
 }
 
 TEST_CASE("the fit is a pure function of its inputs")
@@ -506,12 +506,12 @@ TEST_CASE("the fit is a pure function of its inputs")
 
     REQUIRE(first.candidates.size() == second.candidates.size());
     CHECK(first.winner == second.winner);
-    CHECK(first.theta == second.theta);
-    CHECK(first.c == second.c);
+    CHECK(first.model.theta == second.model.theta);
+    CHECK(first.model.c == second.model.c);
     for ( std::size_t i = 0; i < first.candidates.size(); ++i )
     {
         CHECK(first.candidates[i].score == second.candidates[i].score);
-        CHECK(first.candidates[i].theta_hat == second.candidates[i].theta_hat);
+        CHECK(first.candidates[i].model.theta == second.candidates[i].model.theta);
     }
 }
 
