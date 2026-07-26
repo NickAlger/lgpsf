@@ -1063,3 +1063,45 @@ is that rule with a finite tau -- now pinned by a test asserting its stored
 entries equal `eval_entries` at the same tau, where before nothing connected
 them. Measured trim on one row: nonzeros 1 / 7 / 26 / 37 / 37 at tau
 0.5 / 1 / 2 / 4 / infinity.
+
+## FittedOperator and FitDiagnostics are separate types (2026-07-26, C++)
+
+**Decision** (Nick, M4). `fit_operator` returns `OperatorFit { FittedOperator
+model; FitDiagnostics diagnostics; }` instead of one struct holding both.
+
+**The cut was already there; the type just failed to express it.** Counting
+field accesses across the evaluation helpers:
+
+| touched by evaluation | never touched |
+|---|---|
+| `dim`, `s`, `m1_diag`, `spike`, `x_cols`, `x_rows`, `m2_diag`, `theta`, `mu`, `L`, `c`, `mode_set_id`, `mode_sets`, `window_*` | `score`, `baseline_score`, `stop_reason`, `released`, `failures`, `config` -- **zero readers each** |
+
+The only apparent straddler was `status`, read solely by `model_rows` as the
+"does this row have a model" predicate. `mode_set_id >= 0` encodes exactly
+that -- the gather sets it only for `Fit` and `FallbackBaseline` rows -- and
+`eval_entries` already used that form. `model_rows` now does too, and a test
+pins the equivalence so the two cannot drift.
+
+**Why.** The strongest reason is constructibility, and it was already being
+paid: `slice38_lgpsf_operator.py:185` builds an OperatorFit by hand to merge
+per-chunk fits and must invent `stop_reason=[""]`, `status=["gated_out"]`,
+`score=nan`, `baseline_score=nan`, `failures={}`. Someone merging chunks,
+loading from disk, or building an operator from a different method should not
+have to fabricate a stop reason. Beyond that: the design doc defines the fitted
+object as `H~ = M1 Phi~ M2 + M1 S`, a mathematical object that scores and stop
+reasons are not part of; and the two have different lifetimes, the model being
+the thing worth persisting while diagnostics are session artifacts.
+
+**Shape.** A named struct with two members rather than a tuple (tuples lose the
+names) and rather than model-as-a-slot-with-diagnostics-loose (which leaves the
+container half-encapsulated, the asymmetry being removed). Structured bindings
+still work. `num_rows`, `num_cols`, `row_window`, `row_modes` and the new
+`has_model` moved onto `FittedOperator`, being model queries.
+
+`FittedOperator` keeps its own copies of `x_cols`, `m1_diag`, `m2_diag` so it
+is self-contained and serializable alone -- ~24 MB duplicated at PIG scale
+(K ~ 1e6, N = 2), which buys not having to keep caller arrays alive alongside a
+saved operator.
+
+Behaviour preservation was the acceptance criterion: every pre-existing
+assertion passed unchanged after the split.

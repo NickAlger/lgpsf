@@ -213,12 +213,20 @@ struct OperatorFitConfig
     int num_threads = 0;
 };
 
-/// The parametric two-component operator approximation, as padded flat arrays.
+/// The fitted operator itself: the compressed, self-contained representation
+/// of `H~ = M1 Phi~ M2 + M1 S`, and the only thing any consumer of the
+/// approximation needs.
 ///
-/// About `(P + m + 1)` doubles per row: the parametric form IS the compressed
+/// About `(P + m + 1)` doubles per row -- the parametric form IS the compressed
 /// operator, and every matrix format is a decompression of it. Rows with no
 /// shipped model hold NaN and `mode_set_id == -1`.
-struct OperatorFit
+///
+/// Deliberately separate from the diagnostics of the fit that produced it.
+/// Nothing here is about HOW the fit went; someone merging chunk fits, loading
+/// one from disk, or building one from a different method should not have to
+/// invent a stop reason. It carries its own copies of the coordinates and
+/// masses, so it is self-contained and serializable on its own.
+struct FittedOperator
 {
     int dim = 0;
     Eigen::MatrixXd x_cols;                 ///< (K_all, N)
@@ -238,15 +246,6 @@ struct OperatorFit
     std::vector<std::vector<Mode>> mode_sets; ///< The distinct mode lists in use
     Eigen::VectorXd s;                        ///< (R_all,) additive spike coefficients
 
-    Eigen::VectorXd score;           ///< (R_all,) CV score of the shipped model
-    Eigen::VectorXd baseline_score;  ///< (R_all,) CV score of the baseline
-    std::vector<RowStop> stop_reason;
-    std::vector<char> released;      ///< Where the shipped model's center was fitted
-    std::vector<RowStatus> status;
-    std::map<int, std::string> failures;
-
-    OperatorFitConfig config;  ///< Provenance echo.
-
     /// The fit window as a REGION, one ellipsoid per row, already scaled so
     /// membership is `(x - center)^T covariance^-1 (x - center) <= 1`.
     ///
@@ -265,6 +264,12 @@ struct OperatorFit
     Eigen::Index num_rows() const { return m1_diag.size(); }
     Eigen::Index num_cols() const { return m2_diag.size(); }
 
+    /// Does row rho carry a shipped model?
+    bool has_model( int rho ) const
+    {
+        return mode_set_id[static_cast<std::size_t>(rho)] >= 0;
+    }
+
     /// Row rho's fit-window column indices, sorted.
     std::vector<int> row_window( int rho ) const
     {
@@ -275,16 +280,40 @@ struct OperatorFit
     /// The mode list row rho's coefficient prefix corresponds to.
     const std::vector<Mode>& row_modes( int rho ) const
     {
-        if ( mode_set_id[static_cast<std::size_t>(rho)] < 0 )
+        if ( !has_model(rho) )
         {
             throw std::invalid_argument(
-                "lgpsf::OperatorFit::row_modes: row " + std::to_string(rho)
-                + " has no fitted model (status "
-                + to_string(status[static_cast<std::size_t>(rho)]) + ")");
+                "lgpsf::FittedOperator::row_modes: row " + std::to_string(rho)
+                + " has no fitted model");
         }
         return mode_sets[static_cast<std::size_t>(
             mode_set_id[static_cast<std::size_t>(rho)])];
     }
+};
+
+/// Per-row provenance for the fit that produced a FittedOperator: how each row
+/// went, not what it produced.
+///
+/// Every array is indexed by row, aligned with the operator's. Nothing here is
+/// read by any evaluation -- that separation is what the split is for, and a
+/// test pins it.
+struct FitDiagnostics
+{
+    Eigen::VectorXd score;           ///< (R_all,) CV score of the shipped model
+    Eigen::VectorXd baseline_score;  ///< (R_all,) CV score of the baseline
+    std::vector<RowStop> stop_reason;
+    std::vector<char> released;      ///< Where the shipped model's center was fitted
+    std::vector<RowStatus> status;
+    std::map<int, std::string> failures;  ///< Row -> message, for failed rows
+
+    OperatorFitConfig config;  ///< Provenance echo.
+};
+
+/// What `fit_operator` returns: the operator, and how it went.
+struct OperatorFit
+{
+    FittedOperator model;
+    FitDiagnostics diagnostics;
 };
 
 namespace detail {
@@ -733,14 +762,16 @@ inline OperatorFit fit_operator(
     // The mode-set registry is the reason: assigning ids as rows finish would
     // make the ids depend on thread scheduling, and results would stop being
     // bit-identical across thread counts.
-    OperatorFit fit;
+    OperatorFit result;
+    FittedOperator& fit = result.model;
+    FitDiagnostics& diagnostics = result.diagnostics;
     fit.dim = dim;
     fit.x_cols = x_cols;
     fit.x_rows = x_rows;
     fit.m1_diag = m1_diag;
     fit.m2_diag = m2_diag;
     fit.spike = config.spike;
-    fit.config = config;
+    diagnostics.config = config;
     fit.window_center = std::move(window_center);
     fit.window_covariance = std::move(window_covariance);
 
@@ -752,14 +783,14 @@ inline OperatorFit fit_operator(
     fit.L = Eigen::MatrixXd::Constant(num_rows, dim * dim,
                                       std::numeric_limits<double>::quiet_NaN());
     fit.s = Eigen::VectorXd::Zero(num_rows);
-    fit.score = Eigen::VectorXd::Constant(num_rows,
+    diagnostics.score = Eigen::VectorXd::Constant(num_rows,
                                           std::numeric_limits<double>::quiet_NaN());
-    fit.baseline_score = Eigen::VectorXd::Constant(
+    diagnostics.baseline_score = Eigen::VectorXd::Constant(
         num_rows, std::numeric_limits<double>::quiet_NaN());
     fit.mode_set_id.assign(static_cast<std::size_t>(num_rows), -1);
-    fit.stop_reason.assign(static_cast<std::size_t>(num_rows), RowStop::None);
-    fit.released.assign(static_cast<std::size_t>(num_rows), 0);
-    fit.status.assign(static_cast<std::size_t>(num_rows), RowStatus::GatedOut);
+    diagnostics.stop_reason.assign(static_cast<std::size_t>(num_rows), RowStop::None);
+    diagnostics.released.assign(static_cast<std::size_t>(num_rows), 0);
+    diagnostics.status.assign(static_cast<std::size_t>(num_rows), RowStatus::GatedOut);
     fit.window_indptr.assign(static_cast<std::size_t>(num_rows) + 1, 0);
 
     std::map<std::vector<Mode>, int> registry;
@@ -767,10 +798,10 @@ inline OperatorFit fit_operator(
     for ( Eigen::Index rho = 0; rho < num_rows; ++rho )
     {
         const detail::RowOutcome& outcome = outcomes[static_cast<std::size_t>(rho)];
-        fit.status[static_cast<std::size_t>(rho)] = outcome.status;
-        fit.stop_reason[static_cast<std::size_t>(rho)] = outcome.stop;
-        fit.released[static_cast<std::size_t>(rho)] = outcome.released ? 1 : 0;
-        fit.baseline_score(rho) = outcome.baseline_score;
+        diagnostics.status[static_cast<std::size_t>(rho)] = outcome.status;
+        diagnostics.stop_reason[static_cast<std::size_t>(rho)] = outcome.stop;
+        diagnostics.released[static_cast<std::size_t>(rho)] = outcome.released ? 1 : 0;
+        diagnostics.baseline_score(rho) = outcome.baseline_score;
 
         fit.window_indptr[static_cast<std::size_t>(rho) + 1] =
             fit.window_indptr[static_cast<std::size_t>(rho)]
@@ -780,7 +811,7 @@ inline OperatorFit fit_operator(
 
         if ( !outcome.failure.empty() )
         {
-            fit.failures[static_cast<int>(rho)] = outcome.failure;
+            diagnostics.failures[static_cast<int>(rho)] = outcome.failure;
         }
         if ( outcome.status != RowStatus::Fit
              && outcome.status != RowStatus::FallbackBaseline )
@@ -797,7 +828,7 @@ inline OperatorFit fit_operator(
                 fit.L(rho, i * dim + j) = outcome.L(i, j);
             }
         }
-        fit.score(rho) = outcome.score;
+        diagnostics.score(rho) = outcome.score;
         fit.s(rho) = outcome.s;
 
         auto found = registry.find(outcome.modes);
@@ -821,7 +852,7 @@ inline OperatorFit fit_operator(
             fit.c.row(rho).head(coefficients.size()) = coefficients.transpose();
         }
     }
-    return fit;
+    return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -837,13 +868,16 @@ inline OperatorFit fit_operator(
 // ---------------------------------------------------------------------------
 
 /// Rows carrying a shipped model.
-inline std::vector<int> model_rows( const OperatorFit& fit )
+///
+/// Defined by `mode_set_id >= 0` rather than by the fit status, which lives in
+/// the diagnostics: an operator has to know its own modeled rows without being
+/// told how the fit went. The two agree exactly -- a test pins it.
+inline std::vector<int> model_rows( const FittedOperator& fit )
 {
     std::vector<int> rows;
-    for ( std::size_t rho = 0; rho < fit.status.size(); ++rho )
+    for ( std::size_t rho = 0; rho < fit.mode_set_id.size(); ++rho )
     {
-        if ( fit.status[rho] == RowStatus::Fit
-             || fit.status[rho] == RowStatus::FallbackBaseline )
+        if ( fit.mode_set_id[rho] >= 0 )
         {
             rows.push_back(static_cast<int>(rho));
         }
@@ -861,7 +895,7 @@ struct KernelAt
     Eigen::MatrixXd u;       ///< (Q, N), so ||u_q|| is the fitted Mahalanobis radius
 };
 
-inline KernelAt kernel_at( const OperatorFit& fit, int rho,
+inline KernelAt kernel_at( const FittedOperator& fit, int rho,
                            const Eigen::Ref<const Eigen::MatrixXd>& x_query )
 {
     const std::vector<Mode>& modes = fit.row_modes(rho);
@@ -880,7 +914,7 @@ inline KernelAt kernel_at( const OperatorFit& fit, int rho,
 
 /// Squared Mahalanobis radius of each query point in row rho's WINDOW
 /// ellipsoid; a point is inside the window when this is at most 1.
-inline Eigen::VectorXd window_radius2( const OperatorFit& fit, int rho,
+inline Eigen::VectorXd window_radius2( const FittedOperator& fit, int rho,
                                        const Eigen::Ref<const Eigen::MatrixXd>& x_query )
 {
     Eigen::MatrixXd shape(fit.dim, fit.dim);
@@ -900,7 +934,7 @@ inline Eigen::VectorXd window_radius2( const OperatorFit& fit, int rho,
 
 
 /// Is `column` in this row's (sorted) window?
-inline bool in_window( const OperatorFit& fit, int rho, int column )
+inline bool in_window( const FittedOperator& fit, int rho, int column )
 {
     const auto begin = fit.window_indices.begin() + fit.window_indptr[static_cast<std::size_t>(rho)];
     const auto end = fit.window_indices.begin() + fit.window_indptr[static_cast<std::size_t>(rho) + 1];
@@ -911,7 +945,7 @@ inline bool in_window( const OperatorFit& fit, int rho, int column )
 /// m1[rho] * m2[j] * Phi~(rho, x_j). No window restriction and no spike --
 /// callers apply those.
 inline Eigen::VectorXd deployed_smooth(
-    const OperatorFit& fit, int rho, const std::vector<int>& columns,
+    const FittedOperator& fit, int rho, const std::vector<int>& columns,
     double truncation_tau = std::numeric_limits<double>::infinity() )
 {
     Eigen::MatrixXd points(static_cast<Eigen::Index>(columns.size()), fit.dim);
@@ -958,7 +992,7 @@ inline Eigen::VectorXd deployed_smooth(
 /// `x_query` is (Q, N); the result is (Q, rows.size()), one column per
 /// requested row. Throws for a row with no shipped model.
 inline Eigen::MatrixXd eval_kernel(
-    const OperatorFit& fit, const std::vector<int>& rows,
+    const FittedOperator& fit, const std::vector<int>& rows,
     const Eigen::Ref<const Eigen::MatrixXd>& x_query,
     double truncation_tau = std::numeric_limits<double>::infinity() )
 {
@@ -993,7 +1027,7 @@ inline Eigen::MatrixXd eval_kernel(
 /// fitted form into a region the fit's objective never evaluated, so it
 /// carries no evidence and can be arbitrarily large; see `eval_kernel`.
 inline Eigen::MatrixXd eval_kernel_unrestricted(
-    const OperatorFit& fit, const std::vector<int>& rows,
+    const FittedOperator& fit, const std::vector<int>& rows,
     const Eigen::Ref<const Eigen::MatrixXd>& x_query )
 {
     Eigen::MatrixXd out(x_query.rows(), static_cast<Eigen::Index>(rows.size()));
@@ -1012,7 +1046,7 @@ inline Eigen::MatrixXd eval_kernel_unrestricted(
 /// square context only). `rows` and `cols` are equal-length index arrays;
 /// the result holds their values. Rows with no model give zero.
 inline Eigen::VectorXd eval_entries(
-    const OperatorFit& fit, const std::vector<int>& rows,
+    const FittedOperator& fit, const std::vector<int>& rows,
     const std::vector<int>& cols,
     double truncation_tau = std::numeric_limits<double>::infinity() )
 {
@@ -1031,7 +1065,7 @@ inline Eigen::VectorXd eval_entries(
     for ( const auto& entry : by_row )
     {
         const int rho = entry.first;
-        if ( fit.mode_set_id[static_cast<std::size_t>(rho)] < 0 )
+        if ( !fit.has_model(rho) )
         {
             continue;  // no shipped model: the row is zero
         }
@@ -1064,7 +1098,7 @@ inline Eigen::VectorXd eval_entries(
 /// deployed-support invariant and the fast path -- O(sum of window sizes)
 /// rather than O(R K). `v` is (K_all, q); rows with no model give zero rows.
 inline Eigen::MatrixXd matvec(
-    const OperatorFit& fit, const Eigen::Ref<const Eigen::MatrixXd>& v,
+    const FittedOperator& fit, const Eigen::Ref<const Eigen::MatrixXd>& v,
     double truncation_tau = std::numeric_limits<double>::infinity() )
 {
     if ( v.rows() != fit.num_cols() )
@@ -1104,7 +1138,7 @@ struct EllipsoidField
 };
 
 /// [smooth] The fitted (mu, Sigma) field -- what `ellipsoid_tree` consumes.
-inline EllipsoidField ellipsoid_field( const OperatorFit& fit )
+inline EllipsoidField ellipsoid_field( const FittedOperator& fit )
 {
     EllipsoidField field;
     field.mu = fit.mu;
@@ -1146,7 +1180,7 @@ enum class Symmetrize
 /// column-point tree against the fitted-ellipsoid tree, the same machinery
 /// `fit_operator` uses to derive the windows themselves.
 inline Eigen::SparseMatrix<double> assemble_sparse(
-    const OperatorFit& fit, double tau, Symmetrize symmetrize = Symmetrize::None )
+    const FittedOperator& fit, double tau, Symmetrize symmetrize = Symmetrize::None )
 {
     if ( !(tau > 0.0) )
     {
@@ -1236,7 +1270,7 @@ inline Eigen::SparseMatrix<double> assemble_sparse(
 /// [both] Per-row relative residual against held-out probes -- the scorecard.
 ///
 /// `||H~[rho] V_qc - HV_qc[rho]|| / ||HV_qc[rho]||`, NaN for rows with no model.
-inline Eigen::VectorXd qc_map( const OperatorFit& fit,
+inline Eigen::VectorXd qc_map( const FittedOperator& fit,
                                const Eigen::Ref<const Eigen::MatrixXd>& V_qc,
                                const Eigen::Ref<const Eigen::MatrixXd>& HV_qc )
 {
@@ -1259,7 +1293,7 @@ inline Eigen::VectorXd qc_map( const OperatorFit& fit,
 /// [spike] The Dirac mass field `m_rho * s_rho` -- the mesh-independent
 /// content of the S component. A map of it is a resolution diagnostic: where
 /// it is large, the mesh is starving.
-inline Eigen::VectorXd spike_measure( const OperatorFit& fit )
+inline Eigen::VectorXd spike_measure( const FittedOperator& fit )
 {
     return fit.m1_diag.cwiseProduct(fit.s);
 }

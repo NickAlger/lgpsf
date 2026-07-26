@@ -397,8 +397,13 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
   intent), and values between cap the axis ratio. Which is better is
   UNSETTLED and is what M5's PIG replay is for -- see
   `docs/design-notes.md` for the archaeology. All rows' windows come
-  from ONE dual-tree descent. M5 is bindings + the PIG slice-38/39
-  replay.
+  from ONE dual-tree descent, TRUNCATION TO THE FIT WINDOW IS THE
+  DEFAULT for every evaluation (`eval_kernel_unrestricted` is the named
+  opt-out; out-of-window model mass is *unpenalized* by the fit, not
+  merely unverified), and `fit_operator` returns `OperatorFit { model;
+  diagnostics; }` -- the `FittedOperator` half is self-contained and
+  nothing in evaluation reads a diagnostic. M5 is bindings + the PIG
+  slice-38/39 replay.
 - A hand-rolled Levenberg-Marquardt loop (port milestone M2): the
   prototype's outer loop delegates to scipy/MINPACK -- the one
   delegated numeric; everything else in `varpro.py` is library-free.

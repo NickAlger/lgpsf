@@ -195,15 +195,15 @@ TEST_CASE("a synthetic operator is recovered row by row")
 
     int shipped = 0;
     double worst_c = 0.0, worst_s = 0.0;
-    for ( Eigen::Index rho = 0; rho < fit.num_rows(); ++rho )
+    for ( Eigen::Index rho = 0; rho < fit.model.num_rows(); ++rho )
     {
         if ( !op.gate[static_cast<std::size_t>(rho)] )
         {
-            CHECK(fit.status[static_cast<std::size_t>(rho)] == RowStatus::GatedOut);
-            CHECK(fit.mode_set_id[static_cast<std::size_t>(rho)] == -1);
+            CHECK(fit.diagnostics.status[static_cast<std::size_t>(rho)] == RowStatus::GatedOut);
+            CHECK(fit.model.mode_set_id[static_cast<std::size_t>(rho)] == -1);
             continue;
         }
-        REQUIRE(fit.status[static_cast<std::size_t>(rho)] != RowStatus::Failed);
+        REQUIRE(fit.diagnostics.status[static_cast<std::size_t>(rho)] != RowStatus::Failed);
         ++shipped;
 
         // the ellipsoid the data was built from
@@ -216,19 +216,19 @@ TEST_CASE("a synthetic operator is recovered row by row")
         {
             for ( int j = 0; j < 2; ++j )
             {
-                recovered(i, j) = fit.L(rho, i * 2 + j);
+                recovered(i, j) = fit.model.L(rho, i * 2 + j);
             }
         }
         CHECK((recovered * recovered.transpose() - truth * truth.transpose())
                   .cwiseAbs().maxCoeff() < 1e-5);
-        CHECK((fit.mu.row(rho).transpose() - center).cwiseAbs().maxCoeff() < 1e-9);
+        CHECK((fit.model.mu.row(rho).transpose() - center).cwiseAbs().maxCoeff() < 1e-9);
 
         const Eigen::VectorXd& c_true = op.c_true[static_cast<std::size_t>(rho)];
         for ( Eigen::Index i = 0; i < c_true.size(); ++i )
         {
-            worst_c = std::max(worst_c, std::abs(fit.c(rho, i) - c_true(i)));
+            worst_c = std::max(worst_c, std::abs(fit.model.c(rho, i) - c_true(i)));
         }
-        worst_s = std::max(worst_s, std::abs(fit.s(rho) - op.s_true(rho)));
+        worst_s = std::max(worst_s, std::abs(fit.model.s(rho) - op.s_true(rho)));
     }
     MESSAGE("recovered " << shipped << " rows; worst |dc| " << worst_c
                          << ", worst |ds| " << worst_s);
@@ -253,26 +253,26 @@ TEST_CASE("results are bit-identical across thread counts")
     const OperatorFit a = run(op, serial);
     const OperatorFit b = run(op, parallel);
 
-    CHECK(same(a.theta, b.theta));
-    CHECK(same(a.mu, b.mu));
-    CHECK(same(a.L, b.L));
-    CHECK(same(a.c, b.c));
-    CHECK(same(a.s, b.s));
-    CHECK(same(a.score, b.score));
-    CHECK(same(a.baseline_score, b.baseline_score));
-    CHECK(a.mode_set_id == b.mode_set_id);
-    CHECK(a.window_indptr == b.window_indptr);
-    CHECK(a.window_indices == b.window_indices);
-    CHECK(a.released == b.released);
-    REQUIRE(a.mode_sets.size() == b.mode_sets.size());
-    for ( std::size_t i = 0; i < a.mode_sets.size(); ++i )
+    CHECK(same(a.model.theta, b.model.theta));
+    CHECK(same(a.model.mu, b.model.mu));
+    CHECK(same(a.model.L, b.model.L));
+    CHECK(same(a.model.c, b.model.c));
+    CHECK(same(a.model.s, b.model.s));
+    CHECK(same(a.diagnostics.score, b.diagnostics.score));
+    CHECK(same(a.diagnostics.baseline_score, b.diagnostics.baseline_score));
+    CHECK(a.model.mode_set_id == b.model.mode_set_id);
+    CHECK(a.model.window_indptr == b.model.window_indptr);
+    CHECK(a.model.window_indices == b.model.window_indices);
+    CHECK(a.diagnostics.released == b.diagnostics.released);
+    REQUIRE(a.model.mode_sets.size() == b.model.mode_sets.size());
+    for ( std::size_t i = 0; i < a.model.mode_sets.size(); ++i )
     {
-        CHECK(a.mode_sets[i] == b.mode_sets[i]);
+        CHECK(a.model.mode_sets[i] == b.model.mode_sets[i]);
     }
-    for ( std::size_t i = 0; i < a.status.size(); ++i )
+    for ( std::size_t i = 0; i < a.diagnostics.status.size(); ++i )
     {
-        CHECK(a.status[i] == b.status[i]);
-        CHECK(a.stop_reason[i] == b.stop_reason[i]);
+        CHECK(a.diagnostics.status[i] == b.diagnostics.status[i]);
+        CHECK(a.diagnostics.stop_reason[i] == b.diagnostics.stop_reason[i]);
     }
 }
 
@@ -285,19 +285,19 @@ TEST_CASE("the baseline guard means a shipped row is never worse than the prior"
     const OperatorFit fit = run(op, config_for(op));
 
     int searched = 0, fell_back = 0;
-    for ( Eigen::Index rho = 0; rho < fit.num_rows(); ++rho )
+    for ( Eigen::Index rho = 0; rho < fit.model.num_rows(); ++rho )
     {
-        const RowStatus status = fit.status[static_cast<std::size_t>(rho)];
+        const RowStatus status = fit.diagnostics.status[static_cast<std::size_t>(rho)];
         if ( status == RowStatus::Fit )
         {
             ++searched;
             // shipped only on a STRICT improvement
-            CHECK(fit.score(rho) < fit.baseline_score(rho));
+            CHECK(fit.diagnostics.score(rho) < fit.diagnostics.baseline_score(rho));
         }
         else if ( status == RowStatus::FallbackBaseline )
         {
             ++fell_back;
-            CHECK(fit.score(rho) == fit.baseline_score(rho));
+            CHECK(fit.diagnostics.score(rho) == fit.diagnostics.baseline_score(rho));
         }
     }
     MESSAGE("guard: " << searched << " searched fits shipped, " << fell_back
@@ -376,9 +376,9 @@ TEST_CASE("tightening the cap nests the windows and shrinks them")
         config.window_aspect_cap = cap;
         fits.push_back(run(op, config));
         std::size_t total = 0;
-        for ( Eigen::Index rho = 0; rho < fits.back().num_rows(); ++rho )
+        for ( Eigen::Index rho = 0; rho < fits.back().model.num_rows(); ++rho )
         {
-            total += fits.back().row_window(static_cast<int>(rho)).size();
+            total += fits.back().model.row_window(static_cast<int>(rho)).size();
         }
         totals.push_back(total);
     }
@@ -398,16 +398,16 @@ TEST_CASE("tightening the cap nests the windows and shrinks them")
     CHECK(totals[2] == totals[3]);
 
     // nesting, row by row: a looser cap contains a tighter one
-    for ( Eigen::Index rho = 0; rho < fits[0].num_rows(); ++rho )
+    for ( Eigen::Index rho = 0; rho < fits[0].model.num_rows(); ++rho )
     {
         if ( !op.gate[static_cast<std::size_t>(rho)] )
         {
             continue;
         }
-        const std::vector<int> widest = fits[0].row_window(static_cast<int>(rho));
+        const std::vector<int> widest = fits[0].model.row_window(static_cast<int>(rho));
         for ( std::size_t i = 1; i < fits.size(); ++i )
         {
-            for ( int column : fits[i].row_window(static_cast<int>(rho)) )
+            for ( int column : fits[i].model.row_window(static_cast<int>(rho)) )
             {
                 CHECK(std::find(widest.begin(), widest.end(), column) != widest.end());
             }
@@ -417,13 +417,13 @@ TEST_CASE("tightening the cap nests the windows and shrinks them")
               != widest.end());
     }
 
-    for ( const OperatorFit& fit : fits )
+    for ( const OperatorFit& entry : fits )
     {
-        for ( Eigen::Index rho = 0; rho < fit.num_rows(); ++rho )
+        for ( Eigen::Index rho = 0; rho < entry.model.num_rows(); ++rho )
         {
             if ( op.gate[static_cast<std::size_t>(rho)] )
             {
-                CHECK(fit.status[static_cast<std::size_t>(rho)] != RowStatus::Failed);
+                CHECK(entry.diagnostics.status[static_cast<std::size_t>(rho)] != RowStatus::Failed);
             }
         }
     }
@@ -436,42 +436,42 @@ TEST_CASE("the stored parameters and windows decode on their own")
     const OperatorFit fit = run(op, config_for(op));
 
     // CSR consistency
-    REQUIRE(fit.window_indptr.size() == static_cast<std::size_t>(fit.num_rows()) + 1);
-    CHECK(fit.window_indptr.front() == 0);
-    CHECK(fit.window_indptr.back() == static_cast<int>(fit.window_indices.size()));
-    for ( std::size_t i = 1; i < fit.window_indptr.size(); ++i )
+    REQUIRE(fit.model.window_indptr.size() == static_cast<std::size_t>(fit.model.num_rows()) + 1);
+    CHECK(fit.model.window_indptr.front() == 0);
+    CHECK(fit.model.window_indptr.back() == static_cast<int>(fit.model.window_indices.size()));
+    for ( std::size_t i = 1; i < fit.model.window_indptr.size(); ++i )
     {
-        CHECK(fit.window_indptr[i] >= fit.window_indptr[i - 1]);
+        CHECK(fit.model.window_indptr[i] >= fit.model.window_indptr[i - 1]);
     }
 
-    for ( Eigen::Index rho = 0; rho < fit.num_rows(); ++rho )
+    for ( Eigen::Index rho = 0; rho < fit.model.num_rows(); ++rho )
     {
-        const std::vector<int> window = fit.row_window(static_cast<int>(rho));
+        const std::vector<int> window = fit.model.row_window(static_cast<int>(rho));
         CHECK(std::is_sorted(window.begin(), window.end()));
         for ( int column : window )
         {
             CHECK(column >= 0);
-            CHECK(column < fit.num_cols());
+            CHECK(column < fit.model.num_cols());
         }
         if ( !op.gate[static_cast<std::size_t>(rho)] )
         {
             CHECK(window.empty());
-            CHECK_THROWS_AS(fit.row_modes(static_cast<int>(rho)), std::invalid_argument);
+            CHECK_THROWS_AS(fit.model.row_modes(static_cast<int>(rho)), std::invalid_argument);
             continue;
         }
 
         // theta is the public absolute encoding: no mu0, no mode needed
-        const Eigen::VectorXd theta = fit.theta.row(rho).transpose();
+        const Eigen::VectorXd theta = fit.model.theta.row(rho).transpose();
         const lgpsf::EllipsoidFrame frame = unpack_theta(theta);
-        CHECK((frame.mu - fit.mu.row(rho).transpose()).cwiseAbs().maxCoeff() < 1e-12);
+        CHECK((frame.mu - fit.model.mu.row(rho).transpose()).cwiseAbs().maxCoeff() < 1e-12);
         for ( int i = 0; i < 2; ++i )
         {
             for ( int j = 0; j < 2; ++j )
             {
-                CHECK(frame.L(i, j) == doctest::Approx(fit.L(rho, i * 2 + j)));
+                CHECK(frame.L(i, j) == doctest::Approx(fit.model.L(rho, i * 2 + j)));
             }
         }
-        CHECK(fit.row_modes(static_cast<int>(rho)).size() == op.modes.size());
+        CHECK(fit.model.row_modes(static_cast<int>(rho)).size() == op.modes.size());
     }
 }
 
@@ -495,16 +495,16 @@ TEST_CASE("a row that cannot be windowed fails alone, without taking the fit dow
 
     const OperatorFit fit = run(op, config_for(op));
 
-    CHECK(fit.status[static_cast<std::size_t>(victim)] == RowStatus::Failed);
-    CHECK(fit.failures.count(victim) == 1u);
-    MESSAGE("failed row reported: " << fit.failures.at(victim));
+    CHECK(fit.diagnostics.status[static_cast<std::size_t>(victim)] == RowStatus::Failed);
+    CHECK(fit.diagnostics.failures.count(victim) == 1u);
+    MESSAGE("failed row reported: " << fit.diagnostics.failures.at(victim));
 
     int survivors = 0;
-    for ( Eigen::Index rho = 0; rho < fit.num_rows(); ++rho )
+    for ( Eigen::Index rho = 0; rho < fit.model.num_rows(); ++rho )
     {
         if ( op.gate[static_cast<std::size_t>(rho)] && rho != victim )
         {
-            CHECK(fit.status[static_cast<std::size_t>(rho)] != RowStatus::Failed);
+            CHECK(fit.diagnostics.status[static_cast<std::size_t>(rho)] != RowStatus::Failed);
             ++survivors;
         }
     }
@@ -566,7 +566,7 @@ TEST_CASE("a window may be supplied as an ellipsoid, and built from points")
         fit_operator(op.x_cols, op.m1, op.m2, op.V, op.HV, op.sigma, config_for(op),
                      std::nullopt, std::nullopt, op.gate, overrides);
 
-    const std::vector<int> realized = fit.row_window(overridden);
+    const std::vector<int> realized = fit.model.row_window(overridden);
     MESSAGE("supplied " << wanted.size() << " points, realized window "
                         << realized.size());
     // a superset of what was asked for, as documented
@@ -575,13 +575,13 @@ TEST_CASE("a window may be supplied as an ellipsoid, and built from points")
         CHECK(std::find(realized.begin(), realized.end(), column) != realized.end());
     }
     // the stored region is the one supplied, not a derived one
-    CHECK((fit.window_center.row(overridden).transpose() - region.mu)
+    CHECK((fit.model.window_center.row(overridden).transpose() - region.mu)
               .cwiseAbs().maxCoeff() < 1e-12);
     for ( int i = 0; i < 2; ++i )
     {
         for ( int j = 0; j < 2; ++j )
         {
-            CHECK(fit.window_covariance(overridden, i * 2 + j)
+            CHECK(fit.model.window_covariance(overridden, i * 2 + j)
                   == doctest::Approx(region.Sigma(i, j)));
         }
     }
@@ -598,12 +598,12 @@ TEST_CASE("the window region and the window indices agree on mesh columns")
     config.tau_window = 1.2;
     const OperatorFit fit = run(op, config);
 
-    for ( int rho : model_rows(fit) )
+    for ( int rho : model_rows(fit.model) )
     {
-        const std::vector<int> window = fit.row_window(rho);
+        const std::vector<int> window = fit.model.row_window(rho);
         const Eigen::VectorXd radius2 =
-            lgpsf::detail::window_radius2(fit, rho, fit.x_cols);
-        for ( Eigen::Index j = 0; j < fit.num_cols(); ++j )
+            lgpsf::detail::window_radius2(fit.model, rho, fit.model.x_cols);
+        for ( Eigen::Index j = 0; j < fit.model.num_cols(); ++j )
         {
             const bool by_index =
                 std::binary_search(window.begin(), window.end(), static_cast<int>(j));
@@ -624,10 +624,10 @@ TEST_CASE("eval_kernel is window-truncated by default; extrapolation is opt-in")
     config.tau_window = 1.2;
     const OperatorFit fit = run(op, config);
 
-    const int rho = model_rows(fit).front();
-    const std::vector<int> window = fit.row_window(rho);
+    const int rho = model_rows(fit.model).front();
+    const std::vector<int> window = fit.model.row_window(rho);
     int outside = -1;
-    for ( Eigen::Index j = 0; j < fit.num_cols() && outside < 0; ++j )
+    for ( Eigen::Index j = 0; j < fit.model.num_cols() && outside < 0; ++j )
     {
         if ( !std::binary_search(window.begin(), window.end(), static_cast<int>(j)) )
         {
@@ -636,25 +636,25 @@ TEST_CASE("eval_kernel is window-truncated by default; extrapolation is opt-in")
     }
     REQUIRE(outside >= 0);
 
-    const Eigen::MatrixXd probe = fit.x_cols.row(outside);
-    CHECK(eval_kernel(fit, {rho}, probe)(0, 0) == 0.0);
-    CHECK(std::abs(lgpsf::eval_kernel_unrestricted(fit, {rho}, probe)(0, 0)) > 0.0);
+    const Eigen::MatrixXd probe = fit.model.x_cols.row(outside);
+    CHECK(eval_kernel(fit.model, {rho}, probe)(0, 0) == 0.0);
+    CHECK(std::abs(lgpsf::eval_kernel_unrestricted(fit.model, {rho}, probe)(0, 0)) > 0.0);
 
     // inside the window the two agree exactly
-    const Eigen::MatrixXd inside = fit.x_cols.row(window.front());
-    CHECK(eval_kernel(fit, {rho}, inside)(0, 0)
-          == lgpsf::eval_kernel_unrestricted(fit, {rho}, inside)(0, 0));
+    const Eigen::MatrixXd inside = fit.model.x_cols.row(window.front());
+    CHECK(eval_kernel(fit.model, {rho}, inside)(0, 0)
+          == lgpsf::eval_kernel_unrestricted(fit.model, {rho}, inside)(0, 0));
 
     // and eval_kernel now agrees with eval_entries up to the masses, which is
     // the consistency the change buys
     const int column = window.front();
-    const double kernel = eval_kernel(fit, {rho}, Eigen::MatrixXd(fit.x_cols.row(column)))(0, 0);
-    double expected = fit.m1_diag(rho) * fit.m2_diag(column) * kernel;
+    const double kernel = eval_kernel(fit.model, {rho}, Eigen::MatrixXd(fit.model.x_cols.row(column)))(0, 0);
+    double expected = fit.model.m1_diag(rho) * fit.model.m2_diag(column) * kernel;
     if ( column == rho )
     {
-        expected += fit.m1_diag(rho) * fit.s(rho);
+        expected += fit.model.m1_diag(rho) * fit.model.s(rho);
     }
-    CHECK(eval_entries(fit, {rho}, {column})(0) == doctest::Approx(expected));
+    CHECK(eval_entries(fit.model, {rho}, {column})(0) == doctest::Approx(expected));
 }
 
 TEST_CASE("truncation_tau trims to the fitted kernel's own tau-ellipsoid")
@@ -664,11 +664,11 @@ TEST_CASE("truncation_tau trims to the fitted kernel's own tau-ellipsoid")
     OperatorFitConfig config = config_for(op);
     config.tau_window = 1.2;
     const OperatorFit fit = run(op, config);
-    const int rho = model_rows(fit).front();
+    const int rho = model_rows(fit.model).front();
 
     // count nonzeros over all columns as tau tightens: monotone non-increasing
     std::vector<int> rows_index, cols_index;
-    for ( Eigen::Index j = 0; j < fit.num_cols(); ++j )
+    for ( Eigen::Index j = 0; j < fit.model.num_cols(); ++j )
     {
         rows_index.push_back(rho);
         cols_index.push_back(static_cast<int>(j));
@@ -676,7 +676,7 @@ TEST_CASE("truncation_tau trims to the fitted kernel's own tau-ellipsoid")
     std::vector<int> counts;
     for ( double tau : {0.5, 1.0, 2.0, 4.0, std::numeric_limits<double>::infinity()} )
     {
-        const Eigen::VectorXd values = eval_entries(fit, rows_index, cols_index, tau);
+        const Eigen::VectorXd values = eval_entries(fit.model, rows_index, cols_index, tau);
         int nonzero = 0;
         for ( Eigen::Index i = 0; i < values.size(); ++i )
         {
@@ -695,29 +695,29 @@ TEST_CASE("truncation_tau trims to the fitted kernel's own tau-ellipsoid")
 
     // matvec carries the same trim
     const Eigen::MatrixXd v = test_helpers::randn_points(
-        static_cast<int>(fit.num_cols()), 1, gen);
-    Eigen::MatrixXd dense = Eigen::MatrixXd::Zero(fit.num_rows(), fit.num_cols());
-    for ( int r : model_rows(fit) )
+        static_cast<int>(fit.model.num_cols()), 1, gen);
+    Eigen::MatrixXd dense = Eigen::MatrixXd::Zero(fit.model.num_rows(), fit.model.num_cols());
+    for ( int r : model_rows(fit.model) )
     {
         std::vector<int> ri, ci;
-        for ( Eigen::Index j = 0; j < fit.num_cols(); ++j )
+        for ( Eigen::Index j = 0; j < fit.model.num_cols(); ++j )
         {
             ri.push_back(r);
             ci.push_back(static_cast<int>(j));
         }
-        dense.row(r) = eval_entries(fit, ri, ci, 2.0).transpose();
+        dense.row(r) = eval_entries(fit.model, ri, ci, 2.0).transpose();
     }
-    CHECK((matvec(fit, v, 2.0) - dense * v).cwiseAbs().maxCoeff() < 1e-10);
+    CHECK((matvec(fit.model, v, 2.0) - dense * v).cwiseAbs().maxCoeff() < 1e-10);
 
     // and assemble_sparse's tau is the same tau: every stored entry equals
     // eval_entries at that tau
-    const Eigen::SparseMatrix<double> assembled = assemble_sparse(fit, 2.0);
+    const Eigen::SparseMatrix<double> assembled = assemble_sparse(fit.model, 2.0);
     for ( int k = 0; k < assembled.outerSize(); ++k )
     {
         for ( Eigen::SparseMatrix<double>::InnerIterator it(assembled, k); it; ++it )
         {
             CHECK(it.value()
-                  == doctest::Approx(eval_entries(fit, {static_cast<int>(it.row())},
+                  == doctest::Approx(eval_entries(fit.model, {static_cast<int>(it.row())},
                                                   {static_cast<int>(it.col())}, 2.0)(0)));
         }
     }
@@ -760,14 +760,14 @@ TEST_CASE("the deployed operator is window-restricted, entry by entry")
     config.tau_window = 1.2;  // a window strictly inside the mesh
     const OperatorFit fit = run(op, config);
 
-    const int rho = model_rows(fit).front();
-    const std::vector<int> window = fit.row_window(rho);
+    const int rho = model_rows(fit.model).front();
+    const std::vector<int> window = fit.model.row_window(rho);
     REQUIRE(!window.empty());
-    REQUIRE(static_cast<Eigen::Index>(window.size()) < fit.num_cols());
+    REQUIRE(static_cast<Eigen::Index>(window.size()) < fit.model.num_cols());
 
     // find a column outside the window
     int outside = -1;
-    for ( Eigen::Index j = 0; j < fit.num_cols() && outside < 0; ++j )
+    for ( Eigen::Index j = 0; j < fit.model.num_cols() && outside < 0; ++j )
     {
         if ( !std::binary_search(window.begin(), window.end(), static_cast<int>(j)) )
         {
@@ -777,35 +777,35 @@ TEST_CASE("the deployed operator is window-restricted, entry by entry")
     REQUIRE(outside >= 0);
 
     // the unrestricted parametric form is alive out there...
-    const Eigen::MatrixXd probe = fit.x_cols.row(outside);
-    CHECK(std::abs(lgpsf::eval_kernel_unrestricted(fit, {rho}, probe)(0, 0)) > 0.0);
+    const Eigen::MatrixXd probe = fit.model.x_cols.row(outside);
+    CHECK(std::abs(lgpsf::eval_kernel_unrestricted(fit.model, {rho}, probe)(0, 0)) > 0.0);
     // ...and both the truncated kernel and the deployed operator are zero
-    CHECK(eval_kernel(fit, {rho}, probe)(0, 0) == 0.0);
-    CHECK(eval_entries(fit, {rho}, {outside})(0) == 0.0);
+    CHECK(eval_kernel(fit.model, {rho}, probe)(0, 0) == 0.0);
+    CHECK(eval_entries(fit.model, {rho}, {outside})(0) == 0.0);
 
     // inside the window it is m1 m2 times the kernel, plus the spike on the
     // diagonal
     const int inside = window.front();
     const double kernel =
-        eval_kernel(fit, {rho}, Eigen::MatrixXd(fit.x_cols.row(inside)))(0, 0);
-    double expected = fit.m1_diag(rho) * fit.m2_diag(inside) * kernel;
+        eval_kernel(fit.model, {rho}, Eigen::MatrixXd(fit.model.x_cols.row(inside)))(0, 0);
+    double expected = fit.model.m1_diag(rho) * fit.model.m2_diag(inside) * kernel;
     if ( inside == rho )
     {
-        expected += fit.m1_diag(rho) * fit.s(rho);
+        expected += fit.model.m1_diag(rho) * fit.model.s(rho);
     }
-    CHECK(eval_entries(fit, {rho}, {inside})(0) == doctest::Approx(expected));
+    CHECK(eval_entries(fit.model, {rho}, {inside})(0) == doctest::Approx(expected));
 
     // the spike really is ADDITIVE on top of the unmodified smooth diagonal
-    const double diagonal = eval_entries(fit, {rho}, {rho})(0);
+    const double diagonal = eval_entries(fit.model, {rho}, {rho})(0);
     const double smooth_diagonal =
-        fit.m1_diag(rho) * fit.m2_diag(rho)
-        * eval_kernel(fit, {rho}, Eigen::MatrixXd(fit.x_cols.row(rho)))(0, 0);
+        fit.model.m1_diag(rho) * fit.model.m2_diag(rho)
+        * eval_kernel(fit.model, {rho}, Eigen::MatrixXd(fit.model.x_cols.row(rho)))(0, 0);
     CHECK(diagonal - smooth_diagonal
-          == doctest::Approx(fit.m1_diag(rho) * fit.s(rho)));
+          == doctest::Approx(fit.model.m1_diag(rho) * fit.model.s(rho)));
 
     // a row with no model contributes nothing
     int ungated = -1;
-    for ( Eigen::Index r = 0; r < fit.num_rows() && ungated < 0; ++r )
+    for ( Eigen::Index r = 0; r < fit.model.num_rows() && ungated < 0; ++r )
     {
         if ( !op.gate[static_cast<std::size_t>(r)] )
         {
@@ -813,8 +813,8 @@ TEST_CASE("the deployed operator is window-restricted, entry by entry")
         }
     }
     REQUIRE(ungated >= 0);
-    CHECK(eval_entries(fit, {ungated}, {ungated})(0) == 0.0);
-    CHECK_THROWS_AS(eval_kernel(fit, {ungated}, fit.x_cols), std::invalid_argument);
+    CHECK(eval_entries(fit.model, {ungated}, {ungated})(0) == 0.0);
+    CHECK_THROWS_AS(eval_kernel(fit.model, {ungated}, fit.model.x_cols), std::invalid_argument);
 }
 
 TEST_CASE("matvec agrees with a dense assembly of the deployed operator")
@@ -829,32 +829,32 @@ TEST_CASE("matvec agrees with a dense assembly of the deployed operator")
     const OperatorFit fit = run(op, config);
 
     Eigen::MatrixXd dense =
-        Eigen::MatrixXd::Zero(fit.num_rows(), fit.num_cols());
-    for ( int rho : model_rows(fit) )
+        Eigen::MatrixXd::Zero(fit.model.num_rows(), fit.model.num_cols());
+    for ( int rho : model_rows(fit.model) )
     {
         std::vector<int> rows_index, cols_index;
-        for ( Eigen::Index j = 0; j < fit.num_cols(); ++j )
+        for ( Eigen::Index j = 0; j < fit.model.num_cols(); ++j )
         {
             rows_index.push_back(rho);
             cols_index.push_back(static_cast<int>(j));
         }
-        dense.row(rho) = eval_entries(fit, rows_index, cols_index).transpose();
+        dense.row(rho) = eval_entries(fit.model, rows_index, cols_index).transpose();
     }
 
     const Eigen::MatrixXd v = test_helpers::randn_points(
-        static_cast<int>(fit.num_cols()), 3, gen);
-    const Eigen::MatrixXd applied = matvec(fit, v);
+        static_cast<int>(fit.model.num_cols()), 3, gen);
+    const Eigen::MatrixXd applied = matvec(fit.model, v);
     CHECK((applied - dense * v).cwiseAbs().maxCoeff() < 1e-10);
 
     // rows with no model are exactly zero rows
-    for ( Eigen::Index rho = 0; rho < fit.num_rows(); ++rho )
+    for ( Eigen::Index rho = 0; rho < fit.model.num_rows(); ++rho )
     {
         if ( !op.gate[static_cast<std::size_t>(rho)] )
         {
             CHECK(applied.row(rho).cwiseAbs().maxCoeff() == 0.0);
         }
     }
-    CHECK_THROWS_AS(matvec(fit, Eigen::MatrixXd::Zero(3, 1)), std::invalid_argument);
+    CHECK_THROWS_AS(matvec(fit.model, Eigen::MatrixXd::Zero(3, 1)), std::invalid_argument);
 }
 
 TEST_CASE("assemble_sparse decompresses the same operator matvec applies")
@@ -867,14 +867,14 @@ TEST_CASE("assemble_sparse decompresses the same operator matvec applies")
 
     // A generous tau: the kernel's tau-support then covers each window, so the
     // pattern IS the window and the assembly must reproduce matvec exactly.
-    const Eigen::SparseMatrix<double> wide = assemble_sparse(fit, 40.0);
+    const Eigen::SparseMatrix<double> wide = assemble_sparse(fit.model, 40.0);
     CHECK(wide.isCompressed());
-    CHECK(wide.rows() == fit.num_rows());
-    CHECK(wide.cols() == fit.num_cols());
+    CHECK(wide.rows() == fit.model.num_rows());
+    CHECK(wide.cols() == fit.model.num_cols());
 
     const Eigen::MatrixXd v = test_helpers::randn_points(
-        static_cast<int>(fit.num_cols()), 2, gen);
-    CHECK((wide * v - matvec(fit, v)).cwiseAbs().maxCoeff() < 1e-10);
+        static_cast<int>(fit.model.num_cols()), 2, gen);
+    CHECK((wide * v - matvec(fit.model, v)).cwiseAbs().maxCoeff() < 1e-10);
 
     // Every stored entry equals the deployed definition, and every one lies in
     // the row's fit window -- deployed support == fit support.
@@ -884,30 +884,30 @@ TEST_CASE("assemble_sparse decompresses the same operator matvec applies")
         {
             const int rho = static_cast<int>(it.row());
             const int column = static_cast<int>(it.col());
-            const std::vector<int> window = fit.row_window(rho);
+            const std::vector<int> window = fit.model.row_window(rho);
             CHECK(std::binary_search(window.begin(), window.end(), column));
             CHECK(it.value()
-                  == doctest::Approx(eval_entries(fit, {rho}, {column})(0)));
+                  == doctest::Approx(eval_entries(fit.model, {rho}, {column})(0)));
         }
     }
 
     // A tight tau trims the Gaussian tail INSIDE the window, so the pattern
     // shrinks but never leaves it.
-    const Eigen::SparseMatrix<double> tight = assemble_sparse(fit, 1.0);
+    const Eigen::SparseMatrix<double> tight = assemble_sparse(fit.model, 1.0);
     CHECK(tight.nonZeros() < wide.nonZeros());
     for ( int k = 0; k < tight.outerSize(); ++k )
     {
         for ( Eigen::SparseMatrix<double>::InnerIterator it(tight, k); it; ++it )
         {
-            const std::vector<int> window = fit.row_window(static_cast<int>(it.row()));
+            const std::vector<int> window = fit.model.row_window(static_cast<int>(it.row()));
             CHECK(std::binary_search(window.begin(), window.end(),
                                      static_cast<int>(it.col())));
         }
     }
     MESSAGE("assemble_sparse nonzeros: tau=1 " << tight.nonZeros() << ", tau=40 "
                                                << wide.nonZeros() << " of "
-                                               << fit.num_rows() * fit.num_cols());
-    CHECK_THROWS_AS(assemble_sparse(fit, 0.0), std::invalid_argument);
+                                               << fit.model.num_rows() * fit.model.num_cols());
+    CHECK_THROWS_AS(assemble_sparse(fit.model, 0.0), std::invalid_argument);
 }
 
 TEST_CASE("symmetrization is an assembly policy applied after the fact")
@@ -918,9 +918,9 @@ TEST_CASE("symmetrization is an assembly policy applied after the fact")
     config.tau_window = 1.2;
     const OperatorFit fit = run(op, config);
 
-    const Eigen::SparseMatrix<double> plain = assemble_sparse(fit, 40.0);
+    const Eigen::SparseMatrix<double> plain = assemble_sparse(fit.model, 40.0);
     const Eigen::SparseMatrix<double> averaged =
-        assemble_sparse(fit, 40.0, lgpsf::Symmetrize::Average);
+        assemble_sparse(fit.model, 40.0, lgpsf::Symmetrize::Average);
     CHECK(averaged.isCompressed());
 
     // row fits do not produce a symmetric operator...
@@ -940,29 +940,29 @@ TEST_CASE("the ellipsoid field, the quality map and the spike measure")
     const OperatorFit fit = run(op, config_for(op));
 
     // Sigma = L L^T, row by row
-    const lgpsf::EllipsoidField field = ellipsoid_field(fit);
-    CHECK(field.mu.rows() == fit.num_rows());
-    for ( int rho : model_rows(fit) )
+    const lgpsf::EllipsoidField field = ellipsoid_field(fit.model);
+    CHECK(field.mu.rows() == fit.model.num_rows());
+    for ( int rho : model_rows(fit.model) )
     {
         Eigen::MatrixXd L(2, 2);
         for ( int i = 0; i < 2; ++i )
         {
             for ( int j = 0; j < 2; ++j )
             {
-                L(i, j) = fit.L(rho, i * 2 + j);
+                L(i, j) = fit.model.L(rho, i * 2 + j);
             }
         }
         CHECK((field.sigma[static_cast<std::size_t>(rho)] - L * L.transpose())
                   .cwiseAbs().maxCoeff() < 1e-12);
-        CHECK((field.mu.row(rho) - fit.mu.row(rho)).cwiseAbs().maxCoeff() == 0.0);
+        CHECK((field.mu.row(rho) - fit.model.mu.row(rho)).cwiseAbs().maxCoeff() == 0.0);
     }
 
     // the quality map is the relative residual against held-out probes
     std::mt19937 held(99);
     const Eigen::MatrixXd V_qc =
-        test_helpers::randn_points(static_cast<int>(fit.num_cols()), 8, held);
-    Eigen::MatrixXd HV_qc = Eigen::MatrixXd::Zero(fit.num_rows(), 8);
-    for ( int rho : model_rows(fit) )
+        test_helpers::randn_points(static_cast<int>(fit.model.num_cols()), 8, held);
+    Eigen::MatrixXd HV_qc = Eigen::MatrixXd::Zero(fit.model.num_rows(), 8);
+    for ( int rho : model_rows(fit.model) )
     {
         // the true operator row, from the synthetic construction
         const Eigen::VectorXd center = op.x_cols.row(rho).transpose();
@@ -980,9 +980,9 @@ TEST_CASE("the ellipsoid field, the quality map and the spike measure")
         HV_qc.row(rho) = h_row.transpose() * V_qc;
     }
 
-    const Eigen::VectorXd quality = qc_map(fit, V_qc, HV_qc);
+    const Eigen::VectorXd quality = qc_map(fit.model, V_qc, HV_qc);
     double worst = 0.0;
-    for ( Eigen::Index rho = 0; rho < fit.num_rows(); ++rho )
+    for ( Eigen::Index rho = 0; rho < fit.model.num_rows(); ++rho )
     {
         if ( op.gate[static_cast<std::size_t>(rho)] )
         {
@@ -998,8 +998,8 @@ TEST_CASE("the ellipsoid field, the quality map and the spike measure")
     CHECK(worst < 1e-3);
 
     // and it agrees with computing the same thing by hand
-    const Eigen::MatrixXd predicted = matvec(fit, V_qc);
-    for ( int rho : model_rows(fit) )
+    const Eigen::MatrixXd predicted = matvec(fit.model, V_qc);
+    for ( int rho : model_rows(fit.model) )
     {
         CHECK(quality(rho)
               == doctest::Approx((predicted.row(rho) - HV_qc.row(rho)).norm()
@@ -1007,9 +1007,52 @@ TEST_CASE("the ellipsoid field, the quality map and the spike measure")
     }
 
     // the Dirac mass field
-    const Eigen::VectorXd measure = spike_measure(fit);
-    for ( int rho : model_rows(fit) )
+    const Eigen::VectorXd measure = spike_measure(fit.model);
+    for ( int rho : model_rows(fit.model) )
     {
-        CHECK(measure(rho) == doctest::Approx(fit.m1_diag(rho) * fit.s(rho)));
+        CHECK(measure(rho) == doctest::Approx(fit.model.m1_diag(rho) * fit.model.s(rho)));
     }
+}
+
+TEST_CASE("the operator and the diagnostics are genuinely separable")
+{
+    // The split's whole premise: nothing an evaluation needs lives in the
+    // diagnostics. Pinned two ways.
+    std::mt19937 gen(30);
+    const Synthetic op = make_operator(gen);
+    const OperatorFit fit = run(op, config_for(op));
+
+    // 1. model_rows is defined by mode_set_id, but must agree exactly with the
+    //    fit statuses it no longer reads -- otherwise the two drift.
+    const std::vector<int> modeled = model_rows(fit.model);
+    for ( Eigen::Index rho = 0; rho < fit.model.num_rows(); ++rho )
+    {
+        const bool by_status =
+            fit.diagnostics.status[static_cast<std::size_t>(rho)] == RowStatus::Fit
+            || fit.diagnostics.status[static_cast<std::size_t>(rho)]
+                   == RowStatus::FallbackBaseline;
+        const bool by_model = fit.model.has_model(static_cast<int>(rho));
+        CHECK(by_status == by_model);
+        CHECK(by_model
+              == (std::find(modeled.begin(), modeled.end(), static_cast<int>(rho))
+                  != modeled.end()));
+    }
+
+    // 2. An operator carrying NO diagnostics at all evaluates identically --
+    //    which is what lets a caller merge chunk fits, or load one from disk,
+    //    without inventing a stop reason.
+    const lgpsf::FittedOperator standalone = fit.model;
+    const Eigen::MatrixXd v =
+        test_helpers::randn_points(static_cast<int>(fit.model.num_cols()), 2, gen);
+    CHECK(matvec(standalone, v) == matvec(fit.model, v));
+    CHECK(Eigen::MatrixXd(assemble_sparse(standalone, 40.0))
+          == Eigen::MatrixXd(assemble_sparse(fit.model, 40.0)));
+    CHECK(spike_measure(standalone) == spike_measure(fit.model));
+
+    // and it is self-contained: it carries its own coordinates and masses, so
+    // it does not reference the caller's arrays
+    CHECK(standalone.x_cols == op.x_cols);
+    CHECK(standalone.m1_diag == op.m1);
+    CHECK(standalone.m2_diag == op.m2);
+    CHECK(standalone.x_cols.data() != op.x_cols.data());
 }
