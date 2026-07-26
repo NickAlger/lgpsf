@@ -77,9 +77,15 @@ Hard rules for every session working on the C++ side:
   it, CI cross-checks pyproject/CITATION -- the ellipsoid_tree
   discipline).
 - **(d) Python bindings: yes** -- pybind11 (>=2.12 found-or-fetched),
-  one `bindings/lgpsf_bindings.cpp`, points-as-rows `(K, N)` at the
-  numpy boundary with ONE transpose (matches the design-notes layout
-  entry), `gil_scoped_release` + `num_threads` on batched calls,
+  one `bindings/lgpsf_bindings.cpp`, **`(N, K)` at the numpy boundary
+  with ZERO copies** (corrected 2026-07-25: the Eigen `(K, N)` and numpy
+  `(N, K)` forms are the *same bytes*, so a C-contiguous numpy array
+  `Map`s straight onto the Eigen matrix -- take
+  `py::array_t<double, py::array::c_style>` and build the `Eigen::Map`
+  by hand rather than relying on the automatic Eigen caster, which
+  matches shapes rather than layouts. Exposing `(N, K)` also matches the
+  frozen prototype, making the PIG replay a drop-in),
+  `gil_scoped_release` + `num_threads` on batched calls,
   scikit-build-core + cibuildwheel + Trusted Publishing, exactly per
   the ellipsoid_tree pyproject/workflow pattern.
 - **(e) Prototype: frozen historical reference** (see Status header).
@@ -94,7 +100,7 @@ Hard rules for every session working on the C++ side:
 | lg_harmonics_table.py | lg_harmonics_table.hpp | generated static data, SPARSE per-row term lists (see below); ~278 KB Python |
 | harmonic_polynomials.py | harmonic_polynomials.hpp | the ONLY consumer of the table's format, in both languages; eval/grad/terms/`num_harmonics`/`max_degree`, plus the BATCHED `eval_harmonic_basis`/`grad_harmonic_basis` |
 | lg_functions.py | lg_functions.hpp | pure recurrences; `std::tgamma` for half-integer gammas; `struct Mode{int p, ell, m;}`; the batched `eval_lg_basis`/`grad_lg_basis` are the production path (below) |
-| ellipsoid_transform.py | ellipsoid_transform.hpp | `std::optional<VectorXd>` replaces the mu0=None fit-mu/fixed-mu sentinel; N<=4 fixed-size `.inverse()` per design-notes |
+| ellipsoid_transform.py | ellipsoid_transform.hpp | **DONE (M1).** No `N` parameter and no optional `mu0`: `mu0` is required (the fitting layers already require it), so `N = mu0.size()`, and the sentinel becomes `enum class MuMode {Pinned, Fitted}`. Public `theta` vs internal `theta_hat` -- see design-notes |
 | lg_ellipsoid_feature.py | lg_ellipsoid_feature.hpp | eval/jvp/vjp/jac; jac is the fitting-core interface |
 | whitening.py | whitening.hpp | the ONLY masses layer (invariant preserved); `whitened_basis` closure-builder becomes a small basis object with eval/vjp/jac methods (or `std::function` triple) |
 | varpro.py | varpro.hpp | BDCSVD inner solve, FWL, Kaufman one-sweep; **the hand-rolled LM lives here** (contract below); options/results as structs |
@@ -197,6 +203,12 @@ comes from the inner solve, which needs the values, so the order is
 values -> solve -> derivative with caller work in between. Nothing to
 fuse; what is shared is a partial evaluation at a fixed theta.
 
+The parameter the basis consumes is **`theta_hat`**, not `theta` (M1; see
+design-notes). That gives `varpro.hpp` a clean invariant: every input
+crossing into the fitting core is hatted -- `z_hat`, `y_hat`, `e_hat`,
+`theta_hat` -- and the conversions back to the public, mu0-independent
+`theta` are confined to its boundary.
+
 This matters more in C++ than it did in Python (1.04x there, being
 dispatch-bound), and the HAND-ROLLED LM is why: its loop evaluates the
 residual at trial thetas and residual+Jacobian at accepted ones, so the
@@ -213,7 +225,11 @@ constructor argument.
   `HouseholderQR`; `eigh` -> `SelfAdjointEigenSolver`; `cholesky` ->
   `LLT` (throw -> the per-row "failed" path); `inv` on N<=4 ->
   fixed-size inverse; spectral norm of L -> N x N SVD.
-- `scipy.spatial.cKDTree` -> `ellipsoid_tree::KDTree`.
+- `scipy.spatial.cKDTree` -> `ellipsoid_tree::KDTree`. **Note the layout
+  flip:** ellipsoid_tree's trees take `(dim, n)`, one point per COLUMN
+  (point-major), which is the opposite of lgpsf's coordinate-major
+  convention. M4 transposes the mesh coordinates once when building the
+  trees -- once per operator fit, not per row.
 - `scipy.sparse` -> plain CSR triplet arrays (match OperatorFit's
   flat-array style) or `Eigen::SparseMatrix` -- decide at M4; the
   deployed-support invariant (window-clipped helpers) ports verbatim.

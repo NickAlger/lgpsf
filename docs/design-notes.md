@@ -3,7 +3,7 @@
 Running log of design decisions relevant to the eventual C++ port, recorded
 as they come up during prototyping so they don't have to be re-derived later.
 
-## Point-batch memory layout: Eigen is transposed relative to numpy
+## Point-batch memory layout: coordinate-major, spelled natively in each language
 
 **Decision:** when a batch of `K` points in `N` dimensions is represented as
 a single matrix, use shape `(K, N)` (points as rows, dimensions as columns)
@@ -24,8 +24,17 @@ oppositely:
 - **Eigen defaults to column-major.** A `(K, N)` matrix has each *column*
   (fixed dimension, all points) contiguous, since Eigen stores
   column-by-column. So the natural, no-copy-needed shape in Eigen is the
-  transpose of numpy's: `(K, N)`, with `points.col(k)` giving a contiguous,
-  zero-copy `VectorXd` of dimension `k` across all points.
+  transpose of numpy's: `(K, N)`, with `points.col(d)` giving a contiguous,
+  zero-copy `VectorXd` of coordinate `d` across all points.
+
+**Say it as one layout, not two shapes** (clarified 2026-07-25, after this
+entry's "transpose" framing caused real confusion). The invariant is
+**coordinate-major**: all `K` values of coordinate 0, then all `K` of
+coordinate 1, and so on. numpy `(N,K)[d][k]` and Eigen `(K,N)(k,d)` are both
+at offset `d*K + k` -- *the same bytes in the same order*, one layout spelled
+natively in each language. Nothing is transposed anywhere; only the naming of
+which index is called "row" differs, because the two libraries default
+oppositely.
 
 Getting this backwards in either language (e.g. an `(N, K)` Eigen matrix, or
 a Fortran-order numpy array to fake column contiguity) still produces
@@ -45,12 +54,39 @@ numpy-natural convention above, so there was nothing to protect against by
 avoiding a real array. See the tuple-removal entry for the fuller reasoning
 (ergonomics and internal-consistency, not a layout concern).
 
-**Forward-looking flag, not yet a problem:** if points ever cross the
-Python/C++ boundary via pybind11 (a numpy `(N, K)` array in, an Eigen
-`(K, N)` matrix expected), that boundary is a transpose. pybind11's
-automatic Eigen &lt;-&gt; numpy conversion needs to be told about this
-explicitly, or it will silently insert a copy. Nothing to do about this yet
--- there are no bindings -- but worth remembering when that work starts.
+**Measured, 2026-07-25** (C++, `-O2 -march=native`, Eigen 3.4, K = 2000;
+holds across K = 200..20000). Coordinate-major against point-major (each
+point's `N` coordinates contiguous), best formulation of each:
+
+| kernel | N=2 | N=3 | N=4 |
+|---|---|---|---|
+| `r^2` per point | 3.2x | 3.2x | 2.1x |
+| one harmonic term | 1.9x | 1.8x | 2.0x |
+| pullback GEMM | 1.3x | 1.5x | 1.4x |
+
+Coordinate-major wins every kernel at every `N`. The gap is widest on `r^2`
+because point-major turns it into `K` separate length-`N` horizontal
+reductions with no SIMD across points, which is exactly the failure mode the
+"vectorize over the batch only" principle is about. Also checked, and it is
+NOT an inefficiency: `u.rowwise().squaredNorm()` versus an explicit loop
+accumulating over coordinate columns is a wash (the loop wins 1.5x at N=2 but
+loses ~1.2x at N=3, K=20000), so the readable form stays.
+
+**The pybind11 boundary is free, not a transpose** (corrects an earlier note
+here, and decision (d) of the port plan). Since the layouts are identical
+bytes, a C-contiguous numpy `(N, K)` array `Map`s directly onto the Eigen
+`(K, N)` matrix with **zero copies**. Bindings should therefore expose `(N,
+K)` to numpy, matching the frozen prototype exactly -- which also makes the
+PIG replay a drop-in. It does mean taking `py::array_t<double,
+py::array::c_style>` and building the `Eigen::Map` by hand rather than
+relying on pybind11's automatic Eigen caster, which would try to match shapes
+rather than layouts.
+
+**`ellipsoid_tree` uses the opposite convention:** its KDTree/BallTree take
+`(dim, n)`, one point per *column* -- point-major. So M4 needs one transpose
+of the mesh coordinates when building the trees. That is once per operator
+fit, not per row, over `O(R*N)` doubles, so it is nothing; it just needs to
+be written down rather than discovered.
 
 ## Vectorize over the batch only, arrays not tuples
 
@@ -737,3 +773,69 @@ what costs, the same removal is worth proportionally more. B was taken
 for the contract, not the clock; it must be settled before `varpro.hpp`
 freezes its interface, which is why it was done in the prototype now
 rather than discovered during M2.
+
+## Two parameter encodings: public `theta`, internal `theta_hat` (2026-07-25, C++)
+
+**Decision** (`include/lgpsf/ellipsoid_transform.hpp`, M1). The ellipsoid
+parameters exist in two encodings, and the C++ side names them apart:
+
+| | contents | length | decodes standalone? |
+|---|---|---|---|
+| `theta` -- public | `[mu, log-diag(L), strict-lower(L)]` | always `N(N+3)/2` | **yes** |
+| `theta_hat` -- internal | `[delta, log-diag, strict-lower]`, or `[log-diag, strict-lower]` when mu is pinned | mode-dependent | no (needs `mu0`, `MuMode`) |
+
+with `mu = mu0 + delta` when fitted and `mu = mu0` when pinned. `to_theta` /
+`to_theta_hat` convert; `unpack_theta(theta)` needs nothing but the vector.
+
+**Why the public one must not depend on `mu0`:** `fit_operator(mu0=None)`
+defaults each row's reference center to its own source point, and that is the
+common case. If the returned `theta` were mu0-relative, an `OperatorFit`'s
+theta array would be meaningless without also carrying the centers, and rows
+would not decode uniformly. So everything handed back to a caller --
+`OperatorFit.theta`, `ProbeFitResult.theta` -- is absolute, exactly as the
+prototype already did.
+
+**Why the internal one is a displacement:** absolute centers carry the mesh's
+physical coordinates (order 1e6 m for the ice-sheet problem this came from)
+against a log-diagonal of order 1 -- six orders of magnitude in one vector
+that the trust region and `xtol` both act on. `x_scale='jac'` mitigates that
+but does not remove it. Displacements are of order the local ellipsoid, like
+every other entry.
+
+**Why pinning drops the block rather than freezing it:** the alternative --
+one always-fitted encoding plus an optimizer active set -- was considered and
+rejected. Pinned mu is the operator-layer default, so it would compute `N`
+useless Jacobian columns per LM iteration, and those columns are *identically
+zero*, which is what MINPACK's `x_scale='jac'` column-norm scaling divides
+by. The mask would have to be real anyway, so two encodings is strictly
+simpler.
+
+**What it costs: nothing in derivative math.** The center enters as a
+translation, so `d(mu)/d(theta)` is the identity in both encodings and
+`jvp_unpack_theta_hat` / `vjp_unpack_theta_hat` are the same code either way.
+No new rules, no new derivative tests.
+
+**What it costs numerically: nothing the absolute encoding didn't already.**
+The round trip is not bit-exact -- `(mu0 + delta) - mu0` recovers `delta` only
+to the resolution of `mu` -- but that is precisely the resolution at which the
+absolute encoding stores `mu` in the first place. Pinned as a test
+(`test_ellipsoid_transform.cpp`, "the two encodings describe the same
+ellipsoid"): the center round-trips to within `eps * |mu|` and the L block
+round-trips exactly.
+
+**Naming.** `_hat` already marks "in the coordinates the numerical core works
+in" (`z_hat`, `y_hat`, `e_hat`, `phi_hat` -- see the whitening entry), so
+`varpro.hpp` gets a clean invariant: everything crossing into the fitting core
+is hatted, and the conversions back out are confined to its boundary. The
+transform differs -- mass whitening there, an mu0-shift and mode reduction
+here -- but the role is identical.
+
+**Consequence for signatures:** there is no `N` parameter and no
+`std::optional<VectorXd> mu0` anywhere in the module (the port plan had
+proposed the latter). `mu0` is required and always present -- the fitting
+layers already require it, since it sets the init ladder's scales and seeds
+every candidate -- so `N` is `mu0.size()`, and the fit/pin switch is a
+two-valued `enum class MuMode` rather than a sentinel smuggled through an
+array slot. `release_mu` and `freeze_mu` survive but lose their `mu0`
+arguments: releasing is "prepend `N` zeros", freezing is "split off the mu
+block".

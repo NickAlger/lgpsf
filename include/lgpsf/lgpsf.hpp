@@ -22,6 +22,7 @@
 
 #include <ellipsoid_tree/ellipsoid_tree.hpp>
 
+#include "lgpsf/ellipsoid_transform.hpp"
 #include "lgpsf/harmonic_polynomials.hpp"
 #include "lgpsf/lg_functions.hpp"
 // Further public headers land here as the port proceeds (docs/cpp-port-plan.md).
