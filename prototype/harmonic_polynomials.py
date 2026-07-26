@@ -132,6 +132,95 @@ def grad_harmonic(ell, m, u):
     return Y, dY
 
 
+def eval_harmonic_basis(shells, u):
+    """Y_{ell,m}(u) for a LIST of (ell, m) at once, shape
+    (len(shells), *batch_shape). Order matches `shells`.
+
+    The batched form exists because every polynomial in the list is built
+    from the same per-dimension monomial powers u[k]**a, which the
+    one-at-a-time form recomputes for each. They are computed once here
+    and shared. Values are bit-identical to calling eval_harmonic in a
+    loop: the same powers multiplied in the same order, with the a == 0
+    factors (which are exactly 1.0) skipped rather than materialized.
+    """
+    u = np.asarray(u, dtype=float)
+    N = u.shape[0]
+    terms = [harmonic_terms(N, ell, m) for (ell, m) in shells]
+    powers = _power_tables(u, max((ell for (ell, _) in shells), default=0))
+
+    Y = np.zeros((len(shells),) + u.shape[1:])
+    for i, (exponents, coeffs) in enumerate(terms):
+        for alpha, coeff in zip(exponents, coeffs):
+            term = coeff
+            for k, a in enumerate(alpha):
+                if a:
+                    term = term * powers[k][a]
+            Y[i] = Y[i] + term
+    return Y
+
+
+def grad_harmonic_basis(shells, u):
+    """eval_harmonic_basis together with the gradients: (Y, dY) with Y of
+    shape (len(shells), *batch_shape) and dY of shape
+    (len(shells), N, *batch_shape).
+
+    Per-mode gradients, deliberately NOT contracted against anything --
+    the three consumers in lg_ellipsoid_feature.py contract them
+    differently (against a cotangent, against du, against the theta
+    Jacobian), and the exact Golub-Pereyra VarPro variant needs the
+    uncontracted tensor.
+    """
+    u = np.asarray(u, dtype=float)
+    N = u.shape[0]
+    terms = [harmonic_terms(N, ell, m) for (ell, m) in shells]
+    powers = _power_tables(u, max((ell for (ell, _) in shells), default=0))
+
+    Y = np.zeros((len(shells),) + u.shape[1:])
+    dY = np.zeros((len(shells),) + u.shape)
+    for i, (exponents, coeffs) in enumerate(terms):
+        for alpha, coeff in zip(exponents, coeffs):
+            term = coeff
+            for k, a in enumerate(alpha):
+                if a:
+                    term = term * powers[k][a]
+            Y[i] = Y[i] + term
+
+            for k in range(N):
+                a_k = alpha[k]
+                if a_k == 0:
+                    continue
+                dterm = coeff * a_k
+                for j in range(N):
+                    power = alpha[j] - 1 if j == k else alpha[j]
+                    if power != 0:
+                        dterm = dterm * powers[j][power]
+                dY[i, k] = dY[i, k] + dterm
+    return Y, dY
+
+
+def _power_tables(u, max_exponent):
+    """powers[k][a] = u[k]**a for a = 1..max_exponent, per dimension k.
+
+    Index 0 is a placeholder: an a == 0 factor is exactly 1.0, so callers
+    skip it instead of multiplying by an array of ones (which the
+    one-at-a-time evaluator does, and which profiling showed costs a few
+    percent of a whole row fit in numpy alone).
+
+    Uses `**` rather than repeated multiplication so the results are
+    bit-identical to the one-at-a-time path. The C++ port should use
+    repeated multiplication instead -- faster and no less accurate for
+    small integer exponents -- which is why cross-language tests are
+    tolerance-based.
+    """
+    powers = []
+    for k in range(u.shape[0]):
+        column = [None, u[k]]
+        for a in range(2, max_exponent + 1):
+            column.append(u[k]**a)
+        powers.append(column)
+    return powers
+
+
 def _shell(N, ell):
     """(exponent_rows, coeff_rows) for one (N, ell) shell, or ValueError
     if the generated table does not cover it."""

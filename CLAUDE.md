@@ -98,8 +98,19 @@ existing JVP/VJP composes with it for free -- no new derivative math.
    `eval_lg_nd`/`grad_eval_lg_nd` (general $N$), each a direct statement
    of $\psi = C\,Y_{\ell,m}(u)\,L_p^\alpha(r^2)e^{-r^2/2}$ and its
    product rule over (1b)'s harmonic polynomials -- this module knows
-   nothing of the harmonic table. `modes_up_to_level` (raises rather
-   than truncating past the generated table).
+   nothing of the harmonic table. **`eval_lg_basis`/`grad_lg_basis` are
+   the PRODUCTION entry points**: the mode index factorizes (angular
+   independent of $p$, radial independent of $m$, Gaussian independent
+   of both), so a mode SET is the natural unit -- $r^2$ and the Gaussian
+   once, each harmonic once per distinct $(\ell,m)$, each radial profile
+   once per distinct $(p,\ell)$ from one Laguerre recurrence per $\ell$
+   (which also yields the derivatives, since
+   $\alpha(\ell)+1 = \alpha(\ell+1)$). Bit-identical to the
+   one-at-a-time path, which is retained as the readable reference and
+   the exactness oracle. Gradients come back per-mode and UNCONTRACTED
+   -- the exact Golub-Pereyra VarPro variant needs that tensor.
+   `modes_up_to_level` (raises rather than truncating past the generated
+   table).
 1b. **`harmonic_polynomials.py`** -- the harmonic polynomials
    $Y_{\ell,m}$ on $\mathbb{R}^N$: `eval_harmonic`, `grad_harmonic`
    (returns `(Y, dY)` from one pass), `harmonic_terms`,
@@ -126,10 +137,11 @@ existing JVP/VJP composes with it for free -- no new derivative math.
    batched, so this is negligible cost and avoids a substitution loop).
 4. **`lg_ellipsoid_feature.py`** -- composes (1) and (3):
    $\phi_i(x;\theta) := \psi_i(T(\theta,x))$ and its JVP/VJP/Jacobian,
-   for a list of modes at once (the pullback and each mode's spatial LG
-   gradient are shared where the math allows -- `jac_feature` computes
-   the direction-independent work once across all $P$ theta directions).
-   Mass-free.
+   for a list of modes at once. Thin: one `eval_T` plus one
+   `eval_lg_basis`/`grad_lg_basis` call, then the contraction that
+   distinguishes the four functions (against `du`, against the theta
+   Jacobian, against a cotangent). All mode-level sharing lives in (1);
+   all theta knowledge lives here. Mass-free.
 5. **`whitening.py`** -- **the only place $M_1$/$M_2$ appear anywhere in
    this codebase.** `whiten_probes`/`whiten_data`/`whiten_extra` for
    user-supplied raw arrays, plus whitened wrappers around (4)'s

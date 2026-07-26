@@ -17,7 +17,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 import numpy as np
 
 from harmonic_polynomials import num_harmonics
-from lg_functions import eval_lg_nd, genlaguerre, grad_eval_lg_nd, modes_up_to_level
+from lg_functions import (
+    eval_lg_basis, eval_lg_nd, genlaguerre, grad_eval_lg_nd, grad_lg_basis,
+    modes_up_to_level,
+)
 
 FD_STEP = 1e-5
 FD_TOL = 1e-6  # well above the ~1e-10 central-difference floor measured at FD_STEP
@@ -132,8 +135,65 @@ def test_modes_are_orthonormal_in_L2():
         print(f"  N={N}: {len(modes)} modes orthonormal to {err:.2e}")
 
 
+def _mode_sets(N):
+    """Mode sets spanning the shapes the factorized evaluator must handle:
+    a singleton, a pure-radial family (one shell, many p), a pure-angular
+    family (one p, many shells), complete shells, and a list with
+    duplicates in non-canonical order."""
+    scrambled = list(reversed(modes_up_to_level(N, 3)))
+    return [
+        [(0, 0, 0)],
+        [(p, 0, 0) for p in range(6)],
+        [(0, ell, m) for ell in range(4) for m in range(num_harmonics(N, ell))],
+        modes_up_to_level(N, 4),
+        modes_up_to_level(N, 6),
+        scrambled + scrambled[:3],
+    ]
+
+
+def test_batched_matches_one_at_a_time_exactly():
+    """eval_lg_basis / grad_lg_basis share r^2, the Gaussian, each harmonic
+    across p and each Laguerre recurrence across m and p. All of that is
+    reuse of identical expressions, never reassociation, so the batched
+    results must be EXACTLY equal to the one-at-a-time reference -- not
+    merely close. Equality is the contract; a tolerance here would hide
+    exactly the kind of drift this test exists to catch."""
+    rng = np.random.default_rng(4)
+    checked = 0
+    for N in [1, 2, 3, 4]:
+        batches = [np.zeros(N), rng.normal(size=N), rng.normal(size=(N, 9)),
+                   rng.normal(size=(N, 3, 4)), rng.normal(size=(N, 50)) * 3.0]
+        for modes in _mode_sets(N):
+            for u in batches:
+                got = eval_lg_basis(modes, u)
+                want = np.stack([eval_lg_nd(p, ell, m, u)
+                                 for (p, ell, m) in modes], axis=0)
+                assert got.shape == want.shape
+                assert np.array_equal(got, want), (
+                    f"eval N={N}, {len(modes)} modes, batch {np.shape(u)[1:]}: "
+                    f"max diff {np.max(np.abs(got - want)):.3e}")
+
+                got = grad_lg_basis(modes, u)
+                want = np.stack([grad_eval_lg_nd(p, ell, m, u)
+                                 for (p, ell, m) in modes], axis=0)
+                assert got.shape == want.shape
+                assert np.array_equal(got, want), (
+                    f"grad N={N}, {len(modes)} modes, batch {np.shape(u)[1:]}: "
+                    f"max diff {np.max(np.abs(got - want)):.3e}")
+                checked += 1
+    print(f"  {checked} (mode set, batch) pairs exactly equal")
+
+
+def test_batched_handles_empty_mode_set():
+    u = np.zeros((2, 7))
+    assert eval_lg_basis([], u).shape == (0, 7)
+    assert grad_lg_basis([], u).shape == (0, 2, 7)
+
+
 if __name__ == "__main__":
     test_genlaguerre_matches_closed_forms()
+    test_batched_matches_one_at_a_time_exactly()
+    test_batched_handles_empty_mode_set()
     test_modes_are_orthonormal_in_L2()
     test_gradient_matches_finite_differences()
     print("all LG mode checks passed")

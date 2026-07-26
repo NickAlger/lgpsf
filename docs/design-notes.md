@@ -544,3 +544,90 @@ level-10 mode set for `max_level=15`. It now raises. Safe for every
 built-in policy (all cap at `max_level=10`, and `mode_levels` is
 caller-supplied with no default), but it newly rejects e.g.
 `ShellLadder([15])`.
+
+## The unit of LG evaluation is a mode SET, not a mode
+
+**Decision (2026-07-25, Nick):** `eval_lg_basis(modes, u)` /
+`grad_lg_basis(modes, u)` (and `eval_harmonic_basis` /
+`grad_harmonic_basis` under them) are the production entry points;
+`eval_lg_nd` / `grad_eval_lg_nd` remain as the one-at-a-time readable
+reference and as the exactness oracle the batched path is pinned
+against.
+
+**Why, from the structure of the object.** The mode index factorizes:
+
+$$\psi_{p,\ell,m} = C_{p,\ell,N}\cdot Y_{\ell,m}(u)\cdot L_p^{\alpha(\ell)}(r^2)\cdot e^{-r^2/2}$$
+
+with the angular factor independent of $p$, the radial factor
+independent of $m$, and the Gaussian independent of both. A mode set is
+a product-like family drawn from two small factor sets. Passing a
+FLATTENED index re-derives every factor per mode, so this is not a
+caching opportunity bolted onto the evaluator -- it is the evaluator
+being handed the wrong unit of work. Measured redundancy on the mode
+sets a real row fit actually evaluates (not the top rung -- the ladder
+spends most calls at 1-13 modes):
+
+| factor | per-mode | factorized | |
+|---|---|---|---|
+| Gaussian + r^2 | 21,560 | 2,656 | 8.1x |
+| harmonic evaluations | 21,560 | 10,920 | 2.0x |
+| monomial terms | 24,826 | 12,849 | 1.9x |
+| radial products | 21,560 | 13,741 | 1.6x |
+| Laguerre steps | 13,391 | 6,953 | 1.9x |
+
+The Gaussian dominates: its saving factor IS the average mode-set size,
+and `exp` is the most expensive per-point primitive in either language.
+
+**A structural bonus.** $\alpha(\ell)+1 = \alpha(\ell+1)$ exactly (in
+floating point too -- all the intermediates are integers or halves), and
+$\frac{d}{dt}L_p^\alpha = -L_{p-1}^{\alpha+1}$, so the derivative of the
+radial factor at $\ell$ is an entry of the table for $\ell+1$. ONE
+triangular family of Laguerre tables supplies every value and every
+derivative in the mode set; the one-at-a-time path ran a second
+recurrence per mode.
+
+**No new object in any signature.** A batched function is stateless: it
+computes shared intermediates in locals and discards them. There is no
+prepared-point-batch to construct, thread through calls, keep consistent
+with `u`, or invalidate -- points stay plain arrays everywhere, and the
+change is confined to `harmonic_polynomials.py`, `lg_functions.py` and
+the four `lg_ellipsoid_feature.py` wrappers.
+
+**Gradients are returned per-mode and uncontracted.** The three
+consumers contract them differently (`vjp_feature` against a cotangent,
+`jvp_feature` against `du`, `jac_feature` against the theta Jacobian),
+and -- decisive -- the exact Golub-Pereyra VarPro variant needs the
+uncontracted $(n_{modes}, P, K)$ tensor, since its second term has no
+reverse-mode collapse. Contracting inside the LG layer would have
+foreclosed the exact reduced Gauss-Newton Hessian. The LG layer knows
+nothing about theta or cotangents; that is `lg_ellipsoid_feature`'s job.
+
+**Where the time was, measured before deciding.** cProfile on a
+representative row fit (K=400 window points, k=100 probes, the
+`WedgeLadder(10, 2)` default): `eval_lg_nd` + `grad_eval_lg_nd` were
+~47% of cumulative time, dense linear algebra only ~7.5% (`svd` +
+`inv` + `lstsq`), the pullback `eval_T` just 2.4%. The fit is
+basis-evaluation-bound, not SVD-bound. Also found: `u[k]**0`
+materialized an array of ones 26,490 times, 3.2% of the whole fit, pure
+waste -- the batched path skips zero exponents instead.
+
+**Result:** end-to-end row fit 2.55s -> 1.85s (**1.38x**), LG share
+47% -> 35%, Python function calls 1.09M -> 0.90M, with the fit returning
+bit-identical theta, c, s and score.
+
+**Verification.** Bit-for-bit again: 168 (mode set, batch) pairs for
+`eval_lg_basis`/`grad_lg_basis` vs the one-at-a-time path, and 224
+feature-layer calls across ALL FOUR functions (eval/jvp/jac/vjp, free
+and fixed mu) vs the snapshotted per-mode implementations. jvp_feature
+and jac_feature get zero calls in a real fit, so without that they would
+have been covered only by tolerance-based tests. The exactness claim is
+kept as a permanent test (batched == one-at-a-time), not just
+scaffolding: a tolerance there would hide precisely the drift the test
+exists to catch.
+
+**Not done, recorded:** `basis_eval` and `basis_vjp` are called at the
+SAME theta each LM iteration (1,528 and 1,128 calls in the profiled
+fit) and share the pullback, r^2, the Gaussian, every harmonic and the
+whole Laguerre table. Capturing that would roughly halve the remaining
+LG cost, but it requires changing the fitting core's basis-callable
+contract -- a separate decision.

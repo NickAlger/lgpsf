@@ -70,8 +70,8 @@ Hard rules for every session working on the C++ side:
 |---|---|---|
 | generate_lg_harmonics_table.py | (offline codegen, NOT ported) | gains a mode emitting `lg_harmonics_table.hpp` from the same exact-rational source; `%.17g` literals, bit-identical doubles; never hand-translated |
 | lg_harmonics_table.py | lg_harmonics_table.hpp | generated static data, SPARSE per-row term lists (see below); ~278 KB Python |
-| harmonic_polynomials.py | harmonic_polynomials.hpp | the ONLY consumer of the table's format, in both languages; eval/grad/terms/`num_harmonics`/`max_degree` |
-| lg_functions.py | lg_functions.hpp | pure recurrences; `std::tgamma` for half-integer gammas; `struct Mode{int p, ell, m;}` |
+| harmonic_polynomials.py | harmonic_polynomials.hpp | the ONLY consumer of the table's format, in both languages; eval/grad/terms/`num_harmonics`/`max_degree`, plus the BATCHED `eval_harmonic_basis`/`grad_harmonic_basis` |
+| lg_functions.py | lg_functions.hpp | pure recurrences; `std::tgamma` for half-integer gammas; `struct Mode{int p, ell, m;}`; the batched `eval_lg_basis`/`grad_lg_basis` are the production path (below) |
 | ellipsoid_transform.py | ellipsoid_transform.hpp | `std::optional<VectorXd>` replaces the mu0=None fit-mu/fixed-mu sentinel; N<=4 fixed-size `.inverse()` per design-notes |
 | lg_ellipsoid_feature.py | lg_ellipsoid_feature.hpp | eval/jvp/vjp/jac; jac is the fitting-core interface |
 | whitening.py | whitening.hpp | the ONLY masses layer (invariant preserved); `whitened_basis` closure-builder becomes a small basis object with eval/vjp/jac methods (or `std::function` triple) |
@@ -120,6 +120,42 @@ no map.
 sees it. Port `grad_harmonic` returning `(Y, dY)` from a single pass --
 the LG product rule needs both, and that sharing is what removes the
 duplication the Python refactor removed.
+
+### Evaluate a mode SET, not a mode (settled 2026-07-25, prototype-first)
+
+The mode index factorizes -- angular independent of `p`, radial
+independent of `m`, Gaussian independent of both -- so `eval_lg_basis`/
+`grad_lg_basis` (and `eval_harmonic_basis`/`grad_harmonic_basis` under
+them) are the production entry points and must be ported as such;
+one-at-a-time `eval_lg_nd`/`grad_eval_lg_nd` stay as the readable
+reference and the tier-2 exactness oracle. Port notes:
+
+- Share `r2` and the Gaussian once per call, each harmonic once per
+  distinct `(ell, m)`, each radial profile once per distinct `(p, ell)`.
+- ONE Laguerre table per angular order, run to the deepest `p` that
+  order needs; `alpha(ell) + 1 == alpha(ell+1)`, so the `ell+1` table
+  supplies the derivatives too -- no separate derivative recurrences.
+- Per-dimension integer power tables, computed by REPEATED
+  MULTIPLICATION in C++ (faster and no less accurate than `std::pow` for
+  small exponents; this is the deliberate break from Python
+  bit-identity). Skip `a == 0` factors rather than materializing ones.
+- Return gradients per-mode and UNCONTRACTED: the Golub-Pereyra variant
+  needs the `(n_modes, P, K)` tensor, and the three feature-layer
+  consumers contract differently.
+- No prepared-point-batch object: batched free functions are stateless,
+  so points stay plain matrices in every signature.
+
+Measured in Python: 1.38x on an end-to-end row fit, LG share of the fit
+47% -> 35%. C++ should do relatively better on the arithmetic (the
+Gaussian is 8.1x redundant and `exp` is the dominant per-point
+primitive) and worse on the call-overhead component, which does not
+exist there.
+
+Known remaining redundancy, NOT addressed: `basis_eval` and `basis_vjp`
+are invoked at the same theta each LM iteration and share the pullback,
+`r2`, the Gaussian, every harmonic and the whole Laguerre table.
+Capturing it needs the fitting core's basis-callable contract to change;
+decide separately, ideally before M2 freezes `varpro.hpp`'s interface.
 
 ## The numerics map (what replaces scipy)
 

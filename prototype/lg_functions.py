@@ -23,7 +23,8 @@ import math
 import numpy as np
 
 from harmonic_polynomials import (
-    eval_harmonic, grad_harmonic, max_degree, num_harmonics,
+    eval_harmonic, eval_harmonic_basis, grad_harmonic, grad_harmonic_basis,
+    max_degree, num_harmonics,
 )
 
 
@@ -166,6 +167,130 @@ def grad_eval_lg_nd(p, ell, m, u):
 
     prefactor = lg_norm(p, ell, N) * np.exp(-0.5 * r2)
     return prefactor * (L * dY - u * Y * (L - 2.0 * dL_dt))
+
+
+def eval_lg_basis(modes, u):
+    """Evaluate a whole mode SET at once: shape (len(modes), *batch_shape),
+    in the given mode order.
+
+    This is the production entry point; eval_lg_nd is the one-at-a-time
+    reference it is pinned against. The reason a set is the natural unit
+    is that the mode index factorizes --
+
+        psi_{p,ell,m} = C_{p,ell,N} * Y_{ell,m}(u) * L_p^alpha(r^2) * exp(-r^2/2)
+
+    -- with the angular factor independent of p, the radial factor
+    independent of m, and the Gaussian independent of both. Evaluating one
+    mode at a time flattens that structure and re-derives every factor per
+    mode. Here r^2 and the Gaussian are computed once, each harmonic once
+    per distinct (ell, m), and each radial profile once per distinct
+    (p, ell) -- from one Laguerre recurrence per ell, since the recurrence
+    passes through every lower p on its way up.
+
+    Bit-identical to stacking eval_lg_nd over the same modes (pinned by
+    test_lg_functions.py): every shared quantity is the same expression
+    evaluated once instead of many times, with no reassociation.
+    """
+    u = np.asarray(u, dtype=float)
+    N = u.shape[0]
+    if len(modes) == 0:
+        return np.zeros((0,) + u.shape[1:])
+
+    r2 = np.sum(u * u, axis=0)
+    gauss = np.exp(-0.5 * r2)
+    shells, shell_of = _shell_index(modes)
+    Y = eval_harmonic_basis(shells, u)
+    tables = _laguerre_tables(modes, N, r2, with_derivative=False)
+
+    radial = {}
+    out = []
+    for i, (p, ell, m) in enumerate(modes):
+        if (p, ell) not in radial:
+            radial[(p, ell)] = tables[ell][p] * gauss
+        out.append(lg_norm(p, ell, N) * Y[shell_of[i]] * radial[(p, ell)])
+    return np.stack(out, axis=0)
+
+
+def grad_lg_basis(modes, u):
+    """Spatial gradients of a whole mode set: shape
+    (len(modes), N, *batch_shape), in the given mode order.
+
+    Same sharing as eval_lg_basis, plus one that is specific to the
+    derivative: d/dt L_p^alpha = -L_{p-1}^(alpha+1), and
+    alpha(ell) + 1 = alpha(ell + 1) exactly, so the derivative of the
+    radial factor at ell is an entry of the table for ell + 1. One
+    triangular family of Laguerre tables therefore supplies every value
+    AND every derivative in the mode set -- the one-at-a-time path runs a
+    second recurrence per mode for this.
+
+    Returns per-mode gradients, uncontracted; see grad_harmonic_basis.
+    """
+    u = np.asarray(u, dtype=float)
+    N = u.shape[0]
+    if len(modes) == 0:
+        return np.zeros((0,) + u.shape)
+
+    r2 = np.sum(u * u, axis=0)
+    gauss = np.exp(-0.5 * r2)
+    shells, shell_of = _shell_index(modes)
+    Y, dY = grad_harmonic_basis(shells, u)
+    tables = _laguerre_tables(modes, N, r2, with_derivative=True)
+
+    radial = {}
+    out = []
+    for i, (p, ell, m) in enumerate(modes):
+        if (p, ell) not in radial:
+            L = tables[ell][p]
+            dL_dt = -tables[ell + 1][p - 1] if p >= 1 else 0.0
+            radial[(p, ell)] = (L, L - 2.0 * dL_dt,
+                                lg_norm(p, ell, N) * gauss)
+        L, envelope, prefactor = radial[(p, ell)]
+        si = shell_of[i]
+        out.append(prefactor * (L * dY[si] - u * Y[si] * envelope))
+    return np.stack(out, axis=0)
+
+
+def _shell_index(modes):
+    """The distinct (ell, m) shells of a mode list, in order of first
+    appearance, plus the per-mode index into that list."""
+    shells = []
+    position = {}
+    shell_of = []
+    for (_, ell, m) in modes:
+        if (ell, m) not in position:
+            position[(ell, m)] = len(shells)
+            shells.append((ell, m))
+        shell_of.append(position[(ell, m)])
+    return shells, shell_of
+
+
+def _laguerre_table(alpha, x, max_p):
+    """[L_0^alpha(x), ..., L_max_p^alpha(x)] from a single pass of
+    genlaguerre's recurrence. Each step depends only on the previous two,
+    so the retained intermediates are bit-identical to calling
+    genlaguerre once per p -- the one-at-a-time path computes and throws
+    away exactly these."""
+    table = [np.ones_like(x)]
+    if max_p >= 1:
+        table.append(1.0 + alpha - x)
+    for k in range(1, max_p):
+        table.append(((2 * k + 1 + alpha - x) * table[k]
+                      - (k + alpha) * table[k - 1]) / (k + 1))
+    return table
+
+
+def _laguerre_tables(modes, N, r2, with_derivative):
+    """One Laguerre table per angular order the mode set needs, each run
+    only as deep in p as that order requires. with_derivative also
+    provides the ell + 1 tables that d/dt L_p^alpha = -L_{p-1}^(alpha+1)
+    reads from."""
+    depth = {}
+    for (p, ell, _) in modes:
+        depth[ell] = max(depth.get(ell, 0), p)
+        if with_derivative and p >= 1:
+            depth[ell + 1] = max(depth.get(ell + 1, 0), p - 1)
+    return {ell: _laguerre_table(ell + N / 2.0 - 1.0, r2, max_p)
+            for ell, max_p in depth.items()}
 
 
 def modes_up_to_level(N, max_level, ell_max=None):

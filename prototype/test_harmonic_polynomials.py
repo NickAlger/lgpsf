@@ -18,8 +18,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 import numpy as np
 
 from harmonic_polynomials import (
-    eval_harmonic, grad_harmonic, harmonic_terms, max_degree, max_dimension,
-    num_harmonics,
+    eval_harmonic, eval_harmonic_basis, grad_harmonic, grad_harmonic_basis,
+    harmonic_terms, max_degree, max_dimension, num_harmonics,
 )
 
 FD_STEP = 1e-5
@@ -272,6 +272,52 @@ def test_constant_shell_gradient_is_zero_and_correctly_shaped():
         assert dY.shape == u.shape, f"N={N}: dY shape {dY.shape}, expected {u.shape}"
         assert np.all(dY == 0.0), f"N={N}: constant polynomial has nonzero gradient"
         assert np.all(Y == Y.flat[0]), f"N={N}: degree-0 polynomial is not constant"
+
+
+def test_batched_matches_one_at_a_time_exactly():
+    """eval_harmonic_basis / grad_harmonic_basis share the per-dimension
+    power tables u[k]**a across the whole shell list, and skip the a == 0
+    factors the one-at-a-time path materializes as arrays of ones.
+    Multiplying by exactly 1.0 is the identity, so the results must be
+    EXACTLY equal, not merely close."""
+    rng = np.random.default_rng(5)
+    checked = 0
+    for N in range(1, max_dimension() + 1):
+        all_shells = [(ell, m) for ell in range(max_degree() + 1)
+                      for m in range(num_harmonics(N, ell))]
+        shell_lists = [
+            [(0, 0)],
+            all_shells[:1] + all_shells[:1],       # duplicates
+            list(reversed(all_shells[:8])),        # non-canonical order
+            all_shells,
+        ]
+        batches = [np.zeros(N), rng.normal(size=N), rng.normal(size=(N, 9)),
+                   rng.normal(size=(N, 2, 3))]
+        for shells in shell_lists:
+            for u in batches:
+                got = eval_harmonic_basis(shells, u)
+                want = np.stack([eval_harmonic(ell, m, u)
+                                 for (ell, m) in shells], axis=0)
+                assert got.shape == want.shape
+                assert np.array_equal(got, want), (
+                    f"N={N}, {len(shells)} shells: eval mismatch")
+
+                gotY, gotD = grad_harmonic_basis(shells, u)
+                wants = [grad_harmonic(ell, m, u) for (ell, m) in shells]
+                wantY = np.stack([a for a, _ in wants], axis=0)
+                wantD = np.stack([b for _, b in wants], axis=0)
+                assert gotY.shape == wantY.shape and gotD.shape == wantD.shape
+                assert np.array_equal(gotY, wantY), f"N={N}: grad value mismatch"
+                assert np.array_equal(gotD, wantD), f"N={N}: gradient mismatch"
+                checked += 1
+    print(f"  {checked} (shell list, batch) pairs exactly equal")
+
+
+def test_batched_handles_empty_shell_list():
+    u = np.zeros((3, 5))
+    assert eval_harmonic_basis([], u).shape == (0, 5)
+    Y, dY = grad_harmonic_basis([], u)
+    assert Y.shape == (0, 5) and dY.shape == (0, 3, 5)
 
 
 def test_out_of_range_raises():
