@@ -1041,7 +1041,7 @@ TEST_CASE("the operator and the diagnostics are genuinely separable")
     // 2. An operator carrying NO diagnostics at all evaluates identically --
     //    which is what lets a caller merge chunk fits, or load one from disk,
     //    without inventing a stop reason.
-    const lgpsf::FittedOperator standalone = fit.model;
+    const lgpsf::LGOperator standalone = fit.model;
     const Eigen::MatrixXd v =
         test_helpers::randn_points(static_cast<int>(fit.model.num_cols()), 2, gen);
     CHECK(matvec(standalone, v) == matvec(fit.model, v));

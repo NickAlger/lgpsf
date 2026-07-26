@@ -11,6 +11,7 @@ add_executable(lgpsf_tests
     test_init_dictionary.cpp
     test_mode_policy.cpp
     test_probe_fit.cpp
+    test_lg_operator.cpp
     test_operator_fit.cpp)
 target_link_libraries(lgpsf_tests PRIVATE lgpsf::lgpsf)
 target_include_directories(lgpsf_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty)

@@ -401,8 +401,11 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
   DEFAULT for every evaluation (`eval_kernel_unrestricted` is the named
   opt-out; out-of-window model mass is *unpenalized* by the fit, not
   merely unverified), and `fit_operator` returns `OperatorFit { model;
-  diagnostics; }` -- the `FittedOperator` half is self-contained and
-  nothing in evaluation reads a diagnostic. M5 is bindings + the PIG
+  diagnostics; }`, and **the model half is `LGOperator`, defined in its
+  own `lg_operator.hpp` which depends on none of the fitting stack** --
+  so an operator can be built from a physics-based approximation,
+  merged with `concatenate_rows`, checked with `validate`, and applied
+  or assembled without the fitter ever being included. M5 is bindings + the PIG
   slice-38/39 replay.
 - A hand-rolled Levenberg-Marquardt loop (port milestone M2): the
   prototype's outer loop delegates to scipy/MINPACK -- the one

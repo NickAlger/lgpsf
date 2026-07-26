@@ -195,6 +195,34 @@ inline ellipsoid_tree::Ellipsoid ellipsoid_from_points(
     return out;
 }
 
+/// `sigma` with its axis ratio capped at `aspect_cap`, by flooring the
+/// eigenvalues at `lambda_max / aspect_cap^2`.
+///
+/// The eigenvectors are untouched, so the orientation always survives; only
+/// how elongated the shape may be changes. `aspect_cap == 1` returns
+/// `lambda_max * I` (isotropic), `aspect_cap == infinity` returns `sigma`
+/// unchanged, and the resulting axis ratio is `min(the input's, aspect_cap)`.
+inline Eigen::MatrixXd capped_covariance( const Eigen::Ref<const Eigen::MatrixXd>& sigma,
+                                          double aspect_cap )
+{
+    if ( !(aspect_cap >= 1.0) )
+    {
+        throw std::invalid_argument(
+            "lgpsf::capped_covariance: aspect_cap must be >= 1 (1 is an isotropic "
+            "window); got " + std::to_string(aspect_cap));
+    }
+    if ( std::isinf(aspect_cap) )
+    {
+        return sigma;
+    }
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(sigma);
+    Eigen::VectorXd values = solver.eigenvalues();  // ascending
+    const double floor = values(values.size() - 1) / (aspect_cap * aspect_cap);
+    values = values.cwiseMax(floor);
+    return solver.eigenvectors() * values.asDiagonal()
+           * solver.eigenvectors().transpose();
+}
+
 /// A 2D SPD covariance with 1-sigma semi-axes (a, b), the a-axis rotated
 /// `angle_degrees` from horizontal -- the building block for
 /// orientation-covering dictionaries, which is the circle family's blind spot.

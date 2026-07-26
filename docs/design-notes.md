@@ -1105,3 +1105,60 @@ saved operator.
 
 Behaviour preservation was the acceptance criterion: every pre-existing
 assertion passed unchanged after the split.
+
+## LGOperator is a data structure, not a fit result (2026-07-26, C++)
+
+**Decision** (Nick, M4). `FittedOperator` became **`LGOperator`** and moved to
+its own header, `lg_operator.hpp`; `operator_fit.hpp` is now one PRODUCER of
+that structure rather than its definition.
+
+**The name.** "FittedOperator" said how it was made rather than what it is, and
+implied a provenance that is not required: a caller with a physics-based
+approximation can fill one in directly, bypassing the fitter entirely.
+`LGOperator` says what it is, and `LG` matches the house casing (`LGBasisAt`,
+`eval_lg_basis`).
+
+**The header split, measured before deciding.** The evaluation helpers
+reference NOTHING from the fitting stack -- zero mentions of whitening, varpro,
+mode_policy, probe_fit or init_dictionary across the whole helper section. So
+`lg_operator.hpp` needs only `lg_ellipsoid_feature`, `ellipsoid_transform`,
+`lg_functions`, Eigen and ellipsoid_tree. A consumer who wants to APPLY or
+ASSEMBLE an operator no longer includes the machinery that fits one, and the
+claim "you can build one without our fitter" is structurally true rather than
+documented. Behaviour preservation was the acceptance criterion and it held:
+every assertion passed unchanged across the move.
+
+**Free functions, not methods.** Considered and rejected. Nothing in the helper
+set needs privileged access; the type is a transparent flat-array structure
+meant to be inspected, gathered across MPI ranks, merged and serialized, so
+private fields would fight the property the split was for; and a user's own
+`foo(const LGOperator&)` should be a peer of ours. The line drawn, and written
+into the header: **methods for "what am I"** (`num_rows`, `has_model`,
+`row_window`, `row_modes`), **free functions for "what can be done with me"**.
+
+**Three additions the split made natural.**
+
+`num_threads` on the row-parallel helpers, honouring the plan's uniform
+trailing-parameter convention that `matvec`, `assemble_sparse` and `qc_map`
+had been ignoring. `matvec` needs no reduction, since rows write disjoint
+output rows; `assemble_sparse` fills per-row triplet buffers and concatenates
+them in ROW ORDER, so the pattern and the summation order are independent of
+scheduling and the result is bit-identical across thread counts.
+
+`validate`, returning one message per structural problem. Hand-construction is
+now a supported path, so it needs to be checkable: mode-set ids naming nothing,
+coefficients too narrow for a row's mode set, non-monotone window offsets,
+out-of-range window indices, a wrong theta encoding width, a spike alongside
+separate row coordinates. It checks SHAPE, not approximation quality -- that is
+what `qc_map` is for.
+
+`concatenate_rows`, the operation `slice38_lgpsf_operator.py` open-codes. Its
+reason to exist is that merging means remapping every row-indexed array at once
+-- `mode_set_id` into a combined mode-set table (de-duplicated, so ids stay
+dense) and `window_indptr` by a running offset -- and getting either wrong is
+silent.
+
+**Testing note.** `test_lg_operator.cpp` never includes `operator_fit.hpp` and
+never calls the fitter: every operator in it is written down by hand. That is
+what makes the independence a property of the build rather than a claim in a
+comment.
