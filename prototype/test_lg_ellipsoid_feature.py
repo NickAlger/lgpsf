@@ -12,7 +12,7 @@ import numpy as np
 
 from ellipsoid_transform import theta_size
 from lg_ellipsoid_feature import eval_feature, jvp_feature, vjp_feature, jac_feature
-from lg_harmonics_table import TABLE
+from harmonic_polynomials import num_harmonics
 
 FD_STEP = 1e-6
 FD_TOL = 1e-5  # matches test_ellipsoid_transform.py's tolerance (pullback-based)
@@ -29,8 +29,7 @@ def _random_theta(N, mu0, rng):
 def _some_modes(N, max_ell=3, max_p=2):
     modes = []
     for ell in range(max_ell + 1):
-        _, rows = TABLE[(N, ell)]
-        for m in range(len(rows)):
+        for m in range(num_harmonics(N, ell)):
             for p in range(max_p + 1):
                 modes.append((p, ell, m))
     return modes

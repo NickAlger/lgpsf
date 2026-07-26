@@ -430,3 +430,117 @@ addendum (the noise gate was half its problem; the profit score's
 near-redundancy normalization is the other half -- it can prefer
 ill-conditioned additions, the opposite of the selection-by-
 informedness motivation).
+
+## Harmonic polynomials get their own module; the table ships sparse
+
+**Decision (2026-07-25, Nick):** `harmonic_polynomials.py` is a new
+module holding the harmonic polynomials $Y_{\ell,m}$ -- evaluation,
+gradient, term list, shell dimensions -- and is **the only place the
+generated table's storage format appears**. The table itself
+(`lg_harmonics_table.py`) now stores each polynomial as its list of
+NONZERO terms, `(exponent tuple, coefficient)` pairs, instead of a
+shared monomial basis plus a dense coefficient row.
+
+**Why a module (the structural argument).** The table stores
+polynomials, but the code had no polynomial: evaluating one was an
+inlined double loop, written twice, because `grad_eval_lg_nd` needs
+$Y$ as well as $\nabla Y$. ~22 of that function's 39 body lines were
+verbatim copies of `eval_lg_nd` (table lookup, bounds check, `r2`, the
+whole `Y` accumulation, `alpha`, `norm`, `genlaguerre`, the Gaussian).
+With `eval_harmonic`/`grad_harmonic` extracted -- the latter returning
+`(Y, dY)` from one pass -- both functions collapse to statements of the
+factorization $\psi = C_{p,\ell,N}\,Y_{\ell,m}(u)\,L_p^\alpha(r^2)
+e^{-r^2/2}$ and its product rule, ~7 and ~10 lines. The confinement is
+the same discipline `whitening.py` applies to $M_1/M_2$, and it scopes
+every future change to the polynomial representation (term ordering,
+precomputed power tables, Horner, a reduced-precision path) to one
+file with its own intrinsic test suite.
+
+**Why sparse (the representation argument).** 91.5% of the dense
+coefficients (82,171 of 89,794) are exactly zero. That is not decay or
+rounding: the smallest surviving |coefficient| in the whole table is
+**0.225**, with zero entries anywhere below 1e-12 -- a ~15-decade gap,
+so no tolerance exists to choose or get wrong. The generator's
+`!= 0` drop test runs on exact `Fraction`s, and re-running the
+exact-rational Gram-Schmidt confirmed zero cases of a nonzero rational
+rounding to `0.0`. Two exact mechanisms produce the pattern, both
+pinned as tests:
+
+- **Exponent parity classes.** `harmonic_project` builds
+  $h=\sum_k c_k |x|^{2k}\Delta^k x^\alpha$; both $\Delta$ and $|x|^2$
+  shift one exponent by $\pm2$, so every term keeps $\alpha$'s parity
+  vector mod 2. The Gaussian moment matrix is block diagonal across
+  those classes, so Gram-Schmidt never mixes them. Measured: all 650
+  basis rows have support in exactly one class, 0 violations.
+- **Gram-Schmidt staircase.** Within a class the accepted vectors are
+  orthogonalized in a fixed monomial order, so each vanishes on the
+  leading monomial of every earlier one -- QR triangularity. Holds for
+  every shell.
+
+The root cause of the mismatch: dense-over-a-shared-basis is the
+*generator's* natural representation (it is doing linear algebra on a
+coefficient vector space), while a sparse term list is the
+*consumer's*. The file shipped the producer's shape.
+
+**Cost.** Evaluation speedups (500 points, all modes to level 6): 1.65x
+at N=2, 3.31x at N=3, 7.51x at N=4; gradients 1.57x/3.69x/9.13x. The
+benefit grows with N because the dense monomial count grows
+combinatorially while the nonzero count does not.
+
+Size: the Python file goes 592,677 -> 277,889 bytes, only 53%, which
+does NOT contradict the 91.5%-of-coefficients-are-zero figure -- the
+two measure different things, and the gap is worth understanding
+because it is an artifact of Python source text that will not carry to
+C++:
+
+- 91.5% counts *entries*; the file counts *characters*. A dropped zero
+  is `0.0, ` (5 chars); a surviving coefficient is
+  `-319.817453476103, ` (20 chars). So 91.5% of entries is only 73% of
+  the coefficient text: 563,029 -> 152,174 bytes.
+- Per-row storage *duplicates* exponent tuples the dense form shared
+  once per shell: 1,364 tuples (17,764 bytes) -> 7,623 tuples (103,830
+  bytes), adding 86 KB back. Plus ~10 KB of extra per-row list
+  formatting.
+
+In binary every coefficient is 8 bytes whatever its value, so the C++
+footprint tracks the entry count instead: **723 KB dense -> 90 KB
+sparse, 8.0x** (parallel `double coeffs[nnz]` / `int8 exponents[nnz*N]`
+arrays; the shared-exponent + int16-index variant is 81 KB, only 11%
+better, and costs a gather per term). Do not reason about the C++
+footprint from the Python file size.
+
+**Verification.** Bit-for-bit, not approximate: all 89,794 densified
+entries identical to the pre-change table, and `eval_lg_nd`/
+`grad_eval_lg_nd` identical across 1,820 (mode, batch-shape) pairs for
+N=1..4, plus `modes_up_to_level` identical over 220 configurations.
+That criterion earned its keep -- the first attempt differed by 1 ULP
+because the rewrite multiplied `genlaguerre` and the Gaussian
+separately where the original grouped them into a `radial` intermediate
+first. Floating-point association is part of the contract when the
+acceptance test is exactness; the grouping was restored.
+
+**Health of the table, checked while investigating** (all now permanent
+tests): the committed float rows are harmonic to $|\Delta Y|\sim10^{-16}$
+relative, orthonormal on $S^{N-1}$ to $10^{-14}$, and `num_harmonics`
+matches the closed form $\dim\mathcal{H}_\ell = \binom{N+\ell-1}{N-1} -
+\binom{N+\ell-3}{N-1}$ for every shell. Coefficient magnitudes *grow*
+with $\ell$ rather than decaying -- for $N=2$ they are exactly the
+binomial coefficients of $\mathrm{Re}(x+iy)^\ell$ over $\sqrt\pi$
+(max at $\ell=10$: $252/\sqrt\pi = 142.18$) -- which is why there is no
+small-magnitude tail to confuse with the structural zeros.
+
+**The one real numerical caveat** (unchanged by this work, worth
+recording): evaluating a degree-$\ell$ harmonic *in the monomial basis*
+is cancellation-prone, like evaluating Chebyshev polynomials from
+monomial coefficients. Measured on the unit sphere, $\sum|\text{terms}|
+/ |Y|$ reaches ~$3\times10^2$ at $\ell=2$ and ~$6\times10^3$ at
+$\ell=10$: about 2.5 to 3.8 digits, leaving ~12. Fine for this
+application, and the module boundary is where a better-conditioned
+scheme would go if a lower-precision path ever needs one.
+
+**Behavior change:** `modes_up_to_level` used to stop silently at the
+table's edge (`if (N, ell) not in TABLE: break`), quietly returning a
+level-10 mode set for `max_level=15`. It now raises. Safe for every
+built-in policy (all cap at `max_level=10`, and `mode_levels` is
+caller-supplied with no default), but it newly rejects e.g.
+`ShellLadder([15])`.

@@ -69,7 +69,8 @@ Hard rules for every session working on the C++ side:
 | prototype file | header | port notes |
 |---|---|---|
 | generate_lg_harmonics_table.py | (offline codegen, NOT ported) | gains a mode emitting `lg_harmonics_table.hpp` from the same exact-rational source; `%.17g` literals, bit-identical doubles; never hand-translated |
-| lg_harmonics_table.py | lg_harmonics_table.hpp | generated static data (~590 KB Python; similar C++); `HarmonicShell{monos, rows}` keyed by (N, ell) |
+| lg_harmonics_table.py | lg_harmonics_table.hpp | generated static data, SPARSE per-row term lists (see below); ~278 KB Python |
+| harmonic_polynomials.py | harmonic_polynomials.hpp | the ONLY consumer of the table's format, in both languages; eval/grad/terms/`num_harmonics`/`max_degree` |
 | lg_functions.py | lg_functions.hpp | pure recurrences; `std::tgamma` for half-integer gammas; `struct Mode{int p, ell, m;}` |
 | ellipsoid_transform.py | ellipsoid_transform.hpp | `std::optional<VectorXd>` replaces the mu0=None fit-mu/fixed-mu sentinel; N<=4 fixed-size `.inverse()` per design-notes |
 | lg_ellipsoid_feature.py | lg_ellipsoid_feature.hpp | eval/jvp/vjp/jac; jac is the fitting-core interface |
@@ -84,6 +85,41 @@ Hard rules for every session working on the C++ side:
 Not ported: `examples/*.py` plotting/research scripts, MarginGreedy
 (until the novelty-floor iteration un-parks it), the parked docs ideas
 (robust-init portfolio, scheme-C, BLR converter).
+
+### The harmonic table's layout (settled 2026-07-25, prototype-first)
+
+91.5% of the dense coefficients are structurally, exactly zero, so the
+table stores each polynomial as its nonzero terms only -- see
+docs/design-notes.md for the parity-class / Gram-Schmidt-staircase
+argument and the evidence that this is exact rather than a tolerance.
+C++ layout: **nonzero-major, two parallel arrays per shell** --
+`double coeffs[nnz]` and `int8 exponents[nnz * N]`, walked in lockstep,
+one linear pass per polynomial with no indirection. Deliberately NOT
+interleaved into a `{double; int8[N];}` struct: that gives a 12-byte
+stride at N=4 and misaligns every double after the first, for no
+locality gain over the parallel form. Also cheaper than a shared
+exponent block plus an index gather, which is only ~11% smaller
+(81 KB vs 90 KB, measured) and adds a random access per term.
+
+Sizes, table-wide (7,623 nonzero terms): **723 KB dense -> 90 KB
+sparse, 8.0x**. Note this ratio tracks the 91.5%-of-coefficients-are-
+zero figure, while the Python source file only shrank 53% -- decimal
+literals are variable-width (a dropped `0.0` is 5 characters, a
+surviving coefficient 20) and the per-row form duplicates exponent
+tuples that the dense form shared. Neither effect exists in binary:
+every double is 8 bytes regardless of value. Do not use the Python
+file size to reason about the C++ footprint.
+
+Emitted as flat `inline constexpr` blobs plus per-shell offset tables,
+not nested aggregate initializers: a single large initializer of
+scalars is what g++ compiles cheaply, which matters under the
+compile-memory rules above. Shell lookup is `(N-1) * (MAX_ELL+1) + ell`,
+no map.
+
+`harmonic_polynomials.hpp` owns that layout; `lg_functions.hpp` never
+sees it. Port `grad_harmonic` returning `(Y, dY)` from a single pass --
+the LG product rule needs both, and that sharing is what removes the
+duplication the Python refactor removed.
 
 ## The numerics map (what replaces scipy)
 
@@ -164,8 +200,17 @@ the ellipsoid_psf way:
 
 ## Milestones (each a reviewable unit, riskiest early)
 
-- **M0** table codegen + lg_functions.hpp (+ PCH scaffolding). Accept:
-  FD gradient tests pass; generated table byte-stable across reruns.
+- **M0** table codegen + harmonic_polynomials.hpp + lg_functions.hpp
+  (+ PCH scaffolding). Accept: the prototype's intrinsic suites port
+  and pass -- table well-formedness, parity/staircase structure,
+  `dim H_ell` closed form, `Delta Y = 0`, homogeneity, sphere
+  orthonormality, `genlaguerre` vs closed forms, FD gradients, and the
+  keystone **L^2(R^N) orthonormality of the LG modes by tensor-product
+  Gauss-Hermite** (Golub-Welsch nodes from `SelfAdjointEigenSolver` on
+  the Hermite Jacobi matrix; exact to roundoff, so `int psi_i psi_j =
+  delta_ij` is a hard assertion covering table + recurrence +
+  normalization + alpha bookkeeping at once -- 3e-15 in Python).
+  Generated table byte-stable across reruns.
 - **M1** ellipsoid_transform + lg_ellipsoid_feature + whitening.
   Accept: full tier-1 identity suite green in C++.
 - **M2** varpro.hpp incl. the hand-rolled LM. Accept: inner-LA tests

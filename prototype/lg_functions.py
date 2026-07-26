@@ -22,7 +22,9 @@ import math
 
 import numpy as np
 
-from lg_harmonics_table import TABLE
+from harmonic_polynomials import (
+    eval_harmonic, grad_harmonic, max_degree, num_harmonics,
+)
 
 
 def genlaguerre(p, alpha, x):
@@ -93,46 +95,48 @@ def eval_lg(p, ell, u1, u2):
     return norm * radial * angular
 
 
+def lg_norm(p, ell, N):
+    """The combining constant C_{p,ell,N} that makes psi_{p,ell,m}
+    orthonormal in L^2(R^N), given a surface-orthonormal Y_{ell,m}:
+
+        C = sqrt(2 * p! / Gamma(p + alpha + 1)),   alpha = ell + N/2 - 1.
+
+    alpha is an integer or a half-integer, so the gamma is elementary; C++
+    gets it from std::tgamma.
+    """
+    alpha = ell + N / 2.0 - 1.0
+    return math.sqrt(2.0 * math.factorial(p) / math.gamma(p + alpha + 1.0))
+
+
 def eval_lg_nd(p, ell, m, u):
     """Evaluate the real Laguerre-Gaussian mode (p, ell, m) in N dimensions
     at points u, an array of shape (N, *batch_shape) -- N is read off
     u.shape[0], batch_shape can be anything (a flat list of points, a grid,
     even scalar). Returns an array of shape (*batch_shape).
 
-    ell >= 0 is the harmonic-polynomial (angular) degree; m indexes the
-    d_N(ell)-dimensional orthonormal basis of that degree from
-    lg_harmonics_table.TABLE (there is no canonical cos/sin-style labeling
-    once N > 2, m is just an index -- for N == 2 it reproduces eval_lg's
-    ell > 0/ell < 0 branches up to which index is which). N == 1 has no
-    modes for ell >= 2 (see lg_harmonics_table's generator docstring).
+    The mode is the product of the three separable factors
 
-    Orthonormal in L^2(R^N), same convention as eval_lg. Vectorized over
-    the batch only; the loop over the (small, fixed) monomial count is a
-    plain Python loop on purpose -- see docs/design-notes.md.
+        psi = C_{p,ell,N} * Y_{ell,m}(u) * L_p^alpha(r^2) * exp(-r^2/2),
+
+    with alpha = ell + N/2 - 1: the harmonic polynomial (angular part,
+    harmonic_polynomials.py), the generalized-Laguerre radial profile, and
+    the normalization constant.
+
+    ell >= 0 is the harmonic-polynomial (angular) degree; m indexes the
+    orthonormal basis of that degree (there is no canonical cos/sin-style
+    labeling once N > 2, m is just an index -- for N == 2 it reproduces
+    eval_lg's ell > 0/ell < 0 branches up to which index is which). N == 1
+    has no modes for ell >= 2.
+
+    Orthonormal in L^2(R^N), same convention as eval_lg.
     """
     u = np.asarray(u, dtype=float)
     N = u.shape[0]
-    monos, rows = TABLE[(N, ell)]
-    if m >= len(rows):
-        raise ValueError(
-            f"N={N} ell={ell} has {len(rows)} harmonic mode(s); m={m} is out of range"
-        )
-    row = rows[m]
-
-    r2 = np.sum(u * u, axis=0)
-
-    Y = 0.0
-    for mono, coeff in zip(monos, row):
-        term = coeff
-        for k, a in enumerate(mono):
-            term = term * u[k]**a
-        Y = Y + term
-
     alpha = ell + N / 2.0 - 1.0
+    r2 = np.sum(u * u, axis=0)
+    Y = eval_harmonic(ell, m, u)
     radial = genlaguerre(p, alpha, r2) * np.exp(-0.5 * r2)
-    norm = math.sqrt(2.0 * math.factorial(p) / math.gamma(p + alpha + 1.0))
-
-    return norm * Y * radial
+    return lg_norm(p, ell, N) * Y * radial
 
 
 def grad_eval_lg_nd(p, ell, m, u):
@@ -140,57 +144,28 @@ def grad_eval_lg_nd(p, ell, m, u):
 
     u: array of shape (N, *batch_shape), same convention as eval_lg_nd.
     Returns an array of shape (N, *batch_shape) (one gradient component per
-    leading-axis entry, at every point). Product rule on
-    psi = C * Y(u) * L_p^alpha(r^2) * exp(-r^2/2), reusing exactly the
-    pieces eval_lg_nd already has -- no new special-function code:
+    leading-axis entry, at every point). The product rule on
+    psi = C * Y(u) * L(r^2) * exp(-r^2/2) gives
 
-      - dY/du_k is elementary term-by-term monomial calculus over the same
-        coefficient table;
-      - d/dt L_p^alpha(t) = -L_{p-1}^(alpha+1)(t) (the classical Laguerre
-        derivative identity, checked symbolically against the recurrence
-        before use), so the radial derivative is genlaguerre itself at
-        (p-1, alpha+1) -- L_{-1} = 0 by convention, matching L_0 being
-        constant.
+        grad psi = C exp(-r^2/2) [ L grad_Y - u Y (L - 2 L') ],
+
+    using d/dt L_p^alpha(t) = -L_{p-1}^(alpha+1)(t) (the classical Laguerre
+    derivative identity, checked symbolically against the recurrence before
+    use), so the radial derivative is genlaguerre itself at (p-1, alpha+1)
+    -- L_{-1} = 0 by convention, matching L_0 being constant. No new
+    special-function code: grad_harmonic supplies Y and grad_Y from one
+    pass, and both Laguerre values come from the same recurrence.
     """
     u = np.asarray(u, dtype=float)
     N = u.shape[0]
-    monos, rows = TABLE[(N, ell)]
-    if m >= len(rows):
-        raise ValueError(
-            f"N={N} ell={ell} has {len(rows)} harmonic mode(s); m={m} is out of range"
-        )
-    row = rows[m]
-
-    r2 = np.sum(u * u, axis=0)
-
-    Y = 0.0
-    dY = [0.0] * N
-    for mono, coeff in zip(monos, row):
-        term = coeff
-        for k, a in enumerate(mono):
-            term = term * u[k]**a
-        Y = Y + term
-
-        for k in range(N):
-            a_k = mono[k]
-            if a_k == 0:
-                continue
-            dterm = coeff * a_k
-            for j in range(N):
-                power = mono[j] - 1 if j == k else mono[j]
-                if power != 0:
-                    dterm = dterm * u[j] ** power
-            dY[k] = dY[k] + dterm
-
     alpha = ell + N / 2.0 - 1.0
-    R = genlaguerre(p, alpha, r2)
-    dR_dt = -genlaguerre(p - 1, alpha + 1.0, r2) if p >= 1 else 0.0
-    gaussian = np.exp(-0.5 * r2)
-    norm = math.sqrt(2.0 * math.factorial(p) / math.gamma(p + alpha + 1.0))
+    r2 = np.sum(u * u, axis=0)
+    Y, dY = grad_harmonic(ell, m, u)
+    L = genlaguerre(p, alpha, r2)
+    dL_dt = -genlaguerre(p - 1, alpha + 1.0, r2) if p >= 1 else 0.0
 
-    prefactor = norm * gaussian
-    du = [prefactor * (R * dY[k] - u[k] * Y * (R - 2.0 * dR_dt)) for k in range(N)]
-    return np.stack(du, axis=0)
+    prefactor = lg_norm(p, ell, N) * np.exp(-0.5 * r2)
+    return prefactor * (L * dY - u * Y * (L - 2.0 * dL_dt))
 
 
 def modes_up_to_level(N, max_level, ell_max=None):
@@ -200,15 +175,24 @@ def modes_up_to_level(N, max_level, ell_max=None):
     (an ell-capped WEDGE: deep radial, shallow angular -- the PIG
     slice-38 finding is that PSF-like kernels want radial depth, and
     full shells waste budget on high-ell modes). None = no cap
-    (complete shells). Requires the harmonic table to cover (N, ell)
-    for every ell used (generated for N <= 4, level <= 10)."""
+    (complete shells).
+
+    Raises ValueError if the requested angular orders exceed the
+    generated harmonic table (N <= 4, ell <= 10). An earlier version
+    stopped silently at the table's edge, which turned an unsatisfiable
+    request into a quietly truncated mode set.
+    """
     top = max_level if ell_max is None else min(max_level, ell_max)
+    if top > max_degree():
+        raise ValueError(
+            f"modes_up_to_level(N={N}, max_level={max_level}, "
+            f"ell_max={ell_max}) needs harmonics up to ell={top}, but the "
+            f"generated table stops at ell={max_degree()}; lower max_level, "
+            f"set ell_max, or extend the table"
+        )
     modes = []
     for ell in range(top + 1):
-        if (N, ell) not in TABLE:
-            break
-        _, rows = TABLE[(N, ell)]
-        for m in range(len(rows)):
+        for m in range(num_harmonics(N, ell)):
             for p in range((max_level - ell) // 2 + 1):
                 modes.append((p, ell, m))
     return modes

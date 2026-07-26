@@ -24,14 +24,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "prototype"))
+from harmonic_polynomials import max_degree, num_harmonics
 from lg_functions import eval_lg_nd
-from lg_harmonics_table import TABLE
 
 WIDTH = 1.3   # deliberately mismatched vs the LG basis's native width 1
 AMP = 0.3
 FREQ = 1.5
-
-MAX_ELL_AVAILABLE = 10  # matches generate_lg_harmonics_table.py's MAX_ELL
 
 # (max_level, grid half-width, grid points per axis), tuned so the highest
 # mode used still has grid self-norm accurate to ~1e-6 while staying under
@@ -64,13 +62,12 @@ def enumerate_modes_by_level(N, max_level):
                 continue
             if N == 1 and ell >= 2:
                 continue  # analytically zero (S^0 is two points), not a table limit
-            if ell > MAX_ELL_AVAILABLE:
+            if ell > max_degree():
                 raise ValueError(
-                    f"ell={ell} > generated table range ({MAX_ELL_AVAILABLE}); "
+                    f"ell={ell} > generated table range ({max_degree()}); "
                     f"reduce max_level or extend the table"
                 )
-            _, rows = TABLE[(N, ell)]
-            for m in range(len(rows)):
+            for m in range(num_harmonics(N, ell)):
                 modes_this_level.append((p, ell, m))
         if modes_this_level:
             levels.append(modes_this_level)

@@ -29,8 +29,8 @@ non-terminating policies.
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
+from harmonic_polynomials import max_degree, num_harmonics
 from lg_functions import modes_up_to_level
-from lg_harmonics_table import TABLE
 
 MAX_PROPOSALS = 64
 """Engine-side cap on policy proposals per fit (runaway guard)."""
@@ -178,11 +178,12 @@ class WedgeLadder(_SequencePolicy):
 
 def _harmonic_group(N, p, ell):
     """All modes of one (p, ell) group: the harmonic multiplet that
-    always travels together (cos/sin pairs in 2D)."""
-    if (N, ell) not in TABLE:
+    always travels together (cos/sin pairs in 2D). Empty past the
+    generated harmonic table, so policies can walk ell upward without
+    knowing where the table stops."""
+    if ell > max_degree():
         return []
-    _, rows = TABLE[(N, ell)]
-    return [(p, ell, m) for m in range(len(rows))]
+    return [(p, ell, m) for m in range(num_harmonics(N, ell))]
 
 
 class RadialFirstLadder(_SequencePolicy):

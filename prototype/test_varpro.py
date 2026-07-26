@@ -64,7 +64,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import numpy as np
 
 from ellipsoid_transform import theta_size
-from lg_harmonics_table import TABLE
+from harmonic_polynomials import num_harmonics
 from whitening import (
     whiten_extra,
     whitened_eval_feature,
@@ -223,8 +223,7 @@ def _random_theta(N, mu0, rng):
 def _some_modes(N, max_ell=2, max_p=1):
     modes = []
     for ell in range(max_ell + 1):
-        _, rows = TABLE[(N, ell)]
-        for m in range(len(rows)):
+        for m in range(num_harmonics(N, ell)):
             for p in range(max_p + 1):
                 modes.append((p, ell, m))
     return modes

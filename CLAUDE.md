@@ -92,14 +92,32 @@ existing JVP/VJP composes with it for free -- no new derivative math.
 
 1. **`lg_functions.py`** -- pure LG basis math, no ellipsoid/theta.
    `genlaguerre` (3-term recurrence, no scipy -- ports directly to C++,
-   which has no special-function library). `eval_lg` (2D-only reference,
-   matches the original research note's cos/sin convention exactly).
-   `eval_lg_nd`/`grad_eval_lg_nd` (general $N$, using the generated
-   harmonic table).
+   which has no special-function library). `lg_norm` (the combining
+   constant). `eval_lg` (2D-only reference, matches the original
+   research note's cos/sin convention exactly).
+   `eval_lg_nd`/`grad_eval_lg_nd` (general $N$), each a direct statement
+   of $\psi = C\,Y_{\ell,m}(u)\,L_p^\alpha(r^2)e^{-r^2/2}$ and its
+   product rule over (1b)'s harmonic polynomials -- this module knows
+   nothing of the harmonic table. `modes_up_to_level` (raises rather
+   than truncating past the generated table).
+1b. **`harmonic_polynomials.py`** -- the harmonic polynomials
+   $Y_{\ell,m}$ on $\mathbb{R}^N$: `eval_harmonic`, `grad_harmonic`
+   (returns `(Y, dY)` from one pass), `harmonic_terms`,
+   `num_harmonics`, `max_degree`/`max_dimension`. **The only place the
+   generated table's storage format appears** -- the same confinement
+   discipline `whitening.py` applies to the mass matrices, so a change
+   to how the polynomials are represented or evaluated (term ordering,
+   precomputed power tables, a reduced-precision path) is scoped to one
+   file with its own intrinsic test suite.
 2. **`generate_lg_harmonics_table.py`** -> **`lg_harmonics_table.py`** --
    offline generator (exact rational: monomial harmonic projection +
    Gram-Schmidt via Gaussian moments) for the $N$-D harmonic-polynomial
-   table, committed as literal data (~580KB), not computed at runtime.
+   table, committed as literal data (~278KB), not computed at runtime.
+   Each polynomial is stored as its NONZERO terms only: 91.5% of the
+   dense coefficients are exactly zero for structural reasons (exponent
+   parity classes; Gram-Schmidt staircase), the drop test is an exact
+   `Fraction != 0` and never a tolerance, and the change was certified
+   bit-for-bit value-preserving. See `docs/design-notes.md`.
 3. **`ellipsoid_transform.py`** -- the pullback $T(\theta,x)$ and its
    JVP/VJP, built as two composable stages (theta -> (mu, L), then the
    pullback geometry itself) so different theta encodings (`mu0=None` =
@@ -228,7 +246,15 @@ existing JVP/VJP composes with it for free -- no new derivative math.
     `ellipsoid_field` (the (mu, Sigma) stack `EllipsoidTree` consumes
     directly), `qc_map`, `spike_measure`.
 
-Tests mirror this file-by-file (`test_lg_functions.py`,
+Tests mirror this file-by-file (`test_harmonic_polynomials.py`, whose
+checks are all intrinsic -- term-list well-formedness, the parity and
+staircase structure, `num_harmonics` against the closed-form
+$\dim\mathcal{H}_\ell$, $\Delta Y = 0$, homogeneity, and orthonormality
+on $S^{N-1}$ by exact Gaussian moments; `test_lg_functions.py`, whose
+keystone is $\int\psi_i\psi_j = \delta_{ij}$ over $\mathbb{R}^N$ by
+tensor-product Gauss-Hermite -- exact to roundoff, so it pins the
+table, the Laguerre recurrence, the normalization and the
+$\alpha$ bookkeeping at once;
 `test_ellipsoid_transform.py`, `test_lg_ellipsoid_feature.py`,
 `test_whitening.py`, `test_varpro.py` -- the latter's end-to-end check
 recovers a known $(\theta^*, c^*, s^*)$ from perturbed initialization --

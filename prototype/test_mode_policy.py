@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import numpy as np
 
 from lg_functions import modes_up_to_level
-from lg_harmonics_table import TABLE
+from harmonic_polynomials import num_harmonics
 from mode_policy import (
     FixedSet,
     LevelRecord,
@@ -90,8 +90,8 @@ def test_wedge_ladder_sizes_and_ell_cap():
         assert set(a) < set(b)
     # N=3: the ell<=2 wedge counts follow the 3D harmonic table
     seq3 = WedgeLadder(4, 2)._sequence(_ctx(N=3))
-    n_l1 = len(TABLE[(3, 1)][1])
-    n_l2 = len(TABLE[(3, 2)][1])
+    n_l1 = num_harmonics(3, 1)
+    n_l2 = num_harmonics(3, 2)
     # 2p+ell<=4, ell<=2 in 3D: 3 radial + p<=1 at ell=1 and ell=2
     assert len(seq3[-1][1]) == 3 + 2 * n_l1 + 2 * n_l2
 
