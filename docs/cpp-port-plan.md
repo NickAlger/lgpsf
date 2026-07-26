@@ -103,7 +103,7 @@ Hard rules for every session working on the C++ side:
 | ellipsoid_transform.py | ellipsoid_transform.hpp | **DONE (M1).** No `N` parameter and no optional `mu0`: `mu0` is required (the fitting layers already require it), so `N = mu0.size()`, and the sentinel becomes `enum class MuMode {Pinned, Fitted}`. Public `theta` vs internal `theta_hat` -- see design-notes |
 | lg_ellipsoid_feature.py | lg_ellipsoid_feature.hpp | **DONE (M1).** `FeatureAt` + free wrappers; `jac()` is indexed by PARAMETER (num_params of (K, num_modes)), which is how Golub-Pereyra slices it. Does not retain `x` -- the pullback's derivatives need only `u` |
 | whitening.py | whitening.hpp | **DONE (M1).** The ONLY masses layer (invariant preserved). `whitened_basis` became `WhitenedBasis`, a functor with `operator()(theta_hat) -> WhitenedBasisAt` -- a concrete type, not `std::function`, so `varpro.hpp` templates on it |
-| varpro.py | varpro.hpp | BDCSVD inner solve, FWL, Kaufman one-sweep; **the hand-rolled LM lives here** (contract below); options/results as structs |
+| varpro.py | varpro.hpp | **DONE (M2).** BDCSVD inner solve, FWL, Kaufman one-sweep, structs for options/results, `enum class JacobianVariant`. The basis is a TEMPLATE parameter, so there is no indirect call per trial point and Golub-Pereyra availability is a compile-time trait rather than `hasattr`. **The LM lives in `detail/levenberg_marquardt.hpp`**, not here -- it is the one piece with no reference to port, so it is generic and tested in isolation |
 | init_dictionary.py | init_dictionary.hpp | cKDTree k-NN -> ellipsoid_tree KDTree; labelled rungs as `std::pair<std::string, VectorXd>` |
 | probe_moments.py | probe_moments.hpp | trivial |
 | mode_policy.py | mode_policy.hpp | virtual `ModePolicy` base (stateless, per design); fixed policies only -- **MarginGreedy stays Python-side while parked** |
@@ -339,9 +339,22 @@ the ellipsoid_psf way:
   that bug -- so do not weaken it into a derivative check.
 - **M1 (original spec)** ellipsoid_transform + lg_ellipsoid_feature +
   whitening. Accept: full tier-1 identity suite green in C++.
-- **M2** varpro.hpp incl. the hand-rolled LM. Accept: inner-LA tests
-  vs brute-force references; synthetic recovery at tolerance; the
-  max_nfev=1 semantic; sentinel behavior.
+- **M2 -- DONE.** `detail/levenberg_marquardt.hpp`, `varpro.hpp`, and
+  `exceptions.hpp`, with 25 test cases across two test files; the suite
+  is at 74 cases / 98,652 assertions. The LM went first and STANDALONE,
+  so a failure in a fit can be told apart from a failure in a Jacobian.
+  Settled here: the SVD hook step in place of `lmpar` (design-notes,
+  with the MINPACK comparison), and `InfeasibleParameters` as a distinct
+  exception so the core can catch "no basis exists at this point"
+  without swallowing caller errors. Calibration: synthetic recovery
+  converges in 4-5 accepted steps to cost ~1e-30 and |dtheta| ~1e-15,
+  so M3 can hold `probe_fit` to tight recovery tolerances. Two claims
+  were verified by making the tests FAIL: the Golub-Pereyra vs finite
+  differences test does reject Kaufman (all 10 assertions), and the
+  callback contract did need a final call at the returned point.
+- **M2 (original spec)** varpro.hpp incl. the hand-rolled LM. Accept:
+  inner-LA tests vs brute-force references; synthetic recovery at
+  tolerance; the max_nfev=1 semantic; sentinel behavior.
 - **M3** init_dictionary + probe_moments + mode_policy (fixed
   policies) + probe_fit. Accept: contract tests (counting rule, skip,
   tie-break, certificates), equivalence fingerprints, synthetic

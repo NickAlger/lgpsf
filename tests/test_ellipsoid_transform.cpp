@@ -493,15 +493,32 @@ TEST_CASE("malformed inputs are rejected eagerly")
                     std::invalid_argument);
     CHECK_NOTHROW(unpack_theta_hat(theta_hat, mu0, MuMode::Fitted));
 
-    // a Sigma passed where its Cholesky factor belongs
+    // a Sigma passed where its Cholesky factor belongs -- a CALLER error
     Eigen::MatrixXd symmetric(2, 2);
     symmetric << 2.0, 0.5, 0.5, 3.0;
     CHECK_THROWS_AS(make_frame(mu0, symmetric), std::invalid_argument);
 
-    // a non-positive diagonal
+    // A degenerate ellipsoid is a different thing entirely: not a mistake, but
+    // a point in parameter space with no valid basis, which is what an extreme
+    // trial step produces. It gets its own type so the fitting core can catch
+    // it -- and ONLY it -- and score the point as unusable. See exceptions.hpp.
     Eigen::MatrixXd degenerate(2, 2);
     degenerate << 1.0, 0.0, 0.5, 0.0;
-    CHECK_THROWS_AS(make_frame(mu0, degenerate), std::invalid_argument);
+    CHECK_THROWS_AS(make_frame(mu0, degenerate), lgpsf::InfeasibleParameters);
+
+    // and the way a fit actually reaches it: a log-diagonal far enough out for
+    // exp() to underflow, then to overflow
+    Eigen::VectorXd runaway = Eigen::VectorXd::Zero(3);
+    runaway(0) = -800.0;
+    CHECK_THROWS_AS(unpack_theta_hat(runaway, mu0, MuMode::Pinned),
+                    lgpsf::InfeasibleParameters);
+    runaway(0) = 800.0;
+    CHECK_THROWS_AS(unpack_theta_hat(runaway, mu0, MuMode::Pinned),
+                    lgpsf::InfeasibleParameters);
+
+    // but a mis-sized theta_hat at the same call is still a caller error
+    CHECK_THROWS_AS(unpack_theta_hat(Eigen::VectorXd::Zero(4), mu0, MuMode::Pinned),
+                    std::invalid_argument);
 
     // points of the wrong dimension
     const EllipsoidFrame frame = make_frame(mu0, Eigen::MatrixXd::Identity(2, 2));

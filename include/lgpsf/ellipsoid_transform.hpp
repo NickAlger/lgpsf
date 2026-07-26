@@ -68,6 +68,8 @@
 
 #include <Eigen/Dense>
 
+#include "lgpsf/exceptions.hpp"
+
 namespace lgpsf {
 
 /// Whether the ellipsoid center is a fitted parameter or held at the caller's
@@ -149,7 +151,11 @@ inline EllipsoidFrame make_frame( Eigen::VectorXd mu, Eigen::MatrixXd L )
     {
         if ( !(L(i, i) > 0.0) || !std::isfinite(L(i, i)) )
         {
-            throw std::invalid_argument(
+            // InfeasibleParameters, not invalid_argument: this is what an
+            // extreme trial step produces when exp(log-diagonal) overflows or
+            // underflows, and the fitting core scores such a point as unusable
+            // rather than failing. See exceptions.hpp.
+            throw InfeasibleParameters(
                 "lgpsf::make_frame: L's diagonal must be finite and positive; "
                 "entry " + std::to_string(i) + " is " + std::to_string(L(i, i)));
         }

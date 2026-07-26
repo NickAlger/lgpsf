@@ -335,7 +335,7 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
 
 ## Current status / what's not built yet
 
-- **The C++ port: M0 and M1 COMPLETE, M2 next** -- `docs/cpp-port-plan.md`
+- **The C++ port: M0, M1 and M2 COMPLETE, M3 next** -- `docs/cpp-port-plan.md`
   (deps, threading, header-only, bindings, milestones M0-M6, the
   hand-rolled LM contract, and the COMPILE MEMORY SAFETY rules: this
   machine has been OOM-crashed by large `-j` builds -- **read that
@@ -362,8 +362,17 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
   fitting core sees: the center as a DISPLACEMENT from `mu0` when
   fitted, absent when pinned. `mu0` is required everywhere (so `N =
   mu0.size()`; there is no `N` parameter and no optional `mu0`), and
-  the fit/pin switch is `enum class MuMode`. M2 is `varpro.hpp`
-  including the hand-rolled LM.
+  the fit/pin switch is `enum class MuMode`.
+  Shipped in M2: `detail/levenberg_marquardt.hpp` (generic, tested on
+  problems with published answers -- NOT through VarPro), `varpro.hpp`
+  (`fit_varpro`, templated on the basis functor), and `exceptions.hpp`
+  (`InfeasibleParameters`: "no basis exists at this point in parameter
+  space", which the fitting core catches and scores as the worst finite
+  cost -- caller errors stay `std::invalid_argument`). Suite: 74 cases
+  / 98,652 assertions. The LM solves its trust-region subproblem by an
+  SVD hook step rather than MINPACK's `lmpar`; measured against scipy
+  it is marginally faster to converge with identical answers. M3 is
+  `init_dictionary` + `probe_moments` + `mode_policy` + `probe_fit`.
 - A hand-rolled Levenberg-Marquardt loop (port milestone M2): the
   prototype's outer loop delegates to scipy/MINPACK -- the one
   delegated numeric; everything else in `varpro.py` is library-free.

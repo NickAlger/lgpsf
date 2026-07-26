@@ -26,5 +26,6 @@
 #include "lgpsf/harmonic_polynomials.hpp"
 #include "lgpsf/lg_ellipsoid_feature.hpp"
 #include "lgpsf/lg_functions.hpp"
+#include "lgpsf/varpro.hpp"
 #include "lgpsf/whitening.hpp"
 // Further public headers land here as the port proceeds (docs/cpp-port-plan.md).

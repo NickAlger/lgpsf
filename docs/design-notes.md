@@ -839,3 +839,63 @@ two-valued `enum class MuMode` rather than a sentinel smuggled through an
 array slot. `release_mu` and `freeze_mu` survive but lose their `mu0`
 arguments: releasing is "prepend `N` zeros", freezing is "split off the mu
 block".
+
+## The hand-rolled LM: an SVD hook step, not a MINPACK transcription (2026-07-25, C++)
+
+**Decision** (`include/lgpsf/detail/levenberg_marquardt.hpp`, M2). The outer
+loop is the one numeric the prototype delegates, so it is the only piece with
+no reference to port. It reproduces MINPACK's *semantics* -- the trust-region
+update rule and constants, `x_scale='jac'` column scaling with the monotone-max
+update, the exact ftol/xtol/gtol test forms, `factor = 100`, and the
+one-evaluation-returns-x0 rule -- but solves the trust-region subproblem
+differently.
+
+MINPACK's `lmpar` repeatedly QR-factorizes `[J; sqrt(par) D]` inside a root
+find. That machinery exists because MINPACK targets large parameter counts.
+Here `P <= 14` and the residual length is tens, so ONE SVD of the scaled
+Jacobian serves every trial value of the Levenberg parameter: with
+`J D^-1 = U S V^T` and `g = U^T f`,
+
+    p(lambda) = -D^-1 V diag( s_i / (s_i^2 + lambda) ) g,
+    ||D p(lambda)||^2 = sum_i ( s_i g_i / (s_i^2 + lambda) )^2,
+
+so evaluating the constraint at any lambda costs O(P) and its derivative is
+closed-form. Newton on More's nearly-linear `1/||Dp|| - 1/delta`, safeguarded
+by bisection, then lands on the boundary in two or three iterations.
+
+This is the same EXACT subproblem solution lmpar computes, not an
+approximation to it, and rank deficiency needs no special case: zero singular
+values contribute nothing to `p(lambda)` by construction.
+
+**Measured against MINPACK** (scipy `least_squares(method='lm', x_scale='jac')`,
+same problems, same starts):
+
+| | MINPACK | this loop |
+|---|---|---|
+| Rosenbrock, from (-1.2, 1) | 21 evaluations, cost 0 | 17 evaluations, cost 0 |
+| Powell singular, from (3,-1,0,1) | 53 evaluations, cost 2.0e-61 | 51 evaluations, cost 1.3e-58 |
+
+Same regime, marginally fewer evaluations, identical answers. Powell's singular
+function is the one that matters: its Jacobian is singular AT the solution, and
+the minimum-norm Gauss-Newton step walks into that null space cleanly rather
+than damping its way around it.
+
+**Tested in isolation, not through VarPro.** A failure in a fit could otherwise
+not be told apart from a failure in the Jacobian, and the Jacobian is the
+subtler of the two. So the permanent tests use problems whose answers come from
+outside this repository entirely -- a linear least-squares problem whose
+minimizer an independent decomposition supplies (and whose residual is nonzero,
+so the ftol path is exercised), plus the two classical problems above -- and
+the hook step, being the part that is not a transcription, is additionally
+pinned against its own defining conditions: the step lands on the trust-region
+boundary and satisfies `(J^T J + lambda D^2) p = -J^T f` for the lambda
+reported.
+
+**One thing the tests caught.** The claim that "the Jacobian is evaluated once
+per outer iteration, so the callback needs no de-duplication" is true but
+insufficient: the loop can satisfy its convergence test IMMEDIATELY after
+accepting a step and return without ever evaluating the Jacobian there, so the
+final point would never be reported. `fit_varpro` closes the trace explicitly
+at the returned point. The prototype's own de-duplication workaround -- against
+the extra Jacobian evaluations scipy inserts at arbitrary points -- is indeed
+unnecessary here; this is a different gap.
