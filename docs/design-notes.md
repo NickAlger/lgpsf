@@ -1246,31 +1246,71 @@ direction worth recording: the Python measurement said the fit was
 basis-bound, and it still is in C++, but the SHARE went up rather than down
 once numpy's per-call dispatch overhead disappeared.
 
-## Whole-PIG fit in C++: ball and ellipsoid windows are indistinguishable (2026-07-26)
+## Whole-PIG fit in C++: the recorded 0.0147 reproduces exactly (2026-07-26)
 
-Real PIG data, slice38's configuration (6557 nodes, white-500 archive, k=100,
-tau_window=5, levels [0,1,2], mu pinned), scored on the held-out 250..500 pool
-with slice38's metric. Detail in the maintainer-local `dev/pig-cxx-2026-07-26.md`.
+Real PIG data, slice38's protocol verbatim (6557 nodes, white-500 archive,
+k=100 fit probes, held-out pool 250..500, tau_window=5, mu pinned, n_rungs=4,
+window-shape rungs off), scored with slice38's metric. Detail in the
+maintainer-local `dev/pig-cxx-2026-07-26.md`.
 
-| | fit time (4 threads) | mean window | clipped error |
-|---|---|---|---|
-| ball (`window_aspect_cap = 1`) | 152.6 s | 387 | 0.0521 |
-| ellipsoid (`cap = infinity`) | 131.2 s | 318 | 0.0522 |
+**Match the deployment variant before comparing anything.** slice38 reports
+three numbers and its recorded table is the third: `assemble_sparse` at
+`TAU_SPARSE = 6`, clipped to the fit window, then averaged with its transpose.
+An un-symmetrized parametric matvec at `tau = infinity` is a different number
+and was never going to line up.
 
-Accuracy differs by two parts in a thousand; the ellipsoid is 14% faster on 18%
-fewer window points. **On this configuration and this basal-friction state the
-ellipsoid costs nothing and saves time** -- which is the first evidence either
-way since the archaeology. It is one configuration, not a sweep: intermediate
-caps are untried and the rough-beta state is untested.
+| levels | window | parametric (tau=inf) | clipped (tau=6) | +sym |
+|---|---|---|---|---|
+| [0,1,2] | ball | 0.0521 | 0.0523 | 0.0442 |
+| [0,1,2] | ellipsoid | 0.0522 | 0.0524 | 0.0443 |
+| [0..6] | ball | 0.0189 | 0.0189 | **0.0147** |
+| [0..6] | ellipsoid | 0.0191 | 0.0191 | 0.0150 |
+
+**The shells-L6 ball number is 0.0147, the recorded prototype figure to all
+four digits.** The whole C++ stack -- LM, VarPro, mode ladder, baseline guard,
+windows, assembly -- lands on the reference answer at field scale. The tau=6
+clip costs essentially nothing (the window is the binding truncation);
+symmetrization is worth ~15%, matching the recorded "~20%".
+
+**The window question, now with two configurations.** At levels [0,1,2] the two
+are indistinguishable (0.0442 / 0.0443) and the ellipsoid is ~20% faster on 18%
+fewer window points; at levels [0..6] the ball is 2% better (0.0147 / 0.0150)
+and the time advantage is gone (786 s / 777 s), because mode count rather than
+window size then dominates the cost. So neither shape dominates, and the
+cheap-window argument for the ellipsoid weakens exactly where the modes get
+expensive. Still one basal-friction state, and intermediate caps remain untried.
 
 **Faithfulness.** The prototype on the same bytes and configuration agrees per
 row to a median 3.1% relative difference in CV score (worst 11.6%). Not
 bit-identical, and should not be -- the C++ uses deterministic round-robin folds
 where the prototype permutes, so the folds themselves differ, and the counting
-rule was corrected.
+rule was corrected. The global metric agreeing to four digits despite that is
+the stronger statement of the two.
 
-**Not established:** the 0.052 is NOT comparable to the recorded 0.0147, which
-used shells to level 6 rather than slice38's default [0,1,2].
+## Dead rows need no gate in C++ either (2026-07-26)
+
+slice38 ran ungated on the argument that a dead row (response identically zero)
+costs one candidate and ships zeros. Measured on the C++ port, all 1481 dead
+PIG rows: **CV score exactly 0.0, baseline exactly 0.0, all finite, status
+`fallback_baseline`, one mode, zero coefficients, predicted response exactly
+0.0** -- 0 failures. Ungated fitting costs the same as gated (159.9 s vs 162.4 s
+for the whole field), so the gate buys nothing at this scale.
+
+Two things this pins that were previously only argued:
+
+- **Live-row predictions are bit-identical with and without the gate** (max
+  difference exactly 0). Gating is row selection and nothing else: windows come
+  from each row's own ellipsoid, and the CV folds and jitter table are global,
+  so no live row can see which other rows were attempted.
+- Under `Symmetrize::Average` the dead rows do carry values -- the transpose of
+  live rows' columns, 0.13-0.31% of the signal energy -- with or without the
+  gate. That is a symmetrization artifact, not a gating one.
+
+The `fallback_baseline` share is configuration-dependent in a way worth noting:
+61 live rows at levels [0,1,2], but **908 at levels [0..6]**. With 28 modes
+available the searched theta fails to beat the a-priori sigma on ~18% of live
+rows, and the always-on baseline guard is what keeps those rows at the status
+quo instead of worse.
 
 **A bridge bug worth recording**, since anyone moving arrays between numpy and
 Eigen will meet it: `numpy.ndarray.tofile()` always writes C-order and silently

@@ -457,6 +457,16 @@ nothing in the row fitter.
 - **M5** bindings + pyproject + wheels config. Accept: bindings pytest
   (boundary/marshalling, rows-in/rows-out); **the PIG slice-38/39
   replay through the bindings**.
+  - The slice-38 half of that replay is ALREADY DISCHARGED, ahead of the
+    bindings, through a raw-binary bridge (`dev/pig_fit.cpp`): the whole
+    6557-row PIG operator at k=100, shells to level 6, window-clipped and
+    symmetrized, scores **0.0147** -- the recorded prototype figure to all
+    four digits. Dead rows need no gate (score exactly 0, zero
+    coefficients, 0 failures) and gating changes no live row's prediction
+    by a single bit. See `docs/design-notes.md` and the maintainer-local
+    `dev/pig-cxx-2026-07-26.md`. What the bindings still owe M5 is the
+    ergonomics and the marshalling tests, not the numerical result; slice
+    39 (rough beta) is untouched.
 - **M6** infra: CI (g++/clang matrix + sanitizers at -j2 +
   version-consistency + a prototype-tests job), docs generation +
   Doxygen, README/CHANGELOG/CITATION/CONTRIBUTING per the

@@ -434,7 +434,12 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
 PDE-Hessian probe data -- PIG slices 38/39 in the separate
 maintainer-local research repo: it beats the prior psfladder reference
 at every probe budget, at both smooth and rough basal-friction states;
-the in-repo tests remain synthetic by design.)
+the in-repo tests remain synthetic by design. **The C++ port reproduces
+that result**: the whole 6557-row PIG operator at k=100, shells to
+level 6, window-clipped and symmetrized, scores 0.0147 -- the recorded
+prototype figure to all four digits. See `docs/design-notes.md`, and
+note that comparing any PIG number requires matching slice38's
+deployment variant, of which there are three.)
 
 ## Where to look for more
 
