@@ -335,7 +335,7 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
 
 ## Current status / what's not built yet
 
-- **The C++ port: M0-M3 and M4a COMPLETE, M4b next** -- `docs/cpp-port-plan.md`
+- **The C++ port: M0-M4 COMPLETE, M5 next** -- `docs/cpp-port-plan.md`
   (deps, threading, header-only, bindings, milestones M0-M6, the
   hand-rolled LM contract, and the COMPILE MEMORY SAFETY rules: this
   machine has been OOM-crashed by large `-j` builds -- **read that
@@ -386,8 +386,19 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
   as "no `<random>` below `operator_fit.hpp`". Folds default to
   round-robin with no generator at all. See the plan's randomness
   section for what that rests on (probe exchangeability) and when to
-  revisit it. M4 is `operator_fit.hpp` with `parallel_for` over rows
-  and native ellipsoid_tree geometry.
+  revisit it.
+  Shipped in M4: `operator_fit.hpp` -- `fit_operator` + `OperatorFit`
+  (`parallel_for` over rows, always-on baseline guard, CSR fit windows,
+  padded flat arrays) and the component-typed helpers. Suite: 130 cases
+  / 103,693 assertions. **THE WINDOW SHAPE IS ONE CONTINUOUS KNOB**,
+  `window_aspect_cap`: 1 gives an isotropic window (the ball the Python
+  prototype used and every PIG experiment validated), infinity (the
+  DEFAULT) gives the caller's ellipsoid untouched (the original design
+  intent), and values between cap the axis ratio. Which is better is
+  UNSETTLED and is what M5's PIG replay is for -- see
+  `docs/design-notes.md` for the archaeology. All rows' windows come
+  from ONE dual-tree descent. M5 is bindings + the PIG slice-38/39
+  replay.
 - A hand-rolled Levenberg-Marquardt loop (port milestone M2): the
   prototype's outer loop delegates to scipy/MINPACK -- the one
   delegated numeric; everything else in `varpro.py` is library-free.

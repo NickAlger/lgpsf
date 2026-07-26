@@ -26,7 +26,15 @@ using lgpsf::OperatorFitConfig;
 using lgpsf::RowStatus;
 using lgpsf::WhitenedBasis;
 using lgpsf::capped_covariance;
+using lgpsf::assemble_sparse;
+using lgpsf::ellipsoid_field;
+using lgpsf::eval_entries;
+using lgpsf::eval_kernel;
 using lgpsf::fit_operator;
+using lgpsf::matvec;
+using lgpsf::model_rows;
+using lgpsf::qc_map;
+using lgpsf::spike_measure;
 using lgpsf::modes_up_to_level;
 using lgpsf::theta_hat_size;
 using lgpsf::unpack_theta;
@@ -559,4 +567,269 @@ TEST_CASE("malformed inputs are rejected eagerly")
                                  config, std::nullopt,
                                  Eigen::MatrixXd(op.x_cols)),
                     std::invalid_argument);
+}
+
+TEST_CASE("eval_kernel is the raw component; eval_entries is the deployed operator")
+{
+    // The distinction the helper table is built on. eval_kernel is the smooth
+    // kernel at arbitrary points, unrestricted -- component access. Everything
+    // in the dof context is window-restricted, because the deployed object has
+    // to be the object that was scored.
+    std::mt19937 gen(20);
+    const Synthetic op = make_operator(gen, 11, 30, 3);
+    OperatorFitConfig config = config_for(op);
+    config.tau_window = 1.2;  // a window strictly inside the mesh
+    const OperatorFit fit = run(op, config);
+
+    const int rho = model_rows(fit).front();
+    const std::vector<int> window = fit.row_window(rho);
+    REQUIRE(!window.empty());
+    REQUIRE(static_cast<Eigen::Index>(window.size()) < fit.num_cols());
+
+    // find a column outside the window
+    int outside = -1;
+    for ( Eigen::Index j = 0; j < fit.num_cols() && outside < 0; ++j )
+    {
+        if ( !std::binary_search(window.begin(), window.end(), static_cast<int>(j)) )
+        {
+            outside = static_cast<int>(j);
+        }
+    }
+    REQUIRE(outside >= 0);
+
+    // the raw kernel is alive out there...
+    const Eigen::MatrixXd probe = fit.x_cols.row(outside);
+    CHECK(std::abs(eval_kernel(fit, {rho}, probe)(0, 0)) > 0.0);
+    // ...and the deployed operator is exactly zero
+    CHECK(eval_entries(fit, {rho}, {outside})(0) == 0.0);
+
+    // inside the window it is m1 m2 times the kernel, plus the spike on the
+    // diagonal
+    const int inside = window.front();
+    const double kernel =
+        eval_kernel(fit, {rho}, Eigen::MatrixXd(fit.x_cols.row(inside)))(0, 0);
+    double expected = fit.m1_diag(rho) * fit.m2_diag(inside) * kernel;
+    if ( inside == rho )
+    {
+        expected += fit.m1_diag(rho) * fit.s(rho);
+    }
+    CHECK(eval_entries(fit, {rho}, {inside})(0) == doctest::Approx(expected));
+
+    // the spike really is ADDITIVE on top of the unmodified smooth diagonal
+    const double diagonal = eval_entries(fit, {rho}, {rho})(0);
+    const double smooth_diagonal =
+        fit.m1_diag(rho) * fit.m2_diag(rho)
+        * eval_kernel(fit, {rho}, Eigen::MatrixXd(fit.x_cols.row(rho)))(0, 0);
+    CHECK(diagonal - smooth_diagonal
+          == doctest::Approx(fit.m1_diag(rho) * fit.s(rho)));
+
+    // a row with no model contributes nothing
+    int ungated = -1;
+    for ( Eigen::Index r = 0; r < fit.num_rows() && ungated < 0; ++r )
+    {
+        if ( !op.gate[static_cast<std::size_t>(r)] )
+        {
+            ungated = static_cast<int>(r);
+        }
+    }
+    REQUIRE(ungated >= 0);
+    CHECK(eval_entries(fit, {ungated}, {ungated})(0) == 0.0);
+    CHECK_THROWS_AS(eval_kernel(fit, {ungated}, fit.x_cols), std::invalid_argument);
+}
+
+TEST_CASE("matvec agrees with a dense assembly of the deployed operator")
+{
+    // The matrix-free path and the entry-by-entry definition must be the same
+    // operator; matvec touches only the windows, so this also pins the
+    // deployed-support invariant end to end.
+    std::mt19937 gen(21);
+    const Synthetic op = make_operator(gen, 11, 30, 3);
+    OperatorFitConfig config = config_for(op);
+    config.tau_window = 1.2;
+    const OperatorFit fit = run(op, config);
+
+    Eigen::MatrixXd dense =
+        Eigen::MatrixXd::Zero(fit.num_rows(), fit.num_cols());
+    for ( int rho : model_rows(fit) )
+    {
+        std::vector<int> rows_index, cols_index;
+        for ( Eigen::Index j = 0; j < fit.num_cols(); ++j )
+        {
+            rows_index.push_back(rho);
+            cols_index.push_back(static_cast<int>(j));
+        }
+        dense.row(rho) = eval_entries(fit, rows_index, cols_index).transpose();
+    }
+
+    const Eigen::MatrixXd v = test_helpers::randn_points(
+        static_cast<int>(fit.num_cols()), 3, gen);
+    const Eigen::MatrixXd applied = matvec(fit, v);
+    CHECK((applied - dense * v).cwiseAbs().maxCoeff() < 1e-10);
+
+    // rows with no model are exactly zero rows
+    for ( Eigen::Index rho = 0; rho < fit.num_rows(); ++rho )
+    {
+        if ( !op.gate[static_cast<std::size_t>(rho)] )
+        {
+            CHECK(applied.row(rho).cwiseAbs().maxCoeff() == 0.0);
+        }
+    }
+    CHECK_THROWS_AS(matvec(fit, Eigen::MatrixXd::Zero(3, 1)), std::invalid_argument);
+}
+
+TEST_CASE("assemble_sparse decompresses the same operator matvec applies")
+{
+    std::mt19937 gen(22);
+    const Synthetic op = make_operator(gen, 11, 30, 3);
+    OperatorFitConfig config = config_for(op);
+    config.tau_window = 1.2;
+    const OperatorFit fit = run(op, config);
+
+    // A generous tau: the kernel's tau-support then covers each window, so the
+    // pattern IS the window and the assembly must reproduce matvec exactly.
+    const Eigen::SparseMatrix<double> wide = assemble_sparse(fit, 40.0);
+    CHECK(wide.isCompressed());
+    CHECK(wide.rows() == fit.num_rows());
+    CHECK(wide.cols() == fit.num_cols());
+
+    const Eigen::MatrixXd v = test_helpers::randn_points(
+        static_cast<int>(fit.num_cols()), 2, gen);
+    CHECK((wide * v - matvec(fit, v)).cwiseAbs().maxCoeff() < 1e-10);
+
+    // Every stored entry equals the deployed definition, and every one lies in
+    // the row's fit window -- deployed support == fit support.
+    for ( int k = 0; k < wide.outerSize(); ++k )
+    {
+        for ( Eigen::SparseMatrix<double>::InnerIterator it(wide, k); it; ++it )
+        {
+            const int rho = static_cast<int>(it.row());
+            const int column = static_cast<int>(it.col());
+            const std::vector<int> window = fit.row_window(rho);
+            CHECK(std::binary_search(window.begin(), window.end(), column));
+            CHECK(it.value()
+                  == doctest::Approx(eval_entries(fit, {rho}, {column})(0)));
+        }
+    }
+
+    // A tight tau trims the Gaussian tail INSIDE the window, so the pattern
+    // shrinks but never leaves it.
+    const Eigen::SparseMatrix<double> tight = assemble_sparse(fit, 1.0);
+    CHECK(tight.nonZeros() < wide.nonZeros());
+    for ( int k = 0; k < tight.outerSize(); ++k )
+    {
+        for ( Eigen::SparseMatrix<double>::InnerIterator it(tight, k); it; ++it )
+        {
+            const std::vector<int> window = fit.row_window(static_cast<int>(it.row()));
+            CHECK(std::binary_search(window.begin(), window.end(),
+                                     static_cast<int>(it.col())));
+        }
+    }
+    MESSAGE("assemble_sparse nonzeros: tau=1 " << tight.nonZeros() << ", tau=40 "
+                                               << wide.nonZeros() << " of "
+                                               << fit.num_rows() * fit.num_cols());
+    CHECK_THROWS_AS(assemble_sparse(fit, 0.0), std::invalid_argument);
+}
+
+TEST_CASE("symmetrization is an assembly policy applied after the fact")
+{
+    std::mt19937 gen(23);
+    const Synthetic op = make_operator(gen, 11, 30, 3);
+    OperatorFitConfig config = config_for(op);
+    config.tau_window = 1.2;
+    const OperatorFit fit = run(op, config);
+
+    const Eigen::SparseMatrix<double> plain = assemble_sparse(fit, 40.0);
+    const Eigen::SparseMatrix<double> averaged =
+        assemble_sparse(fit, 40.0, lgpsf::Symmetrize::Average);
+    CHECK(averaged.isCompressed());
+
+    // row fits do not produce a symmetric operator...
+    const Eigen::MatrixXd plain_dense = Eigen::MatrixXd(plain);
+    CHECK((plain_dense - plain_dense.transpose()).cwiseAbs().maxCoeff() > 1e-8);
+    // ...and averaging is exactly (A + A^T)/2
+    const Eigen::MatrixXd averaged_dense = Eigen::MatrixXd(averaged);
+    CHECK((averaged_dense - averaged_dense.transpose()).cwiseAbs().maxCoeff() < 1e-12);
+    CHECK((averaged_dense - 0.5 * (plain_dense + plain_dense.transpose()))
+              .cwiseAbs().maxCoeff() < 1e-12);
+}
+
+TEST_CASE("the ellipsoid field, the quality map and the spike measure")
+{
+    std::mt19937 gen(24);
+    const Synthetic op = make_operator(gen, 11, 30, 3);
+    const OperatorFit fit = run(op, config_for(op));
+
+    // Sigma = L L^T, row by row
+    const lgpsf::EllipsoidField field = ellipsoid_field(fit);
+    CHECK(field.mu.rows() == fit.num_rows());
+    for ( int rho : model_rows(fit) )
+    {
+        Eigen::MatrixXd L(2, 2);
+        for ( int i = 0; i < 2; ++i )
+        {
+            for ( int j = 0; j < 2; ++j )
+            {
+                L(i, j) = fit.L(rho, i * 2 + j);
+            }
+        }
+        CHECK((field.sigma[static_cast<std::size_t>(rho)] - L * L.transpose())
+                  .cwiseAbs().maxCoeff() < 1e-12);
+        CHECK((field.mu.row(rho) - fit.mu.row(rho)).cwiseAbs().maxCoeff() == 0.0);
+    }
+
+    // the quality map is the relative residual against held-out probes
+    std::mt19937 held(99);
+    const Eigen::MatrixXd V_qc =
+        test_helpers::randn_points(static_cast<int>(fit.num_cols()), 8, held);
+    Eigen::MatrixXd HV_qc = Eigen::MatrixXd::Zero(fit.num_rows(), 8);
+    for ( int rho : model_rows(fit) )
+    {
+        // the true operator row, from the synthetic construction
+        const Eigen::VectorXd center = op.x_cols.row(rho).transpose();
+        const WhitenedBasis basis(op.x_cols, op.m1(rho), op.m2, op.modes, center,
+                                  MuMode::Pinned);
+        const Eigen::VectorXd phi =
+            basis(op.theta_hat_true[static_cast<std::size_t>(rho)]).values()
+            * op.c_true[static_cast<std::size_t>(rho)];
+        Eigen::VectorXd h_row(op.x_cols.rows());
+        for ( Eigen::Index j = 0; j < op.x_cols.rows(); ++j )
+        {
+            h_row(j) = std::sqrt(op.m1(rho)) * std::sqrt(op.m2(j)) * phi(j);
+        }
+        h_row(rho) += op.m1(rho) * op.s_true(rho);
+        HV_qc.row(rho) = h_row.transpose() * V_qc;
+    }
+
+    const Eigen::VectorXd quality = qc_map(fit, V_qc, HV_qc);
+    double worst = 0.0;
+    for ( Eigen::Index rho = 0; rho < fit.num_rows(); ++rho )
+    {
+        if ( op.gate[static_cast<std::size_t>(rho)] )
+        {
+            CHECK(std::isfinite(quality(rho)));
+            worst = std::max(worst, quality(rho));
+        }
+        else
+        {
+            CHECK(std::isnan(quality(rho)));  // no model, no score
+        }
+    }
+    MESSAGE("qc_map worst relative residual on held-out probes: " << worst);
+    CHECK(worst < 1e-3);
+
+    // and it agrees with computing the same thing by hand
+    const Eigen::MatrixXd predicted = matvec(fit, V_qc);
+    for ( int rho : model_rows(fit) )
+    {
+        CHECK(quality(rho)
+              == doctest::Approx((predicted.row(rho) - HV_qc.row(rho)).norm()
+                                 / HV_qc.row(rho).norm()));
+    }
+
+    // the Dirac mass field
+    const Eigen::VectorXd measure = spike_measure(fit);
+    for ( int rho : model_rows(fit) )
+    {
+        CHECK(measure(rho) == doctest::Approx(fit.m1_diag(rho) * fit.s(rho)));
+    }
 }

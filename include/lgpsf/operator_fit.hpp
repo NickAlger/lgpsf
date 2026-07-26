@@ -91,6 +91,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <tuple>
@@ -100,12 +101,14 @@
 #include <vector>
 
 #include <Eigen/Dense>
+#include <Eigen/Sparse>
 #include <ellipsoid_tree/detail/parallel_for.hpp>
 #include <ellipsoid_tree/geometry.hpp>
 #include <ellipsoid_tree/object_tree.hpp>
 
 #include "lgpsf/ellipsoid_transform.hpp"
 #include "lgpsf/init_dictionary.hpp"
+#include "lgpsf/lg_ellipsoid_feature.hpp"
 #include "lgpsf/mode_policy.hpp"
 #include "lgpsf/probe_fit.hpp"
 #include "lgpsf/whitening.hpp"
@@ -778,6 +781,346 @@ inline OperatorFit fit_operator(
         }
     }
     return fit;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers, each typed to the component(s) it touches.
+//
+// DEPLOYED SUPPORT == FIT WINDOW. Every dof-context helper below restricts row
+// rho to `fit.row_window(rho)` and is zero outside it. Windowed
+// cross-validation is blind to out-of-window model energy, and
+// polynomial-times-Gaussian modes extrapolate violently past the data, so the
+// object that was scored and the object that ships have to be the same one.
+// `eval_kernel` is the exception by design: it is component access to the raw
+// smooth kernel at arbitrary points, not the deployed operator.
+// ---------------------------------------------------------------------------
+
+/// Rows carrying a shipped model.
+inline std::vector<int> model_rows( const OperatorFit& fit )
+{
+    std::vector<int> rows;
+    for ( std::size_t rho = 0; rho < fit.status.size(); ++rho )
+    {
+        if ( fit.status[rho] == RowStatus::Fit
+             || fit.status[rho] == RowStatus::FallbackBaseline )
+        {
+            rows.push_back(static_cast<int>(rho));
+        }
+    }
+    return rows;
+}
+
+/// [smooth] Phi~(rho, x) at arbitrary query points: rectangular by nature, no
+/// masses, no spike, no window restriction.
+///
+/// `x_query` is (Q, N); the result is (Q, rows.size()), one column per
+/// requested row. Throws for a row with no shipped model.
+inline Eigen::MatrixXd eval_kernel( const OperatorFit& fit,
+                                    const std::vector<int>& rows,
+                                    const Eigen::Ref<const Eigen::MatrixXd>& x_query )
+{
+    Eigen::MatrixXd out(x_query.rows(), static_cast<Eigen::Index>(rows.size()));
+    for ( std::size_t i = 0; i < rows.size(); ++i )
+    {
+        const int rho = rows[i];
+        const std::vector<Mode>& modes = fit.row_modes(rho);
+        // The stored theta is the public absolute encoding, so splitting off
+        // its center gives exactly the pinned pair the feature layer wants.
+        const std::pair<Eigen::VectorXd, Eigen::VectorXd> split =
+            freeze_mu(fit.theta.row(rho).transpose());
+        const Eigen::VectorXd coefficients =
+            fit.c.row(rho).head(static_cast<Eigen::Index>(modes.size())).transpose();
+        out.col(static_cast<Eigen::Index>(i)) =
+            eval_feature(split.first, x_query, modes, split.second, MuMode::Pinned)
+            * coefficients;
+    }
+    return out;
+}
+
+namespace detail {
+
+/// Is `column` in this row's (sorted) window?
+inline bool in_window( const OperatorFit& fit, int rho, int column )
+{
+    const auto begin = fit.window_indices.begin() + fit.window_indptr[static_cast<std::size_t>(rho)];
+    const auto end = fit.window_indices.begin() + fit.window_indptr[static_cast<std::size_t>(rho) + 1];
+    return std::binary_search(begin, end, column);
+}
+
+/// The deployed smooth row on a given set of columns:
+/// m1[rho] * m2[j] * Phi~(rho, x_j). No window restriction and no spike --
+/// callers apply those.
+inline Eigen::VectorXd deployed_smooth( const OperatorFit& fit, int rho,
+                                        const std::vector<int>& columns )
+{
+    Eigen::MatrixXd points(static_cast<Eigen::Index>(columns.size()), fit.dim);
+    for ( std::size_t i = 0; i < columns.size(); ++i )
+    {
+        points.row(static_cast<Eigen::Index>(i)) = fit.x_cols.row(columns[i]);
+    }
+    Eigen::VectorXd values = eval_kernel(fit, {rho}, points).col(0);
+    for ( std::size_t i = 0; i < columns.size(); ++i )
+    {
+        values(static_cast<Eigen::Index>(i)) *=
+            fit.m1_diag(rho) * fit.m2_diag(columns[i]);
+    }
+    return values;
+}
+
+} // end namespace detail
+
+/// [both] Paired entries of the DEPLOYED operator in the dof context.
+///
+/// `H~[rho, j] = m1[rho] m2[j] Phi~(rho, x_j)` for j in row rho's fit window
+/// and zero outside it, plus `m1[rho] s[rho]` when `j == rho` (the spike dof,
+/// square context only). `rows` and `cols` are equal-length index arrays;
+/// the result holds their values. Rows with no model give zero.
+inline Eigen::VectorXd eval_entries( const OperatorFit& fit,
+                                     const std::vector<int>& rows,
+                                     const std::vector<int>& cols )
+{
+    if ( rows.size() != cols.size() )
+    {
+        throw std::invalid_argument(
+            "lgpsf::eval_entries: rows and cols must have the same length");
+    }
+    Eigen::VectorXd out = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(rows.size()));
+
+    std::map<int, std::vector<std::size_t>> by_row;
+    for ( std::size_t i = 0; i < rows.size(); ++i )
+    {
+        by_row[rows[i]].push_back(i);
+    }
+    for ( const auto& entry : by_row )
+    {
+        const int rho = entry.first;
+        if ( fit.mode_set_id[static_cast<std::size_t>(rho)] < 0 )
+        {
+            continue;  // no shipped model: the row is zero
+        }
+        std::vector<int> columns;
+        for ( std::size_t i : entry.second )
+        {
+            columns.push_back(cols[i]);
+        }
+        const Eigen::VectorXd values = detail::deployed_smooth(fit, rho, columns);
+        for ( std::size_t k = 0; k < entry.second.size(); ++k )
+        {
+            const std::size_t slot = entry.second[k];
+            double value = detail::in_window(fit, rho, cols[slot])
+                               ? values(static_cast<Eigen::Index>(k))
+                               : 0.0;
+            if ( fit.spike && cols[slot] == rho )
+            {
+                value += fit.m1_diag(rho) * fit.s(rho);
+            }
+            out(static_cast<Eigen::Index>(slot)) = value;
+        }
+    }
+    return out;
+}
+
+/// [both] The DEPLOYED operator applied to `v`, with zero assembly.
+///
+/// Each row's kernel is evaluated on its FIT WINDOW only, which is both the
+/// deployed-support invariant and the fast path -- O(sum of window sizes)
+/// rather than O(R K). `v` is (K_all, q); rows with no model give zero rows.
+inline Eigen::MatrixXd matvec( const OperatorFit& fit,
+                               const Eigen::Ref<const Eigen::MatrixXd>& v )
+{
+    if ( v.rows() != fit.num_cols() )
+    {
+        throw std::invalid_argument(
+            "lgpsf::matvec: v has " + std::to_string(v.rows()) + " rows but the "
+            "operator has " + std::to_string(fit.num_cols()) + " columns");
+    }
+    Eigen::MatrixXd out = Eigen::MatrixXd::Zero(fit.num_rows(), v.cols());
+    for ( int rho : model_rows(fit) )
+    {
+        const std::vector<int> window = fit.row_window(rho);
+        if ( window.empty() )
+        {
+            continue;
+        }
+        const Eigen::VectorXd weights = detail::deployed_smooth(fit, rho, window);
+        for ( std::size_t i = 0; i < window.size(); ++i )
+        {
+            out.row(rho) +=
+                weights(static_cast<Eigen::Index>(i)) * v.row(window[i]);
+        }
+        if ( fit.spike )
+        {
+            out.row(rho) += fit.m1_diag(rho) * fit.s(rho) * v.row(rho);
+        }
+    }
+    return out;
+}
+
+/// The fitted ellipsoids, as the operator layer's geometry summary.
+struct EllipsoidField
+{
+    Eigen::MatrixXd mu;                   ///< (R_all, N); NaN where no model
+    std::vector<Eigen::MatrixXd> sigma;   ///< R_all covariances L L^T
+};
+
+/// [smooth] The fitted (mu, Sigma) field -- what `ellipsoid_tree` consumes.
+inline EllipsoidField ellipsoid_field( const OperatorFit& fit )
+{
+    EllipsoidField field;
+    field.mu = fit.mu;
+    field.sigma.reserve(static_cast<std::size_t>(fit.num_rows()));
+    for ( Eigen::Index rho = 0; rho < fit.num_rows(); ++rho )
+    {
+        Eigen::MatrixXd L(fit.dim, fit.dim);
+        for ( int i = 0; i < fit.dim; ++i )
+        {
+            for ( int j = 0; j < fit.dim; ++j )
+            {
+                L(i, j) = fit.L(rho, i * fit.dim + j);
+            }
+        }
+        field.sigma.push_back(L * L.transpose());
+    }
+    return field;
+}
+
+/// What, if anything, `assemble_sparse` does about symmetry.
+///
+/// An ASSEMBLY POLICY, not a fit property: row fits do not produce a symmetric
+/// operator, and rows-as-is versus averaging versus column-consistent
+/// reconciliation are consumer decisions with consumer-specific right answers.
+enum class Symmetrize
+{
+    None,    ///< Rows exactly as fitted.
+    Average  ///< (A + A^T) / 2; square dof context only.
+};
+
+/// [both] Sparse decompression of the DEPLOYED operator.
+///
+/// Per modeled row: smooth entries on the tau-ellipsoid support of the FITTED
+/// kernel, INTERSECTED with that row's fit window -- deployed support == fit
+/// support, so the tau truncation only trims the Gaussian tail inside the
+/// window it was scored on -- plus the additive spike on the diagonal.
+///
+/// The support pattern for every row comes from ONE dual-tree descent of the
+/// column-point tree against the fitted-ellipsoid tree, the same machinery
+/// `fit_operator` uses to derive the windows themselves.
+inline Eigen::SparseMatrix<double> assemble_sparse(
+    const OperatorFit& fit, double tau, Symmetrize symmetrize = Symmetrize::None )
+{
+    if ( !(tau > 0.0) )
+    {
+        throw std::invalid_argument(
+            "lgpsf::assemble_sparse: tau must be positive, got " + std::to_string(tau));
+    }
+    if ( symmetrize == Symmetrize::Average
+         && (fit.x_rows || fit.num_rows() != fit.num_cols()) )
+    {
+        throw std::invalid_argument(
+            "lgpsf::assemble_sparse: averaging needs the square dof context");
+    }
+
+    Eigen::SparseMatrix<double> assembled(fit.num_rows(), fit.num_cols());
+    const std::vector<int> rows = model_rows(fit);
+    if ( rows.empty() )
+    {
+        assembled.makeCompressed();
+        return assembled;
+    }
+
+    const EllipsoidField field = ellipsoid_field(fit);
+    std::vector<ellipsoid_tree::Ellipsoid> kernels;
+    kernels.reserve(rows.size());
+    for ( int rho : rows )
+    {
+        kernels.push_back(ellipsoid_tree::Ellipsoid{
+            field.mu.row(rho).transpose(), field.sigma[static_cast<std::size_t>(rho)]});
+    }
+    const ellipsoid_tree::EllipsoidTree kernel_tree(std::move(kernels), tau);
+
+    std::vector<ellipsoid_tree::Ball> points;
+    points.reserve(static_cast<std::size_t>(fit.num_cols()));
+    for ( Eigen::Index j = 0; j < fit.num_cols(); ++j )
+    {
+        points.push_back(ellipsoid_tree::Ball{fit.x_cols.row(j).transpose(), 0.0});
+    }
+    const ellipsoid_tree::BallTree column_tree(std::move(points));
+
+    std::vector<std::vector<int>> support(rows.size());
+    for ( const std::pair<int, int>& hit :
+          ellipsoid_tree::collision_pairs(column_tree, kernel_tree) )
+    {
+        support[static_cast<std::size_t>(hit.second)].push_back(hit.first);
+    }
+
+    std::vector<Eigen::Triplet<double>> triplets;
+    for ( std::size_t e = 0; e < rows.size(); ++e )
+    {
+        const int rho = rows[e];
+        std::vector<int>& columns = support[e];
+        std::sort(columns.begin(), columns.end());
+
+        const std::vector<int> window = fit.row_window(rho);
+        std::vector<int> deployed;
+        std::set_intersection(columns.begin(), columns.end(), window.begin(),
+                              window.end(), std::back_inserter(deployed));
+
+        if ( !deployed.empty() )
+        {
+            const Eigen::VectorXd values = detail::deployed_smooth(fit, rho, deployed);
+            for ( std::size_t i = 0; i < deployed.size(); ++i )
+            {
+                triplets.emplace_back(rho, deployed[i],
+                                      values(static_cast<Eigen::Index>(i)));
+            }
+        }
+        if ( fit.spike )
+        {
+            // Additive on top of the unmodified smooth part at the diagonal;
+            // duplicate triplets sum, which is exactly that convention.
+            triplets.emplace_back(rho, rho, fit.m1_diag(rho) * fit.s(rho));
+        }
+    }
+
+    assembled.setFromTriplets(triplets.begin(), triplets.end());
+    if ( symmetrize == Symmetrize::Average )
+    {
+        assembled = 0.5 * (Eigen::SparseMatrix<double>(assembled)
+                           + Eigen::SparseMatrix<double>(assembled.transpose()));
+    }
+    assembled.makeCompressed();
+    return assembled;
+}
+
+/// [both] Per-row relative residual against held-out probes -- the scorecard.
+///
+/// `||H~[rho] V_qc - HV_qc[rho]|| / ||HV_qc[rho]||`, NaN for rows with no model.
+inline Eigen::VectorXd qc_map( const OperatorFit& fit,
+                               const Eigen::Ref<const Eigen::MatrixXd>& V_qc,
+                               const Eigen::Ref<const Eigen::MatrixXd>& HV_qc )
+{
+    if ( HV_qc.rows() != fit.num_rows() || HV_qc.cols() != V_qc.cols() )
+    {
+        throw std::invalid_argument(
+            "lgpsf::qc_map: HV_qc must be (num_rows, num_probes) to match V_qc");
+    }
+    const Eigen::MatrixXd predicted = matvec(fit, V_qc);
+    Eigen::VectorXd out = Eigen::VectorXd::Constant(
+        fit.num_rows(), std::numeric_limits<double>::quiet_NaN());
+    for ( int rho : model_rows(fit) )
+    {
+        const double scale = std::max(HV_qc.row(rho).norm(), 1e-300);
+        out(rho) = (predicted.row(rho) - HV_qc.row(rho)).norm() / scale;
+    }
+    return out;
+}
+
+/// [spike] The Dirac mass field `m_rho * s_rho` -- the mesh-independent
+/// content of the S component. A map of it is a resolution diagnostic: where
+/// it is large, the mesh is starving.
+inline Eigen::VectorXd spike_measure( const OperatorFit& fit )
+{
+    return fit.m1_diag.cwiseProduct(fit.s);
 }
 
 } // end namespace lgpsf

@@ -1,6 +1,6 @@
 # C++17/Eigen port plan -- agreed design
 
-**Status: IN PROGRESS -- M0 through M4a complete, M4b next.** The
+**Status: IN PROGRESS -- M0 through M4 complete, M5 next.** The
 prototype is FROZEN as of `e5c36c9` (2026-07-25); see `prototype/README.md`
 for what it is now for and where the C++ deliberately differs from it.
 
@@ -236,8 +236,8 @@ constructor argument.
   (point-major), which is the opposite of lgpsf's coordinate-major
   convention. M4 transposes the mesh coordinates once when building the
   trees -- once per operator fit, not per row.
-- `scipy.sparse` -> plain CSR triplet arrays (match OperatorFit's
-  flat-array style) or `Eigen::SparseMatrix` -- decide at M4; the
+- `scipy.sparse` -> **`Eigen::SparseMatrix<double>`, compressed**
+  (decided at M4); the
   deployed-support invariant (window-clipped helpers) ports verbatim.
 - `scipy.optimize.least_squares(method="lm")` -> **the hand-rolled
   LM**, the one genuinely new piece.
@@ -433,13 +433,18 @@ nothing in the row fitter.
   counting rule counting the parameters actually fit. Calibration: an
   M1 != M2 synthetic operator recovers coefficients to 6.8e-8 and spikes
   to 2.6e-8, and results are bit-identical across num_threads in {1, 4}.
-- **M4b -- REMAINING.** The component-typed helpers: `eval_kernel`,
-  `eval_entries`, `matvec`, `assemble_sparse`, `ellipsoid_field`,
-  `qc_map`, `spike_measure`, all under deployed-support == fit-window.
-  `assemble_sparse` reuses the `collision_pairs` descent over the FITTED
-  ellipsoids, intersected with the windows. **Undecided:** its return
-  type, `Eigen::SparseMatrix` vs CSR triplet arrays (see the numerics
-  map, which defers this to M4).
+- **M4b -- DONE. M4 COMPLETE.** The component-typed helpers:
+  `model_rows`, `eval_kernel`, `eval_entries`, `matvec`,
+  `ellipsoid_field`, `assemble_sparse`, `qc_map`, `spike_measure`, all
+  under deployed-support == fit-window. `assemble_sparse` reuses the
+  `collision_pairs` descent over the FITTED ellipsoids at `tau`,
+  intersected with the windows, and returns a compressed
+  `Eigen::SparseMatrix<double>` (Nick's call; `Symmetrize::Average` is
+  an assembly policy applied after the fact). `to_linear_operator` is
+  NOT ported -- it was a scipy binding convenience. 5 test cases; the
+  suite is at 130 cases / 103,693 assertions. Calibration for M5: the
+  assembled operator reproduces a held-out probe response to **1.4e-8**
+  relative on the synthetic M1 != M2 problem.
 - **M4 (original spec)** operator_fit with parallel_for + native
   ellipsoid_tree. Accept: M1!=M2 synthetic operator suite;
   deployed-support invariant; bit-identical results across num_threads
