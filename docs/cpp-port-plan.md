@@ -1,6 +1,9 @@
 # C++17/Eigen port plan -- agreed design
 
-**Status: IN PROGRESS -- M0 through M4 complete, M5 next.** The
+**Status: IN PROGRESS -- M0 through M4 complete, M5 next.** The operator
+layer was restructured after M4 landed: the data structure (`LGOperator`,
+`lg_operator.hpp`) is now separate from the fitting that produces it
+(`operator_fit.hpp`), and depends on none of the fitting stack. The
 prototype is FROZEN as of `e5c36c9` (2026-07-25); see `prototype/README.md`
 for what it is now for and where the C++ deliberately differs from it.
 
