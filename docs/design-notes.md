@@ -1267,7 +1267,10 @@ and was never going to line up.
 | [0..6] | ellipsoid | 0.0191 | 0.0191 | 0.0150 |
 
 **The shells-L6 ball number is 0.0147, the recorded prototype figure to all
-four digits.** The whole C++ stack -- LM, VarPro, mode ladder, baseline guard,
+four digits** -- and 0.0189 clipped, also matching, once the saved prototype
+fit is re-scored (see the probe-budget section below; the k=100 npz stores no
+clipped field, so the research README's figure had to be recomputed rather than
+read back). The whole C++ stack -- LM, VarPro, mode ladder, baseline guard,
 windows, assembly -- lands on the reference answer at field scale. The tau=6
 clip costs essentially nothing (the window is the binding truncation);
 symmetrization is worth ~15%, matching the recorded "~20%".
@@ -1286,6 +1289,65 @@ bit-identical, and should not be -- the C++ uses deterministic round-robin folds
 where the prototype permutes, so the folds themselves differ, and the counting
 rule was corrected. The global metric agreeing to four digits despite that is
 the stronger statement of the two.
+
+## The probe-budget sweep: where the counting-rule fix is worth 16% (2026-07-26)
+
+Same protocol at k = 20, 40, 100, ball window, shells to level 6, ungated,
+scored +sym. The prototype column is not the research README: it is the SAVED
+prototype fits re-scored by `dev/pig_rescore_prototype.py`, which reproduces
+the recorded `test_err_clip`/`test_err_clip_sym` for k=20 and k=40 to four
+digits and therefore also supplies k=100, whose npz predates the
+window-clipping code and stores no such field.
+
+| k | prototype +sym | C++ +sym | prototype fit time | C++ fit time |
+|---|---|---|---|---|
+| 20 | 0.0608 | 0.0603 | 471.7 s (6 proc) | 42.5 s (4 thr) |
+| 40 | 0.0320 | **0.0269** | 1315.9 s | 185.3 s |
+| 100 | 0.0147 | 0.0147 | 3478.7 s | 785.9 s |
+
+**The C++ is 16% better at k=40, and identical at k=100.** That pattern is not
+noise -- it is the counting-rule fix, and it is fully explained by which mode
+sets the BASELINE GUARD is allowed to use.
+
+The baseline is a linear fit at a PINNED theta, so its admissibility should
+count the pinned parameter size. The prototype counted the free-mu size
+(`P_fix = N + N(N-1)/2 + N`, i.e. 5 in 2D, the bug this port corrected); the
+C++ counts `theta_hat_size(dim, Pinned)`, i.e. 3. Under `k >= 2(m + extra + P)`
+that moves the cap on the baseline's mode count:
+
+| k | prototype baseline cap | C++ baseline cap |
+|---|---|---|
+| 20 | 3 modes | 6 modes |
+| 40 | 10 modes | 15 modes |
+| 100 | 28 modes (ladder top) | 28 modes (ladder top) |
+
+- **k=100: the caps coincide**, both saturate the level-6 ladder, and the two
+  implementations agree to four digits on both deployment variants (0.0189
+  clipped, 0.0147 +sym) with 4168 vs 4187 searched fits shipping. The exact
+  match is not luck; it is the budget at which the deliberate divergences have
+  nothing left to bite on.
+- **k=40: the largest cap gap**, and the largest win. A 15-mode baseline beats
+  the searched fit on 617 live rows where the 10-mode one managed 192 -- so the
+  guard ships the a-priori sigma three times as often, and the result improves
+  by 16%. Worth sitting with: the searched fit "winning" less often is what
+  made the operator better, which is the windowed-CV optimism already on record
+  from the released-mu finding, caught here by a stronger status quo.
+- **k=20: the caps differ but the baseline barely ships** (51 rows vs 11), so
+  the effect is 0.8%.
+
+So the fix is not cosmetic, and its value is concentrated at intermediate
+probe budgets -- exactly where a too-strict baseline cap leaves accuracy on the
+table without the ladder's top rung being reachable to compensate.
+
+(Timing is 6 worker processes against 4 threads, so the per-worker ratio is
+~11x / ~7x / ~4.4x rather than the raw column ratio, and the prototype runs
+may not have been on this machine. The direction is safe, the constant is not.)
+
+**A trap in reading the saved fits:** slice38's `modes_tab` is a
+`(num_sets, max_modes, 3)` array PADDED WITH -1, so `len(tab[i])` is the
+padding width for every set, not that set's mode count -- which reads as "every
+row used the same number of modes" and hides exactly the effect above. Count
+`(tab[i][:, 0] >= 0).sum()`.
 
 ## Dead rows need no gate in C++ either (2026-07-26)
 

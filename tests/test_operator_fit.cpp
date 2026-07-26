@@ -307,6 +307,85 @@ TEST_CASE("the baseline guard means a shipped row is never worse than the prior"
     CHECK(searched > 0);
 }
 
+TEST_CASE("dead rows need no gate, and gating changes no other row")
+{
+    // `make_operator` builds the response for a few chosen rows and leaves
+    // every other row of HV identically zero, so dropping its gate turns the
+    // same problem into a field of live rows surrounded by DEAD ones -- which
+    // is the PIG situation (1481 of 6557 rows) in miniature.
+    //
+    // Two claims, and the second is the one worth a test: a dead row costs one
+    // candidate and ships zeros rather than failing, AND attempting it changes
+    // nothing about any live row. The second holds because a row is fitted
+    // only from its own window and its own data, while the CV folds and the
+    // jitter table are global -- so no row can observe which others were
+    // attempted. That is structural, and this pins it.
+    std::mt19937 gen(5);
+    const Synthetic op = make_operator(gen);
+    const OperatorFitConfig config = config_for(op);
+
+    const OperatorFit gated = run(op, config);
+    const OperatorFit ungated = fit_operator(op.x_cols, op.m1, op.m2, op.V,
+                                             op.HV, op.sigma, config);
+
+    CHECK(ungated.diagnostics.failures.empty());
+    REQUIRE(ungated.model.num_rows() == gated.model.num_rows());
+    // NOTE: the full theta/mu arrays are NOT equal, and should not be -- the
+    // gated fit NaN-pads its dead rows while the ungated one gives them a
+    // model. The claim is per LIVE row.
+
+    int live = 0, dead = 0;
+    for ( Eigen::Index rho = 0; rho < ungated.model.num_rows(); ++rho )
+    {
+        const std::size_t r = static_cast<std::size_t>(rho);
+        if ( op.gate[r] )
+        {
+            // live: bit-identical, not merely close
+            ++live;
+            CHECK(ungated.diagnostics.status[r] == gated.diagnostics.status[r]);
+            CHECK(ungated.diagnostics.score(rho) == gated.diagnostics.score(rho));
+            CHECK(ungated.model.s(rho) == gated.model.s(rho));
+            CHECK(same(ungated.model.theta.row(rho), gated.model.theta.row(rho)));
+            CHECK(same(ungated.model.mu.row(rho), gated.model.mu.row(rho)));
+            CHECK(same(ungated.model.L.row(rho), gated.model.L.row(rho)));
+            const std::vector<Mode>& modes = ungated.model.row_modes(static_cast<int>(rho));
+            for ( Eigen::Index i = 0; i < static_cast<Eigen::Index>(modes.size()); ++i )
+            {
+                CHECK(ungated.model.c(rho, i) == gated.model.c(rho, i));
+            }
+            continue;
+        }
+        ++dead;
+        // A dead row is MODELED, not failed: zero data means the inner solve
+        // returns zero coefficients at a cost of exactly zero, the baseline
+        // ties it, and the baseline ships.
+        CHECK(gated.diagnostics.status[r] == RowStatus::GatedOut);
+        CHECK(ungated.diagnostics.status[r] == RowStatus::FallbackBaseline);
+        CHECK(ungated.diagnostics.score(rho) == 0.0);
+        CHECK(ungated.diagnostics.baseline_score(rho) == 0.0);
+        REQUIRE(ungated.model.has_model(static_cast<int>(rho)));
+        CHECK(ungated.model.s(rho) == 0.0);
+        CHECK(ungated.model.c.row(rho).isZero());
+    }
+    REQUIRE(live == op.fitted_rows);
+    REQUIRE(dead > 0);
+    MESSAGE("ungated: " << live << " live rows bit-identical to the gated fit, "
+                        << dead << " dead rows shipped zeros");
+
+    // ... and the deployed operator answers exactly zero on the dead rows,
+    // which is the true response, so they cost nothing in accuracy either.
+    const Eigen::MatrixXd probes = test_helpers::randn_points(
+        static_cast<int>(op.x_cols.rows()), 3, gen);
+    const Eigen::MatrixXd applied = matvec(ungated.model, probes);
+    for ( Eigen::Index rho = 0; rho < applied.rows(); ++rho )
+    {
+        if ( !op.gate[static_cast<std::size_t>(rho)] )
+        {
+            CHECK(applied.row(rho).isZero());
+        }
+    }
+}
+
 TEST_CASE("the aspect cap spans the ball and the ellipsoid continuously")
 {
     // The cap floors sigma's eigenvalues at lambda_max / cap^2, so cap = 1 is

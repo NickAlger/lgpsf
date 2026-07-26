@@ -258,7 +258,15 @@ existing JVP/VJP composes with it for free -- no new derivative math.
     dof-tied spike, square by nature), NEVER a matrix. Geometry queries
     go through the `ellipsoid_tree` library (pip: `ellipsoid-tree`;
     the C++ port links it anyway), confined to this layer like scipy --
-    indexing, never reference math. Per row: gate -> window (BallTree
+    indexing, never reference math. **DO NOT GATE DEAD ROWS** -- `gate`
+    defaults to unset (attempt everything) and that is the recommended
+    setting even when rows are known dead: a zero-response row costs ONE
+    candidate (zero coefficients, CV score exactly 0, baseline ties,
+    ships a model predicting exactly zero -- cannot fail, cannot NaN).
+    Measured on all 6557 PIG rows: ungated 159.9 s vs gated 162.4 s, and
+    every live row's prediction BIT-IDENTICAL either way. The gate is for
+    rows the CALLER does not want modeled, not for rows expected to be
+    hard. Per row: gate -> window (BallTree
     ball query; radius `tau_window * `largest 1-sigma axis of the
     user's best-guess `sigma[rho]`) ->
     `fit_from_probes(sigma0=sigma[rho], target_mass=m1[rho])` ->

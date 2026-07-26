@@ -40,6 +40,29 @@
 /// fitted object == deployed object, which is what makes the per-row scores
 /// honest for deployment.
 ///
+/// ## Do not gate dead rows -- fitting them is already free and correct
+///
+/// `gate` defaults to unset (attempt every row) and that is the RECOMMENDED
+/// setting, including when the operator is known to contain rows whose
+/// response is identically zero. A dead row costs ONE candidate: its data is
+/// zero, so the inner solve returns zero coefficients at a CV score of exactly
+/// 0, the baseline guard ties it, and the row ships the baseline -- a valid
+/// model that predicts exactly zero. It cannot fail, it cannot produce NaN,
+/// and it cannot poison a neighbour, because a row is fitted only from its own
+/// window and its own data.
+///
+/// Measured on the full 6557-row PIG operator (1481 dead rows): ungated
+/// fitting took 159.9 s against 162.4 s gated -- the gate saved nothing -- and
+/// every live row's prediction was BIT-IDENTICAL with and without it. That
+/// last part is structural rather than lucky: each row's window comes from its
+/// own ellipsoid, and the CV folds and the warm-start jitter table are global,
+/// so no row can observe which other rows were attempted.
+///
+/// So the gate is for rows the CALLER does not want modeled -- a subdomain, a
+/// boundary layer, a two-pass workflow -- and not for rows the caller expects
+/// the fitter to struggle with. Gated rows get `RowStatus::GatedOut`, never
+/// silence, so a gate is always visible in the diagnostics.
+///
 /// ## The window: an ellipsoid by default, a ball on request
 ///
 /// The window is `{x : (x - mu0)^T sigma^-1 (x - mu0) <= tau_window^2}`, the
@@ -272,8 +295,9 @@ struct RowOutcome
 ///                dofs' own coordinates.
 /// @param x_rows  (R_all, N) row-dof coordinates; unset means the square
 ///                context, where row dof rho IS column dof rho.
-/// @param gate    (R_all,) which rows to attempt; unset means all. Gated rows
-///                get a status, not silence.
+/// @param gate    (R_all,) which rows to attempt; unset means all, which is
+///                the recommended setting -- see "Do not gate dead rows"
+///                above. Gated rows get a status, not silence.
 /// @param window_ellipsoids Per-row overrides of the derived window, as
 ///                ellipsoids scaled so membership is Mahalanobis <= 1. An
 ///                unset entry means "derive this row's window as usual".
