@@ -27,6 +27,7 @@
 #include "lgpsf/init_dictionary.hpp"
 #include "lgpsf/lg_ellipsoid_feature.hpp"
 #include "lgpsf/lg_functions.hpp"
+#include "lgpsf/mode_policy.hpp"
 #include "lgpsf/probe_moments.hpp"
 #include "lgpsf/varpro.hpp"
 #include "lgpsf/whitening.hpp"

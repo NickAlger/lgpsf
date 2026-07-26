@@ -50,6 +50,17 @@ struct Mode
     {
         return a.p == b.p && a.ell == b.ell && a.m == b.m;
     }
+
+    friend bool operator!=( const Mode& a, const Mode& b ) { return !(a == b); }
+
+    /// Lexicographic by (p, ell, m) -- an arbitrary but total order, so modes
+    /// can key an ordered set. Carries no meaning: energy order is 2p + ell.
+    friend bool operator<( const Mode& a, const Mode& b )
+    {
+        if ( a.p != b.p ) return a.p < b.p;
+        if ( a.ell != b.ell ) return a.ell < b.ell;
+        return a.m < b.m;
+    }
 };
 
 /// Generalized Laguerre polynomial L_p^alpha(x), evaluated elementwise, via
