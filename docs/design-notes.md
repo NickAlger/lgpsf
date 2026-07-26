@@ -1003,3 +1003,63 @@ the prototype's pinned-count-regardless-of-policy behavior and justified it as
 keeping pinned and released candidates comparable. That justification was
 post-hoc rationalization of a bug, which is a good reminder that a plausible
 reason can always be found for whatever the code already does.
+
+## The fit window is a region, and truncation is the default everywhere (2026-07-26, C++)
+
+**Decision** (Nick, M4). Three connected changes to the operator layer.
+
+**1. Truncation to the fit window is the DEFAULT for every evaluation**,
+`eval_kernel` included; the untruncated parametric form is reachable only
+through `eval_kernel_unrestricted`.
+
+The reason is stronger than "out-of-window values are unverified". The fit's
+objective evaluates the LG basis ONLY on the window, so out-of-window model
+mass is **unpenalized**: the optimizer will spend it to chase in-window noise,
+and on problematic rows (small or noisy entries) it does. That is the slice-38
+failure -- one rogue row carried 94% of a whole-operator test error, and
+truncating deployment to the window fixed it completely. So the extension of
+the fitted form beyond the window is an artifact of an objective that could not
+see it, not a kernel that merely happens to be known best near the window.
+Calling it "component access" relabels the hazard rather than removing it.
+
+**2. The window is stored as a REGION** (`window_center`,
+`window_covariance`, pre-scaled so membership is Mahalanobis <= 1), because
+`eval_kernel` answers at arbitrary coordinates and an index list cannot
+restrict a point that is not a mesh column. The CSR index list stays as the
+derived cache and the fast path. A test pins that the two agree on every mesh
+column.
+
+Caveat worth keeping: the ellipsoid is a proxy for the window POINT SET. The
+fit saw points; the ellipsoid is the region containing exactly those mesh
+points, so the two agree on mesh columns exactly, but off-mesh on a coarse mesh
+the ellipsoid extends past the outermost window point and a query there is
+still extrapolation -- bounded, but extrapolation.
+
+**3. The `windows=` index-list override is gone**, replaced by an optional
+per-row window ELLIPSOID. It was used nowhere in the PIG experiments and only
+in one prototype test. Removing it makes the region invariant unconditional --
+no NaN rows, no throw-versus-fallback decision, no special case threaded
+through the helpers. `tau_window` and `window_aspect_cap` do not apply to an
+override: they derive a window from a best guess, and an override already is
+the answer.
+
+`init_dictionary.hpp` gained `ellipsoid_from_points`, which converts a
+hand-picked index set into an admissible window: the mass-weighted mean and
+covariance, scaled so the farthest point sits exactly on the boundary, giving
+exact containment in closed form. Not the minimum-volume enclosing ellipsoid,
+which is tighter but iterative.
+
+What that costs: an exactly non-ellipsoidal window (a mesh-connectivity patch,
+a boundary-clipped region) can no longer be expressed. Through the helper it
+becomes a SUPERSET -- other columns inside the ellipsoid come along. Measured
+on a 40-point hand-picked set: 42 columns realized. That is conservative in the
+direction that matters, since the hazard is mass outside the window, but a
+caller who wanted a tight irregular region gets a rounder, larger one.
+
+**One rule, four helpers.** `support = fit window ∩ fitted tau-ellipsoid`, with
+`truncation_tau` defaulting to infinity. `eval_kernel` applies the window as a
+region, `eval_entries` and `matvec` by index, and `assemble_sparse(fit, tau)`
+is that rule with a finite tau -- now pinned by a test asserting its stored
+entries equal `eval_entries` at the same tau, where before nothing connected
+them. Measured trim on one row: nonzeros 1 / 7 / 26 / 37 / 37 at tau
+0.5 / 1 / 2 / 4 / infinity.

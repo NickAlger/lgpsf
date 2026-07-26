@@ -15,6 +15,8 @@
 
 #include "doctest/doctest.h"
 
+#include <ellipsoid_tree/geometry.hpp>
+
 #include "lgpsf/operator_fit.hpp"
 #include "test_helpers.hpp"
 
@@ -27,6 +29,7 @@ using lgpsf::RowStatus;
 using lgpsf::WhitenedBasis;
 using lgpsf::capped_covariance;
 using lgpsf::assemble_sparse;
+using lgpsf::ellipsoid_from_points;
 using lgpsf::ellipsoid_field;
 using lgpsf::eval_entries;
 using lgpsf::eval_kernel;
@@ -508,12 +511,16 @@ TEST_CASE("a row that cannot be windowed fails alone, without taking the fit dow
     CHECK(survivors == op.fitted_rows - 1);
 }
 
-TEST_CASE("explicit windows override the derived ones")
+TEST_CASE("a window may be supplied as an ellipsoid, and built from points")
 {
-    std::mt19937 gen(6);
+    // A window has to be a REGION, not a set of indices, because eval_kernel
+    // must answer at points that are not mesh columns. A caller with a
+    // hand-picked index set converts it with ellipsoid_from_points, which
+    // returns the smallest ellipsoid of that set's own shape containing it --
+    // so the realized window is a superset of what was asked for.
+    std::mt19937 gen(25);
     const Synthetic op = make_operator(gen);
 
-    std::vector<std::vector<int>> windows(static_cast<std::size_t>(op.gate.size()));
     int overridden = -1;
     for ( Eigen::Index rho = 0; rho < static_cast<Eigen::Index>(op.gate.size()); ++rho )
     {
@@ -524,23 +531,196 @@ TEST_CASE("explicit windows override the derived ones")
         }
     }
     REQUIRE(overridden >= 0);
-    // a deliberately odd window: the row's own dof plus a contiguous block
-    std::vector<int> chosen{overridden};
+
+    // a hand-picked set: the row's own dof plus its near neighbours
+    std::vector<int> wanted{overridden};
     for ( int j = 0; j < 40; ++j )
     {
         if ( j != overridden )
         {
-            chosen.push_back(j);
+            wanted.push_back(j);
         }
     }
-    std::sort(chosen.begin(), chosen.end());
-    windows[static_cast<std::size_t>(overridden)] = chosen;
+    std::sort(wanted.begin(), wanted.end());
+
+    Eigen::MatrixXd chosen(static_cast<Eigen::Index>(wanted.size()), 2);
+    for ( std::size_t i = 0; i < wanted.size(); ++i )
+    {
+        chosen.row(static_cast<Eigen::Index>(i)) = op.x_cols.row(wanted[i]);
+    }
+    const ellipsoid_tree::Ellipsoid region = lgpsf::ellipsoid_from_points(chosen);
+
+    // the helper's contract: every supplied point is inside
+    const Eigen::MatrixXd whitened =
+        region.Sigma.llt().matrixL().solve(
+            Eigen::MatrixXd(chosen.rowwise() - region.mu.transpose()).transpose());
+    CHECK(whitened.colwise().squaredNorm().maxCoeff() <= 1.0 + 1e-9);
+    // and the boundary is touched, so it is not needlessly loose
+    CHECK(whitened.colwise().squaredNorm().maxCoeff() > 0.99);
+
+    std::vector<std::optional<ellipsoid_tree::Ellipsoid>> overrides(
+        static_cast<std::size_t>(op.gate.size()));
+    overrides[static_cast<std::size_t>(overridden)] = region;
 
     const OperatorFit fit =
         fit_operator(op.x_cols, op.m1, op.m2, op.V, op.HV, op.sigma, config_for(op),
-                     std::nullopt, std::nullopt, op.gate, windows);
+                     std::nullopt, std::nullopt, op.gate, overrides);
 
-    CHECK(fit.row_window(overridden) == chosen);
+    const std::vector<int> realized = fit.row_window(overridden);
+    MESSAGE("supplied " << wanted.size() << " points, realized window "
+                        << realized.size());
+    // a superset of what was asked for, as documented
+    for ( int column : wanted )
+    {
+        CHECK(std::find(realized.begin(), realized.end(), column) != realized.end());
+    }
+    // the stored region is the one supplied, not a derived one
+    CHECK((fit.window_center.row(overridden).transpose() - region.mu)
+              .cwiseAbs().maxCoeff() < 1e-12);
+    for ( int i = 0; i < 2; ++i )
+    {
+        for ( int j = 0; j < 2; ++j )
+        {
+            CHECK(fit.window_covariance(overridden, i * 2 + j)
+                  == doctest::Approx(region.Sigma(i, j)));
+        }
+    }
+}
+
+TEST_CASE("the window region and the window indices agree on mesh columns")
+{
+    // The two representations of the same window: the stored ellipsoid answers
+    // at arbitrary points, the index list is the derived cache. They must not
+    // disagree about a mesh column.
+    std::mt19937 gen(26);
+    const Synthetic op = make_operator(gen, 11, 30, 3);
+    OperatorFitConfig config = config_for(op);
+    config.tau_window = 1.2;
+    const OperatorFit fit = run(op, config);
+
+    for ( int rho : model_rows(fit) )
+    {
+        const std::vector<int> window = fit.row_window(rho);
+        const Eigen::VectorXd radius2 =
+            lgpsf::detail::window_radius2(fit, rho, fit.x_cols);
+        for ( Eigen::Index j = 0; j < fit.num_cols(); ++j )
+        {
+            const bool by_index =
+                std::binary_search(window.begin(), window.end(), static_cast<int>(j));
+            const bool by_region = radius2(j) <= 1.0 + 1e-9;
+            CHECK(by_index == by_region);
+        }
+    }
+}
+
+TEST_CASE("eval_kernel is window-truncated by default; extrapolation is opt-in")
+{
+    // The change of default. The fit's objective never evaluated the basis
+    // outside the window, so out-of-window mass is unpenalized rather than
+    // merely unverified; the truncated form is what the fit has evidence for.
+    std::mt19937 gen(27);
+    const Synthetic op = make_operator(gen, 11, 30, 3);
+    OperatorFitConfig config = config_for(op);
+    config.tau_window = 1.2;
+    const OperatorFit fit = run(op, config);
+
+    const int rho = model_rows(fit).front();
+    const std::vector<int> window = fit.row_window(rho);
+    int outside = -1;
+    for ( Eigen::Index j = 0; j < fit.num_cols() && outside < 0; ++j )
+    {
+        if ( !std::binary_search(window.begin(), window.end(), static_cast<int>(j)) )
+        {
+            outside = static_cast<int>(j);
+        }
+    }
+    REQUIRE(outside >= 0);
+
+    const Eigen::MatrixXd probe = fit.x_cols.row(outside);
+    CHECK(eval_kernel(fit, {rho}, probe)(0, 0) == 0.0);
+    CHECK(std::abs(lgpsf::eval_kernel_unrestricted(fit, {rho}, probe)(0, 0)) > 0.0);
+
+    // inside the window the two agree exactly
+    const Eigen::MatrixXd inside = fit.x_cols.row(window.front());
+    CHECK(eval_kernel(fit, {rho}, inside)(0, 0)
+          == lgpsf::eval_kernel_unrestricted(fit, {rho}, inside)(0, 0));
+
+    // and eval_kernel now agrees with eval_entries up to the masses, which is
+    // the consistency the change buys
+    const int column = window.front();
+    const double kernel = eval_kernel(fit, {rho}, Eigen::MatrixXd(fit.x_cols.row(column)))(0, 0);
+    double expected = fit.m1_diag(rho) * fit.m2_diag(column) * kernel;
+    if ( column == rho )
+    {
+        expected += fit.m1_diag(rho) * fit.s(rho);
+    }
+    CHECK(eval_entries(fit, {rho}, {column})(0) == doctest::Approx(expected));
+}
+
+TEST_CASE("truncation_tau trims to the fitted kernel's own tau-ellipsoid")
+{
+    std::mt19937 gen(28);
+    const Synthetic op = make_operator(gen, 11, 30, 3);
+    OperatorFitConfig config = config_for(op);
+    config.tau_window = 1.2;
+    const OperatorFit fit = run(op, config);
+    const int rho = model_rows(fit).front();
+
+    // count nonzeros over all columns as tau tightens: monotone non-increasing
+    std::vector<int> rows_index, cols_index;
+    for ( Eigen::Index j = 0; j < fit.num_cols(); ++j )
+    {
+        rows_index.push_back(rho);
+        cols_index.push_back(static_cast<int>(j));
+    }
+    std::vector<int> counts;
+    for ( double tau : {0.5, 1.0, 2.0, 4.0, std::numeric_limits<double>::infinity()} )
+    {
+        const Eigen::VectorXd values = eval_entries(fit, rows_index, cols_index, tau);
+        int nonzero = 0;
+        for ( Eigen::Index i = 0; i < values.size(); ++i )
+        {
+            nonzero += (values(i) != 0.0) ? 1 : 0;
+        }
+        counts.push_back(nonzero);
+    }
+    MESSAGE("eval_entries nonzeros at tau 0.5 / 1 / 2 / 4 / inf: "
+            << counts[0] << " / " << counts[1] << " / " << counts[2] << " / "
+            << counts[3] << " / " << counts[4]);
+    for ( std::size_t i = 1; i < counts.size(); ++i )
+    {
+        CHECK(counts[i] >= counts[i - 1]);
+    }
+    CHECK(counts.front() < counts.back());
+
+    // matvec carries the same trim
+    const Eigen::MatrixXd v = test_helpers::randn_points(
+        static_cast<int>(fit.num_cols()), 1, gen);
+    Eigen::MatrixXd dense = Eigen::MatrixXd::Zero(fit.num_rows(), fit.num_cols());
+    for ( int r : model_rows(fit) )
+    {
+        std::vector<int> ri, ci;
+        for ( Eigen::Index j = 0; j < fit.num_cols(); ++j )
+        {
+            ri.push_back(r);
+            ci.push_back(static_cast<int>(j));
+        }
+        dense.row(r) = eval_entries(fit, ri, ci, 2.0).transpose();
+    }
+    CHECK((matvec(fit, v, 2.0) - dense * v).cwiseAbs().maxCoeff() < 1e-10);
+
+    // and assemble_sparse's tau is the same tau: every stored entry equals
+    // eval_entries at that tau
+    const Eigen::SparseMatrix<double> assembled = assemble_sparse(fit, 2.0);
+    for ( int k = 0; k < assembled.outerSize(); ++k )
+    {
+        for ( Eigen::SparseMatrix<double>::InnerIterator it(assembled, k); it; ++it )
+        {
+            CHECK(it.value()
+                  == doctest::Approx(eval_entries(fit, {static_cast<int>(it.row())},
+                                                  {static_cast<int>(it.col())}, 2.0)(0)));
+        }
+    }
 }
 
 TEST_CASE("malformed inputs are rejected eagerly")
@@ -569,12 +749,11 @@ TEST_CASE("malformed inputs are rejected eagerly")
                     std::invalid_argument);
 }
 
-TEST_CASE("eval_kernel is the raw component; eval_entries is the deployed operator")
+TEST_CASE("the deployed operator is window-restricted, entry by entry")
 {
-    // The distinction the helper table is built on. eval_kernel is the smooth
-    // kernel at arbitrary points, unrestricted -- component access. Everything
-    // in the dof context is window-restricted, because the deployed object has
-    // to be the object that was scored.
+    // Everything in the dof context is window-restricted, because the deployed
+    // object has to be the object that was scored. The raw parametric form is
+    // reachable only through eval_kernel_unrestricted.
     std::mt19937 gen(20);
     const Synthetic op = make_operator(gen, 11, 30, 3);
     OperatorFitConfig config = config_for(op);
@@ -597,10 +776,11 @@ TEST_CASE("eval_kernel is the raw component; eval_entries is the deployed operat
     }
     REQUIRE(outside >= 0);
 
-    // the raw kernel is alive out there...
+    // the unrestricted parametric form is alive out there...
     const Eigen::MatrixXd probe = fit.x_cols.row(outside);
-    CHECK(std::abs(eval_kernel(fit, {rho}, probe)(0, 0)) > 0.0);
-    // ...and the deployed operator is exactly zero
+    CHECK(std::abs(lgpsf::eval_kernel_unrestricted(fit, {rho}, probe)(0, 0)) > 0.0);
+    // ...and both the truncated kernel and the deployed operator are zero
+    CHECK(eval_kernel(fit, {rho}, probe)(0, 0) == 0.0);
     CHECK(eval_entries(fit, {rho}, {outside})(0) == 0.0);
 
     // inside the window it is m1 m2 times the kernel, plus the spike on the

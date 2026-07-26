@@ -247,8 +247,18 @@ struct OperatorFit
 
     OperatorFitConfig config;  ///< Provenance echo.
 
-    /// CSR-style fit windows: row rho's window is
-    /// `window_indices[window_indptr[rho] .. window_indptr[rho+1])`, sorted.
+    /// The fit window as a REGION, one ellipsoid per row, already scaled so
+    /// membership is `(x - center)^T covariance^-1 (x - center) <= 1`.
+    ///
+    /// Stored because the window has to be answerable at points that are not
+    /// mesh columns -- `eval_kernel` takes arbitrary coordinates, and the index
+    /// list below cannot restrict those. On mesh columns the two agree exactly,
+    /// by construction. NaN for rows with no window.
+    Eigen::MatrixXd window_center;      ///< (R_all, N)
+    Eigen::MatrixXd window_covariance;  ///< (R_all, N*N), row-major (i, j)
+
+    /// The same window as CSR-style column indices -- a derived cache of the
+    /// dual descent, and the fast path for the dof-context helpers.
     std::vector<int> window_indptr;
     std::vector<int> window_indices;
 
@@ -336,8 +346,17 @@ struct RowOutcome
 ///                context, where row dof rho IS column dof rho.
 /// @param gate    (R_all,) which rows to attempt; unset means all. Gated rows
 ///                get a status, not silence.
-/// @param windows Per-row explicit column-index overrides; an empty entry
-///                means "derive this row's window as usual".
+/// @param window_ellipsoids Per-row overrides of the derived window, as
+///                ellipsoids scaled so membership is Mahalanobis <= 1. An
+///                unset entry means "derive this row's window as usual".
+///                `tau_window` and `window_aspect_cap` do NOT apply to an
+///                override -- they exist to derive a window from a best guess,
+///                and an override already is the answer.
+///
+///                A window must be a REGION, not a set of indices, because
+///                `eval_kernel` has to answer at points that are not mesh
+///                columns. `init_dictionary.hpp`'s `ellipsoid_from_points`
+///                converts a hand-picked index set into an admissible one.
 inline OperatorFit fit_operator(
     const Eigen::Ref<const Eigen::MatrixXd>& x_cols,
     const Eigen::Ref<const Eigen::VectorXd>& m1_diag,
@@ -349,7 +368,7 @@ inline OperatorFit fit_operator(
     const std::optional<Eigen::MatrixXd>& mu0 = std::nullopt,
     const std::optional<Eigen::MatrixXd>& x_rows = std::nullopt,
     const std::vector<char>& gate = {},
-    const std::vector<std::vector<int>>& windows = {} )
+    const std::vector<std::optional<ellipsoid_tree::Ellipsoid>>& window_ellipsoids = {} )
 {
     const int dim = static_cast<int>(x_cols.cols());
     const Eigen::Index num_cols = x_cols.rows();
@@ -398,10 +417,11 @@ inline OperatorFit fit_operator(
         throw std::invalid_argument(
             "lgpsf::fit_operator: gate must have one entry per row");
     }
-    if ( !windows.empty() && static_cast<Eigen::Index>(windows.size()) != num_rows )
+    if ( !window_ellipsoids.empty()
+         && static_cast<Eigen::Index>(window_ellipsoids.size()) != num_rows )
     {
         throw std::invalid_argument(
-            "lgpsf::fit_operator: windows must have one entry per row");
+            "lgpsf::fit_operator: window_ellipsoids must have one entry per row");
     }
 
     const Eigen::MatrixXd centers =
@@ -458,6 +478,10 @@ inline OperatorFit fit_operator(
     std::vector<detail::RowOutcome> outcomes(static_cast<std::size_t>(num_rows));
     std::vector<Eigen::MatrixXd> prior(static_cast<std::size_t>(num_rows));
     std::vector<char> attempt(static_cast<std::size_t>(num_rows), 0);
+    Eigen::MatrixXd window_center = Eigen::MatrixXd::Constant(
+        num_rows, dim, std::numeric_limits<double>::quiet_NaN());
+    Eigen::MatrixXd window_covariance = Eigen::MatrixXd::Constant(
+        num_rows, dim * dim, std::numeric_limits<double>::quiet_NaN());
 
     // --- every window at once, by one dual-tree descent ---------------------
     //
@@ -485,23 +509,38 @@ inline OperatorFit fit_operator(
             prior[static_cast<std::size_t>(rho)] = chol.matrixL();
             attempt[static_cast<std::size_t>(rho)] = 1;
 
-            if ( !windows.empty() && !windows[static_cast<std::size_t>(rho)].empty() )
+            // The window is stored PRE-SCALED, so membership is Mahalanobis
+            // <= 1 whether it was derived or supplied. That makes the two paths
+            // mean the same thing and lets the tree be queried at tau = 1.
+            ellipsoid_tree::Ellipsoid region;
+            if ( !window_ellipsoids.empty()
+                 && window_ellipsoids[static_cast<std::size_t>(rho)] )
             {
-                outcome.window = windows[static_cast<std::size_t>(rho)];
-                std::sort(outcome.window.begin(), outcome.window.end());
-                continue;
+                region = *window_ellipsoids[static_cast<std::size_t>(rho)];
             }
-
-            queries.push_back(ellipsoid_tree::Ellipsoid{
-                centers.row(rho).transpose(),
-                capped_covariance(covariance, config.window_aspect_cap)});
+            else
+            {
+                region.mu = centers.row(rho).transpose();
+                region.Sigma = config.tau_window * config.tau_window
+                               * capped_covariance(covariance,
+                                                   config.window_aspect_cap);
+            }
+            window_center.row(rho) = region.mu.transpose();
+            for ( int i = 0; i < dim; ++i )
+            {
+                for ( int j = 0; j < dim; ++j )
+                {
+                    window_covariance(rho, i * dim + j) = region.Sigma(i, j);
+                }
+            }
+            queries.push_back(region);
             query_row.push_back(static_cast<int>(rho));
         }
 
         if ( !queries.empty() )
         {
             const ellipsoid_tree::EllipsoidTree window_tree(
-                std::move(queries), config.tau_window, config.num_threads);
+                std::move(queries), 1.0, config.num_threads);
             const std::vector<std::pair<int, int>> pairs =
                 ellipsoid_tree::collision_pairs(column_tree, window_tree);
             for ( const std::pair<int, int>& hit : pairs )
@@ -702,6 +741,8 @@ inline OperatorFit fit_operator(
     fit.m2_diag = m2_diag;
     fit.spike = config.spike;
     fit.config = config;
+    fit.window_center = std::move(window_center);
+    fit.window_covariance = std::move(window_covariance);
 
     const int public_params = theta_size(dim);
     fit.theta = Eigen::MatrixXd::Constant(num_rows, public_params,
@@ -810,34 +851,53 @@ inline std::vector<int> model_rows( const OperatorFit& fit )
     return rows;
 }
 
-/// [smooth] Phi~(rho, x) at arbitrary query points: rectangular by nature, no
-/// masses, no spike, no window restriction.
-///
-/// `x_query` is (Q, N); the result is (Q, rows.size()), one column per
-/// requested row. Throws for a row with no shipped model.
-inline Eigen::MatrixXd eval_kernel( const OperatorFit& fit,
-                                    const std::vector<int>& rows,
-                                    const Eigen::Ref<const Eigen::MatrixXd>& x_query )
+namespace detail {
+
+/// The raw smooth component of one row, together with the fitted pullback the
+/// truncation tests need -- both from a single evaluation.
+struct KernelAt
 {
-    Eigen::MatrixXd out(x_query.rows(), static_cast<Eigen::Index>(rows.size()));
-    for ( std::size_t i = 0; i < rows.size(); ++i )
-    {
-        const int rho = rows[i];
-        const std::vector<Mode>& modes = fit.row_modes(rho);
-        // The stored theta is the public absolute encoding, so splitting off
-        // its center gives exactly the pinned pair the feature layer wants.
-        const std::pair<Eigen::VectorXd, Eigen::VectorXd> split =
-            freeze_mu(fit.theta.row(rho).transpose());
-        const Eigen::VectorXd coefficients =
-            fit.c.row(rho).head(static_cast<Eigen::Index>(modes.size())).transpose();
-        out.col(static_cast<Eigen::Index>(i)) =
-            eval_feature(split.first, x_query, modes, split.second, MuMode::Pinned)
-            * coefficients;
-    }
+    Eigen::VectorXd values;  ///< (Q,)
+    Eigen::MatrixXd u;       ///< (Q, N), so ||u_q|| is the fitted Mahalanobis radius
+};
+
+inline KernelAt kernel_at( const OperatorFit& fit, int rho,
+                           const Eigen::Ref<const Eigen::MatrixXd>& x_query )
+{
+    const std::vector<Mode>& modes = fit.row_modes(rho);
+    // The stored theta is the public absolute encoding, so splitting off its
+    // center gives exactly the pinned pair the feature layer wants.
+    const std::pair<Eigen::VectorXd, Eigen::VectorXd> split =
+        freeze_mu(fit.theta.row(rho).transpose());
+    FeatureAt at(split.first, x_query, modes, split.second, MuMode::Pinned);
+    KernelAt out;
+    out.values = at.values()
+                 * fit.c.row(rho).head(static_cast<Eigen::Index>(modes.size()))
+                       .transpose();
+    out.u = at.u();
     return out;
 }
 
-namespace detail {
+/// Squared Mahalanobis radius of each query point in row rho's WINDOW
+/// ellipsoid; a point is inside the window when this is at most 1.
+inline Eigen::VectorXd window_radius2( const OperatorFit& fit, int rho,
+                                       const Eigen::Ref<const Eigen::MatrixXd>& x_query )
+{
+    Eigen::MatrixXd shape(fit.dim, fit.dim);
+    for ( int i = 0; i < fit.dim; ++i )
+    {
+        for ( int j = 0; j < fit.dim; ++j )
+        {
+            shape(i, j) = fit.window_covariance(rho, i * fit.dim + j);
+        }
+    }
+    const Eigen::MatrixXd centered =
+        x_query.rowwise() - fit.window_center.row(rho);
+    const Eigen::MatrixXd whitened =
+        shape.llt().matrixL().solve(centered.transpose());
+    return whitened.colwise().squaredNorm().transpose();
+}
+
 
 /// Is `column` in this row's (sorted) window?
 inline bool in_window( const OperatorFit& fit, int rho, int column )
@@ -850,24 +910,100 @@ inline bool in_window( const OperatorFit& fit, int rho, int column )
 /// The deployed smooth row on a given set of columns:
 /// m1[rho] * m2[j] * Phi~(rho, x_j). No window restriction and no spike --
 /// callers apply those.
-inline Eigen::VectorXd deployed_smooth( const OperatorFit& fit, int rho,
-                                        const std::vector<int>& columns )
+inline Eigen::VectorXd deployed_smooth(
+    const OperatorFit& fit, int rho, const std::vector<int>& columns,
+    double truncation_tau = std::numeric_limits<double>::infinity() )
 {
     Eigen::MatrixXd points(static_cast<Eigen::Index>(columns.size()), fit.dim);
     for ( std::size_t i = 0; i < columns.size(); ++i )
     {
         points.row(static_cast<Eigen::Index>(i)) = fit.x_cols.row(columns[i]);
     }
-    Eigen::VectorXd values = eval_kernel(fit, {rho}, points).col(0);
+    const KernelAt at = kernel_at(fit, rho, points);
+    Eigen::VectorXd values = at.values;
+    const bool trim = !std::isinf(truncation_tau);
     for ( std::size_t i = 0; i < columns.size(); ++i )
     {
-        values(static_cast<Eigen::Index>(i)) *=
-            fit.m1_diag(rho) * fit.m2_diag(columns[i]);
+        const Eigen::Index q = static_cast<Eigen::Index>(i);
+        if ( trim && at.u.row(q).squaredNorm() > truncation_tau * truncation_tau )
+        {
+            values(q) = 0.0;
+        }
+        values(q) *= fit.m1_diag(rho) * fit.m2_diag(columns[i]);
     }
     return values;
 }
 
 } // end namespace detail
+
+/// [smooth] Phi~(rho, x) at arbitrary query points, RESTRICTED TO THE FIT
+/// WINDOW: rectangular by nature, no masses, no spike, zero outside the window.
+///
+/// The window restriction is the default here, not a convenience. The fit's
+/// objective evaluates the basis only on the window, so out-of-window model
+/// mass is not merely unverified -- it is UNPENALIZED, and the optimizer will
+/// spend it to chase in-window noise. The extension of the fitted form beyond
+/// the window is therefore an artifact of an objective that could not see it.
+/// Use `eval_kernel_unrestricted` to get it anyway, deliberately.
+///
+/// Since the query points need not be mesh columns, the window is applied as
+/// the stored REGION rather than the column-index list; the two agree exactly
+/// on mesh columns.
+///
+/// `truncation_tau` additionally trims to the fitted kernel's own
+/// tau-ellipsoid, `||u|| <= tau` in the pullback coordinate -- tau standard
+/// deviations of the fitted kernel, the same tau `assemble_sparse` takes.
+/// Infinity (the default) adds nothing.
+///
+/// `x_query` is (Q, N); the result is (Q, rows.size()), one column per
+/// requested row. Throws for a row with no shipped model.
+inline Eigen::MatrixXd eval_kernel(
+    const OperatorFit& fit, const std::vector<int>& rows,
+    const Eigen::Ref<const Eigen::MatrixXd>& x_query,
+    double truncation_tau = std::numeric_limits<double>::infinity() )
+{
+    Eigen::MatrixXd out(x_query.rows(), static_cast<Eigen::Index>(rows.size()));
+    const bool trim = !std::isinf(truncation_tau);
+    for ( std::size_t i = 0; i < rows.size(); ++i )
+    {
+        const int rho = rows[i];
+        const detail::KernelAt at = detail::kernel_at(fit, rho, x_query);
+        const Eigen::VectorXd radius2 = detail::window_radius2(fit, rho, x_query);
+        Eigen::VectorXd values = at.values;
+        for ( Eigen::Index q = 0; q < values.size(); ++q )
+        {
+            const bool inside =
+                radius2(q) <= 1.0
+                && (!trim || at.u.row(q).squaredNorm()
+                                 <= truncation_tau * truncation_tau);
+            if ( !inside )
+            {
+                values(q) = 0.0;
+            }
+        }
+        out.col(static_cast<Eigen::Index>(i)) = values;
+    }
+    return out;
+}
+
+/// [smooth] The raw parametric smooth component, with NO window restriction.
+///
+/// Component access, deliberately named so that asking for extrapolation
+/// requires saying so. Beyond the fit window this is an extension of the
+/// fitted form into a region the fit's objective never evaluated, so it
+/// carries no evidence and can be arbitrarily large; see `eval_kernel`.
+inline Eigen::MatrixXd eval_kernel_unrestricted(
+    const OperatorFit& fit, const std::vector<int>& rows,
+    const Eigen::Ref<const Eigen::MatrixXd>& x_query )
+{
+    Eigen::MatrixXd out(x_query.rows(), static_cast<Eigen::Index>(rows.size()));
+    for ( std::size_t i = 0; i < rows.size(); ++i )
+    {
+        out.col(static_cast<Eigen::Index>(i)) =
+            detail::kernel_at(fit, rows[i], x_query).values;
+    }
+    return out;
+}
 
 /// [both] Paired entries of the DEPLOYED operator in the dof context.
 ///
@@ -875,9 +1011,10 @@ inline Eigen::VectorXd deployed_smooth( const OperatorFit& fit, int rho,
 /// and zero outside it, plus `m1[rho] s[rho]` when `j == rho` (the spike dof,
 /// square context only). `rows` and `cols` are equal-length index arrays;
 /// the result holds their values. Rows with no model give zero.
-inline Eigen::VectorXd eval_entries( const OperatorFit& fit,
-                                     const std::vector<int>& rows,
-                                     const std::vector<int>& cols )
+inline Eigen::VectorXd eval_entries(
+    const OperatorFit& fit, const std::vector<int>& rows,
+    const std::vector<int>& cols,
+    double truncation_tau = std::numeric_limits<double>::infinity() )
 {
     if ( rows.size() != cols.size() )
     {
@@ -903,7 +1040,8 @@ inline Eigen::VectorXd eval_entries( const OperatorFit& fit,
         {
             columns.push_back(cols[i]);
         }
-        const Eigen::VectorXd values = detail::deployed_smooth(fit, rho, columns);
+        const Eigen::VectorXd values =
+            detail::deployed_smooth(fit, rho, columns, truncation_tau);
         for ( std::size_t k = 0; k < entry.second.size(); ++k )
         {
             const std::size_t slot = entry.second[k];
@@ -925,8 +1063,9 @@ inline Eigen::VectorXd eval_entries( const OperatorFit& fit,
 /// Each row's kernel is evaluated on its FIT WINDOW only, which is both the
 /// deployed-support invariant and the fast path -- O(sum of window sizes)
 /// rather than O(R K). `v` is (K_all, q); rows with no model give zero rows.
-inline Eigen::MatrixXd matvec( const OperatorFit& fit,
-                               const Eigen::Ref<const Eigen::MatrixXd>& v )
+inline Eigen::MatrixXd matvec(
+    const OperatorFit& fit, const Eigen::Ref<const Eigen::MatrixXd>& v,
+    double truncation_tau = std::numeric_limits<double>::infinity() )
 {
     if ( v.rows() != fit.num_cols() )
     {
@@ -942,7 +1081,8 @@ inline Eigen::MatrixXd matvec( const OperatorFit& fit,
         {
             continue;
         }
-        const Eigen::VectorXd weights = detail::deployed_smooth(fit, rho, window);
+        const Eigen::VectorXd weights =
+            detail::deployed_smooth(fit, rho, window, truncation_tau);
         for ( std::size_t i = 0; i < window.size(); ++i )
         {
             out.row(rho) +=
@@ -1067,7 +1207,8 @@ inline Eigen::SparseMatrix<double> assemble_sparse(
 
         if ( !deployed.empty() )
         {
-            const Eigen::VectorXd values = detail::deployed_smooth(fit, rho, deployed);
+            const Eigen::VectorXd values =
+                detail::deployed_smooth(fit, rho, deployed, tau);
             for ( std::size_t i = 0; i < deployed.size(); ++i )
             {
                 triplets.emplace_back(rho, deployed[i],

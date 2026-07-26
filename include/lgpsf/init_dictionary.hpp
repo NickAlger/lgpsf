@@ -23,6 +23,7 @@
 #include <vector>
 
 #include <Eigen/Dense>
+#include <ellipsoid_tree/geometry.hpp>
 #include <ellipsoid_tree/kd_tree.hpp>
 
 #include "lgpsf/ellipsoid_transform.hpp"
@@ -114,6 +115,84 @@ inline Eigen::MatrixXd window_shape( const Eigen::Ref<const Eigen::MatrixXd>& x,
     const Eigen::MatrixXd normalized =
         solver.eigenvectors() * values.asDiagonal() * solver.eigenvectors().transpose();
     return Eigen::MatrixXd(normalized.llt().matrixL());
+}
+
+/// The smallest ellipsoid of the batch's own shape that CONTAINS every point:
+/// returns `(mu, Sigma)` with `(x - mu)^T Sigma^-1 (x - mu) <= 1` for all of
+/// them.
+///
+/// Built from the mass-weighted mean and covariance -- the same argument
+/// `window_shape` makes about measuring the region rather than where the mesh
+/// happens to be dense -- then scaled so the farthest point sits exactly on the
+/// boundary. One pass, closed form, exact containment.
+///
+/// The intended use is turning a hand-picked set of column indices into a
+/// window a fit can accept, since a fit window has to be a REGION: it must be
+/// answerable at query points that are not mesh columns at all. Note that the
+/// realized window is then a SUPERSET of the points given -- other columns
+/// falling inside the ellipsoid come along. That is conservative in the
+/// direction that matters (the hazard is model mass OUTSIDE the window), but it
+/// does mean a tight irregular set becomes a rounder, larger one.
+///
+/// Not the minimum-volume enclosing ellipsoid, which is tighter but iterative.
+inline ellipsoid_tree::Ellipsoid ellipsoid_from_points(
+    const Eigen::Ref<const Eigen::MatrixXd>& points,
+    const Eigen::Ref<const Eigen::VectorXd>& masses = Eigen::VectorXd() )
+{
+    const Eigen::Index count = points.rows();
+    const int dim = static_cast<int>(points.cols());
+    if ( count < 1 )
+    {
+        throw std::invalid_argument("lgpsf::ellipsoid_from_points: no points given");
+    }
+    Eigen::VectorXd weights = ( masses.size() == 0 )
+                                  ? Eigen::VectorXd::Ones(count)
+                                  : Eigen::VectorXd(masses);
+    if ( weights.size() != count )
+    {
+        throw std::invalid_argument(
+            "lgpsf::ellipsoid_from_points: masses must have one entry per point");
+    }
+    const double total = weights.sum();
+    if ( !(total > 0.0) )
+    {
+        throw std::invalid_argument(
+            "lgpsf::ellipsoid_from_points: the masses must sum to a positive value");
+    }
+    weights /= total;
+
+    ellipsoid_tree::Ellipsoid out;
+    out.mu = points.transpose() * weights;
+    const Eigen::MatrixXd centered = points.rowwise() - out.mu.transpose();
+    Eigen::MatrixXd covariance = centered.transpose() * weights.asDiagonal() * centered;
+
+    // Floor the degenerate directions so the shape is invertible -- the same
+    // device window_shape uses, and what makes a collinear or single-point set
+    // produce an ellipsoid at all rather than a singular one.
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(covariance);
+    Eigen::VectorXd values = solver.eigenvalues();
+    const double largest = values(values.size() - 1);
+    if ( !(largest > 0.0) )
+    {
+        throw std::invalid_argument(
+            "lgpsf::ellipsoid_from_points: the points have no spatial extent");
+    }
+    values = values.cwiseMax(1e-4 * largest);
+    covariance = solver.eigenvectors() * values.asDiagonal()
+                 * solver.eigenvectors().transpose();
+
+    // Scale so the farthest point lies exactly on the boundary.
+    const Eigen::LLT<Eigen::MatrixXd> chol(covariance);
+    double worst = 0.0;
+    for ( Eigen::Index k = 0; k < count; ++k )
+    {
+        worst = std::max(worst, chol.matrixL()
+                                    .solve(Eigen::VectorXd(centered.row(k).transpose()))
+                                    .squaredNorm());
+    }
+    out.Sigma = std::max(worst, 1e-300) * covariance;
+    (void)dim;
+    return out;
 }
 
 /// A 2D SPD covariance with 1-sigma semi-axes (a, b), the a-axis rotated
