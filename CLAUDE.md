@@ -22,9 +22,23 @@ currency) and nonlinear least squares.
 **Two-phase plan.** Build and verify the whole method in Python first
 (`prototype/`), as the reference implementation; port to a header-only
 C++17 library (`include/`, depends on Eigen + `ellipsoid_tree`) once the
-design is settled. The C++ side is currently just scaffold (CMake, a
-doctest harness, an empty umbrella header, a `hello_world` example) --
-nothing from `prototype/` has been ported yet.
+design is settled.
+
+> ### PROTOTYPE FROZEN as of `e5c36c9` (2026-07-25)
+>
+> The C++ port has started (`docs/cpp-port-plan.md`, milestones M0-M6).
+> From that commit, **`prototype/` is the frozen reference
+> implementation**: its tests keep running and stay green, but new
+> development lands C++-first. Change it only for (a) fixes needed to
+> keep its own tests passing, (b) the harmonic-table generator's C++
+> emission mode, and (c) deliberate, recorded re-openings of a design
+> question -- in which case the C++ side follows, and both get the same
+> bit-identity or tolerance certification the frozen work carried.
+>
+> Do not "improve" the prototype to match something learned in C++
+> without saying so explicitly: the two are supposed to be comparable,
+> and the prototype is what the cross-language tolerance tests measure
+> against.
 
 **Derived from, but diverges from, prior research.** The original method
 was developed in `~/repos/nicks_research_experiments/ellipsoid_psf_pig`

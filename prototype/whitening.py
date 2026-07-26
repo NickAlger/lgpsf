@@ -31,7 +31,9 @@ it's the same operator on both sides), before the existing VJP chain runs.
 """
 import numpy as np
 
-from lg_ellipsoid_feature import eval_feature, jvp_feature, vjp_feature, jac_feature
+from lg_ellipsoid_feature import (
+    FeatureAt, eval_feature, jvp_feature, vjp_feature, jac_feature,
+)
 
 
 def whiten_probes(z, m2_diag):
@@ -77,25 +79,53 @@ def whitened_jac_feature(theta, N, x, row_mass, m2_diag, modes, mu0=None):
     return np.sqrt(row_mass) * np.sqrt(m2_diag) * raw
 
 
+class WhitenedBasisAt:
+    """The whitened basis evaluated at one theta: a FeatureAt plus the
+    fixed scaling sqrt(row_mass) * M2^(1/2).
+
+    The scaling is theta-independent and symmetric, so it applies to the
+    values, to any forward derivative, and (on the way in) to the
+    cotangent of a reverse one -- no new derivative math, exactly as for
+    the free functions above. This is the object the VarPro fitting core
+    holds for the duration of one trial theta, so the values and the
+    derivative it needs afterwards share the pullback and the whole LG
+    evaluation underneath.
+    """
+
+    def __init__(self, feature_at, scale):
+        self._at = feature_at
+        self._scale = scale
+
+    def values(self):
+        return self._scale * self._at.values()
+
+    def jvp(self, dtheta):
+        return self._scale * self._at.jvp(dtheta)
+
+    def jac(self):
+        # the m2_diag scaling broadcasts over the trailing batch axes,
+        # indifferent to the extra P axis
+        return self._scale * self._at.jac()
+
+    def vjp(self, w_hat):
+        return self._at.vjp(self._scale * w_hat)
+
+
 def whitened_basis(N, x, row_mass, m2_diag, modes, mu0=None):
-    """Convenience closure builder: the whitened basis callables for one
-    target, in the exact shapes the fitting layers consume --
-    (eval(theta) -> (n_modes, K), vjp(theta, w_hat) -> (P, K),
-    jac(theta) -> (n_modes, P, K)). Kills the per-caller
-    functools.partial boilerplate."""
-    common = dict(N=N, x=x, row_mass=row_mass, m2_diag=m2_diag,
-                  modes=modes, mu0=mu0)
+    """Build the whitened basis for one target: a callable
+    theta -> WhitenedBasisAt, which is the single object the fitting
+    layers consume (values() -> (n_modes, K), vjp(w_hat) -> (P, K),
+    jac() -> (n_modes, P, K), jvp(dtheta) -> (n_modes, K)).
 
-    def b_eval(theta):
-        return whitened_eval_feature(theta, **common)
+    One callable rather than the eval/vjp/jac triple it replaced, because
+    the three shared a theta's worth of work that three independent
+    closures could not: see FeatureAt and docs/design-notes.md."""
+    scale = np.sqrt(row_mass) * np.sqrt(m2_diag)
 
-    def b_vjp(theta, w_hat):
-        return whitened_vjp_feature(theta, w_hat=w_hat, **common)
+    def basis(theta):
+        return WhitenedBasisAt(FeatureAt(theta, N, x, modes, mu0=mu0), scale)
 
-    def b_jac(theta):
-        return whitened_jac_feature(theta, **common)
-
-    return b_eval, b_vjp, b_jac
+    return basis
 
 
 def whitened_vjp_feature(theta, N, x, row_mass, m2_diag, w_hat, modes, mu0=None):

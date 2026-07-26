@@ -1,10 +1,32 @@
 # C++17/Eigen port plan -- agreed design
 
-**Status: DESIGN AGREED (Nick + session 2026-07-25). Implementation in
-a NEW session against this plan. The Python prototype is the reference
-implementation; on port start it is FROZEN (CLAUDE.md gets a "FROZEN as
-of <commit>" note, its tests stay green in CI, all new development
-lands C++-first).**
+**Status: IN PROGRESS. The prototype is FROZEN as of `e5c36c9`
+(2026-07-25) -- see CLAUDE.md for what that permits. Implementation
+proceeds against this plan, M0 first.**
+
+Before implementation began, four prototype changes settled design
+questions this plan had left open or got wrong; each is recorded in
+`docs/design-notes.md` with its measurements, and the relevant sections
+below have been updated:
+
+| | settled |
+|---|---|
+| `aaddae6` | sparse harmonic table + `harmonic_polynomials` module |
+| `9e4af69` | evaluate a mode SET, not one mode at a time |
+| `bc006a5` | the VarPro VJP regroups by shell |
+| `e5c36c9` | the fitting core takes ONE per-theta basis object |
+
+**Two standing warnings from that work.** (1) *Python timings do not
+predict C++ relative performance here*: ~80% of the prototype's LG
+evaluation time is numpy per-call dispatch overhead, which does not
+exist in C++, so a change worth 1.02x-1.38x in Python may be worth much
+more or much less there. Re-measure on the C++ side; do not port a
+performance conclusion. (2) *Claims get measured before they get
+believed*: two plausible arguments (the shell regrouping being more
+accurate; the harmonic table's zeros being a tolerance question) were
+falsified by measurement, and one 1-ULP regression was caught only
+because bit-identity was the acceptance criterion rather than
+`allclose`.
 
 Grounded in two full-repo surveys (lgpsf itself + the ellipsoid_tree
 engineering pattern, session 2026-07-25); the pattern to mirror is
