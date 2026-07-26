@@ -899,3 +899,60 @@ final point would never be reported. `fit_varpro` closes the trace explicitly
 at the returned point. The prototype's own de-duplication workaround -- against
 the extra Jacobian evaluations scipy inserts at arbitrary points -- is indeed
 unnecessary here; this is a different gap.
+
+## The operator window: ellipsoid by default, ball on request (2026-07-26, C++)
+
+**Decision** (Nick, `include/lgpsf/operator_fit.hpp`, M4). The fit window is
+the caller's `sigma[rho]` inflated by `tau_window`, an ELLIPSOID.
+`WindowShape::Ball` is available and makes it isotropic. The C++ default is
+the ellipsoid; the Python prototype's operator layer shipped a ball.
+
+**The archaeology, because the evidence is split.** The row layer was designed
+on the ellipsoid premise -- `8e64243` justifies the window-shape init family
+with "the caller's window selection is information already paid for (**in the
+intended pipeline it IS a conservatively inflated ellipsoid, whose aspect and
+orientation survive the inflation**), and orientation is precisely the circle
+family's blind spot (the 8:1 frog study)". Four hours later `cfcc6f1`, the
+operator-API design doc, specified "window = kd-ball of radius tau_window *
+(largest 1-sigma axis)", and `1ea8d25` implemented it. The operator doc never
+notes that it contradicts the premise the row layer's init family rests on.
+Different sessions, different contexts, nobody caught it at the time.
+
+**Why it matters, measured.** A ball window's mass-weighted covariance is
+isotropic by construction, so `window_shape` recovers nothing from it: on a
+uniform grid with an 8:1 prior, a ball window gives aspect **1.000** while the
+prior's own ellipse gives **8.016** (true 8.0), with 8x fewer points. The
+window-shape rungs therefore duplicate the circle rungs under a ball window --
+and indeed every PIG operator run disables them explicitly
+(`slice38_lgpsf_operator.py:116`, `slice39_lgpsf_roughbeta.py:214`).
+
+**Why it is not a simple fix.** The ball is what every field-scale experiment
+validating this method actually ran, and it is the convention inherited from
+the pre-lgpsf research pipeline (`slice37`: "Window and validation conventions
+are slice 36's, verbatim"). It is also the orientation-agnostic choice:
+conservatism enters as one scalar applied isotropically, so the admissibility
+guard's validity does not additionally depend on the prior's orientation being
+right. And since deployed support == fit window, the window is also the
+deployed operator's truncation -- `slice38` measured that error floor directly.
+So: **the ball is known to perform well, and the ellipsoid is not yet measured
+at field scale.**
+
+**The resolution.** Default to the intended ellipsoid, keep the ball one flag
+away, and settle it by experiment once the C++ port makes the PIG replay cheap.
+Neither is settled until then.
+
+**Two implementation points.** The ball is NOT a different query type: it is
+the same ellipsoid query with `sigma` replaced by `lambda_max(sigma) * I`.
+That makes "the flag changes only the anisotropy, never the scale" structural
+-- both are `{x : (x-mu0)^T A^-1 (x-mu0) <= tau^2}`, differing only in `A` --
+so the comparison has exactly one variable. And windows for ALL rows come from
+ONE dual-tree descent (column-point tree against a tree of every row's query
+ellipsoid), not a query per row, matching how the deployed sparsity pattern is
+already derived.
+
+**Testing note worth keeping.** The "bit-identical across thread counts" check
+first failed for a reason that had nothing to do with threads: the output
+arrays are NaN-padded for rows with no shipped model, and `NaN != NaN`, so
+Eigen's `operator==` reported a difference between a run and ITSELF. The
+integer and status arrays passed precisely because they carry no NaN. Compare
+NaN-padded arrays with a NaN-aware helper.
