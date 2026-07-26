@@ -9,7 +9,8 @@ add_executable(lgpsf_tests
     test_levenberg_marquardt.cpp
     test_varpro.cpp
     test_init_dictionary.cpp
-    test_mode_policy.cpp)
+    test_mode_policy.cpp
+    test_probe_fit.cpp)
 target_link_libraries(lgpsf_tests PRIVATE lgpsf::lgpsf)
 target_include_directories(lgpsf_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty)
 target_compile_options(lgpsf_tests PRIVATE

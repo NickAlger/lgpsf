@@ -87,9 +87,13 @@ struct ModeSearchContext
     /// list, against the current winner's residual at its fitted parameters --
     /// a projection, not a refit. Empty before any successful fit.
     ///
-    /// No policy shipped here consumes it; it exists so that adaptive
-    /// policies (MarginGreedy, when unparked) need no interface change, and
-    /// the engine builds it lazily so an unused hook costs nothing.
+    /// No policy shipped here consumes it; it exists so that an adaptive
+    /// policy (MarginGreedy, when unparked) needs no change on the engine
+    /// side. The engine supplies it after every successful level, at the cost
+    /// of one linear solve and one range basis -- nothing beside the fits.
+    ///
+    /// Ask only about modes NOT already active. An active mode's column
+    /// projects to roundoff, so its "profit" is a 0/0 and means nothing.
     std::function<Eigen::VectorXd( const std::vector<Mode>& )> margin_profit;
 
     /// Squared norm of that residual -- the noise-gate denominator.

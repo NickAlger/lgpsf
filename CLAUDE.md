@@ -335,7 +335,7 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
 
 ## Current status / what's not built yet
 
-- **The C++ port: M0, M1 and M2 COMPLETE, M3 next** -- `docs/cpp-port-plan.md`
+- **The C++ port: M0-M3 COMPLETE, M4 next** -- `docs/cpp-port-plan.md`
   (deps, threading, header-only, bindings, milestones M0-M6, the
   hand-rolled LM contract, and the COMPILE MEMORY SAFETY rules: this
   machine has been OOM-crashed by large `-j` builds -- **read that
@@ -371,8 +371,23 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
   cost -- caller errors stay `std::invalid_argument`). Suite: 74 cases
   / 98,652 assertions. The LM solves its trust-region subproblem by an
   SVD hook step rather than MINPACK's `lmpar`; measured against scipy
-  it is marginally faster to converge with identical answers. M3 is
-  `init_dictionary` + `probe_moments` + `mode_policy` + `probe_fit`.
+  it is marginally faster to converge with identical answers.
+  Shipped in M3: `init_dictionary.hpp`, `probe_moments.hpp`,
+  `mode_policy.hpp` (virtual `ModePolicy` with `propose` **const**;
+  MarginGreedy stays parked Python-side) and `probe_fit.hpp`. Suite:
+  116 cases / 100,365 assertions. **TWO POLICY CHANGES from the
+  prototype, both deliberate.** (1) `MuPolicy::Pinned` is the DEFAULT --
+  the slice-38 evidence is that release ships on ~91% of rows while
+  buying nothing, so it stays available on request but is no longer
+  automatic until a basin-scale `||mu - mu0||` bound re-arms it.
+  (2) **RANDOMNESS IS HOISTED TO `operator_fit`**: the CV split and the
+  warm-start jitter arrive at `fit_from_probes` as DATA, so it and
+  everything beneath it are pure functions of their inputs -- checkable
+  as "no `<random>` below `operator_fit.hpp`". Folds default to
+  round-robin with no generator at all. See the plan's randomness
+  section for what that rests on (probe exchangeability) and when to
+  revisit it. M4 is `operator_fit.hpp` with `parallel_for` over rows
+  and native ellipsoid_tree geometry.
 - A hand-rolled Levenberg-Marquardt loop (port milestone M2): the
   prototype's outer loop delegates to scipy/MINPACK -- the one
   delegated numeric; everything else in `varpro.py` is library-free.

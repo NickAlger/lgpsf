@@ -104,10 +104,10 @@ Hard rules for every session working on the C++ side:
 | lg_ellipsoid_feature.py | lg_ellipsoid_feature.hpp | **DONE (M1).** `FeatureAt` + free wrappers; `jac()` is indexed by PARAMETER (num_params of (K, num_modes)), which is how Golub-Pereyra slices it. Does not retain `x` -- the pullback's derivatives need only `u` |
 | whitening.py | whitening.hpp | **DONE (M1).** The ONLY masses layer (invariant preserved). `whitened_basis` became `WhitenedBasis`, a functor with `operator()(theta_hat) -> WhitenedBasisAt` -- a concrete type, not `std::function`, so `varpro.hpp` templates on it |
 | varpro.py | varpro.hpp | **DONE (M2).** BDCSVD inner solve, FWL, Kaufman one-sweep, structs for options/results, `enum class JacobianVariant`. The basis is a TEMPLATE parameter, so there is no indirect call per trial point and Golub-Pereyra availability is a compile-time trait rather than `hasattr`. **The LM lives in `detail/levenberg_marquardt.hpp`**, not here -- it is the one piece with no reference to port, so it is generic and tested in isolation |
-| init_dictionary.py | init_dictionary.hpp | cKDTree k-NN -> ellipsoid_tree KDTree; labelled rungs as `std::pair<std::string, VectorXd>` |
-| probe_moments.py | probe_moments.hpp | trivial |
+| init_dictionary.py | init_dictionary.hpp | **DONE (M3).** `theta_from_L` -> `theta_hat_from_cholesky` (pinned encoding). First place the ellipsoid_tree layout flip bites: its KDTree wants points as COLUMNS, so the batch transposes on the way in. Degenerate inputs the prototype answered with inf/NaN now raise |
+| probe_moments.py | probe_moments.hpp | **DONE (M3).** `spike_index < 0` replaces the None sentinel; thresholds that suppress every weight raise rather than returning a silent NaN |
 | mode_policy.py | mode_policy.hpp | **DONE (M3).** Virtual `ModePolicy` base with `propose` **const**, so statelessness is enforced by the type rather than by convention; `SequencePolicy` + FixedSet/ShellLadder/ExplicitLadder/WedgeLadder/RadialFirstLadder. **MarginGreedy stays Python-side while parked.** `LevelRecord` carries a `bool has_winner` rather than the winning fit -- policies only ever test it for existence, and the boolean breaks what would be a circular dependency on the engine's header |
-| probe_fit.py | probe_fit.hpp | configs/results as structs; status/stop_reason as enums from day one; CV folds + jitter per the randomness policy |
+| probe_fit.py | probe_fit.hpp | **DONE (M3).** Configs/results as structs, `MuPolicy`/`StopReason` as enums. **`MuPolicy::Pinned` is the DEFAULT** (was `fixed_then_release`), per the slice-38 evidence that release ships on ~91% of rows while buying nothing; release stays available on request until a basin-scale bound re-arms it. The CV split and the jitter table arrive as DATA, so the fit is a pure function of its inputs. One mode mechanism (`mode_policy`), no legacy `mode_levels`/`mode_sets` fields. The result's `theta` is the PUBLIC absolute encoding |
 | operator_fit.py | operator_fit.hpp | native ellipsoid_tree calls (BallTree/Ball/EllipsoidTree/collision_pairs); parallel_for over rows; OperatorFit flat arrays port as-is (windows already CSR); `to_linear_operator` is NOT ported (Python-side binding convenience) |
 
 Not ported: `examples/*.py` plotting/research scripts, MarginGreedy
@@ -405,9 +405,18 @@ nothing in the row fitter.
 - **M2 (original spec)** varpro.hpp incl. the hand-rolled LM. Accept:
   inner-LA tests vs brute-force references; synthetic recovery at
   tolerance; the max_nfev=1 semantic; sentinel behavior.
-- **M3** init_dictionary + probe_moments + mode_policy (fixed
-  policies) + probe_fit. Accept: contract tests (counting rule, skip,
-  tie-break, certificates), equivalence fingerprints, synthetic
+- **M3 -- DONE.** `init_dictionary.hpp`, `probe_moments.hpp`,
+  `mode_policy.hpp`, `probe_fit.hpp`, and 42 test cases across three
+  test files; the suite is at 116 cases / 100,365 assertions. Settled
+  here: randomness hoisted to the operator layer (section above), and
+  `MuPolicy::Pinned` as the default. Calibration for M4: a synthetic
+  target recovers to a CV score of ~7e-16, the target certificate cuts
+  12 candidates to 1, and the admissibility guard rules out 12 of 12
+  candidates on a deliberately oversized target while the fallback
+  still returns a model with its evidence.
+- **M3 (original spec)** init_dictionary + probe_moments + mode_policy
+  (fixed policies) + probe_fit. Accept: contract tests (counting rule,
+  skip, tie-break, certificates), equivalence fingerprints, synthetic
   recovery suite.
 - **M4** operator_fit with parallel_for + native ellipsoid_tree.
   Accept: M1!=M2 synthetic operator suite; deployed-support invariant;
