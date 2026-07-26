@@ -260,23 +260,73 @@ iterate paths):
 Validation: the prototype's synthetic recovery suite at tolerance
 (theta/c/s to 1e-6, cost floors), plus M5's PIG replay.
 
-## Randomness + determinism policy
+## Randomness + determinism (current design, 2026-07-25 -- revisitable)
 
-Deviation from ellipsoid_tree's "no randomness in library headers"
-(lgpsf's CV folds and warm-start jitter are load-bearing), resolved
-the ellipsoid_psf way:
+The whole library needs randomness in exactly two places, both found by
+survey rather than assumption: the **CV fold assignment**
+(`probe_fit.py:168`) and the **warm-start jitter** (`probe_fit.py:501`).
+Probe fields themselves are caller-supplied, so generating them is not
+this library's job.
 
-- `std::mt19937` **raw output only** -- no `std::*_distribution`
-  (implementation-defined across stdlibs). Uniforms via `gen() /
-  2^32`; normals via Box-Muller on raw output (the ellipsoid_psf
-  low_rank.hpp helpers are the model).
-- **Per-row seeds: `seed + rho`** at the operator layer, so results
-  are bit-deterministic regardless of scheduling/num_threads. (A
-  documented improvement over the prototype, which shares one
-  generator across rows within a chunk -- cross-language equivalence
-  is tolerance-based anyway, see test doctrine.)
-- Numpy PCG64 streams (fold permutations, jitter) are deliberately NOT
-  reproduced.
+**Randomness is hoisted to `operator_fit`.** It builds the split and the
+jitter table once, before any row is touched, and passes both DOWN as
+data; `fit_from_probes` and everything beneath it are pure functions of
+their inputs. The invariant is mechanically checkable: **no `<random>`
+include and no generator anywhere below `operator_fit.hpp`.**
+
+Two reasons, the first of which holds even single-threaded:
+
+- The split is genuinely **field-level data**. `V` is `(K_all, k)` and
+  every row uses all `k` probes -- a window restricts which POINTS enter,
+  never which probes -- so there is one split for the whole fit. And
+  candidate CV scores are only comparable on identical folds, which
+  becomes a structural fact when there is one split object rather than
+  something maintained by re-seeding with a fixed value at every call
+  (which is how the prototype gets it).
+- It makes M4's "bit-identical across `num_threads`" acceptance
+  criterion true by construction. (Note the prototype does NOT share a
+  generator across rows within a chunk, as an earlier version of this
+  plan claimed -- `default_rng(cfg.seed)` is constructed inside
+  `fit_from_probes`, so it is already per-row.)
+
+Concretely:
+
+- `struct CvFold { VectorXi train, validation; }`, and the split is a
+  `std::vector<CvFold>`. Train and validation are stored EXPLICITLY
+  rather than "validation, train = complement", so the type can express
+  splits that are not partitions -- overlapping validation sets,
+  subsampled training sets, a single designed holdout.
+- **Default: round-robin, `fold(i) = i mod n_folds`, no generator at
+  all.** `fit_operator(..., seed = nullopt)` is fully deterministic;
+  passing a seed is an explicit opt-in to a permuted split, for checking
+  that a result is not an artifact of one particular partition.
+- Jitter is a shared `max_levels x P` table (`P` is field-level too),
+  `0.05 * U(-1, 1)`, sized generously (64 levels) and reused cyclically
+  beyond that. A per-row table is out at field scale (~1 GB at 10^6
+  rows), and a shared one is exactly what the prototype already does,
+  since every row re-seeds identically.
+- Where a generator IS used (a seed was passed): `std::mt19937` **raw
+  output only**, uniforms via `(gen() + 0.5) / 2^32`. Never
+  `std::*_distribution` -- `mt19937` is specified by the standard but
+  the distributions' algorithms are not, so they differ across
+  libstdc++/libc++/MSVC. No Box-Muller is needed, the jitter being
+  uniform.
+- Numpy PCG64 streams are deliberately NOT reproduced.
+
+**What this rests on, and when to revisit it.** Round-robin folds are
+justified by the probes being EXCHANGEABLE -- i.i.d. random by
+construction, so probe index carries no information and the split is a
+nuisance parameter doing no statistical work. Structured probes
+(sinusoids, polynomials, structured random ensembles -- all hypothetical
+today) would break that: probe index would then correlate with
+frequency or degree, and the split would become a modelling choice
+rather than a nuisance, with round-robin stratifying across the
+structure and contiguous blocks testing extrapolation instead. This is
+a design fitted to the current probe model, not a rule.
+
+The hoisting is what makes revisiting cheap: the split is an INPUT, so a
+structured-probe experiment changes one call site in `operator_fit` and
+nothing in the row fitter.
 
 ## Test doctrine (three tiers)
 
