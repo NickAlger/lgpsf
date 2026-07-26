@@ -335,7 +335,7 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
 
 ## Current status / what's not built yet
 
-- **The C++ port: M0-M3 COMPLETE, M4 next** -- `docs/cpp-port-plan.md`
+- **The C++ port: M0-M3 and M4a COMPLETE, M4b next** -- `docs/cpp-port-plan.md`
   (deps, threading, header-only, bindings, milestones M0-M6, the
   hand-rolled LM contract, and the COMPILE MEMORY SAFETY rules: this
   machine has been OOM-crashed by large `-j` builds -- **read that

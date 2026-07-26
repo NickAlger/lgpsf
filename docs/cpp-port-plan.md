@@ -1,8 +1,14 @@
 # C++17/Eigen port plan -- agreed design
 
-**Status: IN PROGRESS. The prototype is FROZEN as of `e5c36c9`
-(2026-07-25) -- see CLAUDE.md for what that permits. Implementation
-proceeds against this plan, M0 first.**
+**Status: IN PROGRESS -- M0 through M4a complete, M4b next.** The
+prototype is FROZEN as of `e5c36c9` (2026-07-25); see `prototype/README.md`
+for what it is now for and where the C++ deliberately differs from it.
+
+**Several decisions in this plan were reopened during implementation and
+the sections below have been updated in place.** Each divergence from the
+prototype is argued in `docs/design-notes.md`; the maintainer-local
+`dev/session-issues-2026-07-26.md` records the problems and discrepancies
+found along the way, including the ball-vs-ellipsoid window archaeology.
 
 Before implementation began, four prototype changes settled design
 questions this plan had left open or got wrong; each is recorded in
@@ -418,9 +424,26 @@ nothing in the row fitter.
   (fixed policies) + probe_fit. Accept: contract tests (counting rule,
   skip, tie-break, certificates), equivalence fingerprints, synthetic
   recovery suite.
-- **M4** operator_fit with parallel_for + native ellipsoid_tree.
-  Accept: M1!=M2 synthetic operator suite; deployed-support invariant;
-  bit-identical results across num_threads in {1, 4}.
+- **M4a -- DONE.** `operator_fit.hpp`: `fit_operator` + `OperatorFit`,
+  `parallel_for` over rows, the always-on baseline guard, CSR fit
+  windows, padded flat arrays. 8 test cases; the suite is at 125 cases /
+  103,143 assertions. Settled here: the window as a continuous
+  `window_aspect_cap` (1 = ball, infinity = the caller's ellipsoid, the
+  default) and all rows' windows from ONE dual-tree descent; the
+  counting rule counting the parameters actually fit. Calibration: an
+  M1 != M2 synthetic operator recovers coefficients to 6.8e-8 and spikes
+  to 2.6e-8, and results are bit-identical across num_threads in {1, 4}.
+- **M4b -- REMAINING.** The component-typed helpers: `eval_kernel`,
+  `eval_entries`, `matvec`, `assemble_sparse`, `ellipsoid_field`,
+  `qc_map`, `spike_measure`, all under deployed-support == fit-window.
+  `assemble_sparse` reuses the `collision_pairs` descent over the FITTED
+  ellipsoids, intersected with the windows. **Undecided:** its return
+  type, `Eigen::SparseMatrix` vs CSR triplet arrays (see the numerics
+  map, which defers this to M4).
+- **M4 (original spec)** operator_fit with parallel_for + native
+  ellipsoid_tree. Accept: M1!=M2 synthetic operator suite;
+  deployed-support invariant; bit-identical results across num_threads
+  in {1, 4}.
 - **M5** bindings + pyproject + wheels config. Accept: bindings pytest
   (boundary/marshalling, rows-in/rows-out); **the PIG slice-38/39
   replay through the bindings**.
