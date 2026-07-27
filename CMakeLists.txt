@@ -64,9 +64,10 @@ if(LGPSF_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
-# bindings/ isn't scaffolded yet (no Python binding code to build); add
-# LGPSF_BUILD_PYTHON + add_subdirectory(bindings) here, mirroring
-# ellipsoid_psf/CMakeLists.txt, once that directory exists.
+option(LGPSF_BUILD_PYTHON "Build the lgpsf Python bindings (pybind11 via FetchContent)" OFF)
+if(LGPSF_BUILD_PYTHON)
+    add_subdirectory(bindings)
+endif()
 
 # ------------------------- Installation / CMake package export -------------------------
 # Default ON when built standalone against an *installed* ellipsoid_tree; OFF as a

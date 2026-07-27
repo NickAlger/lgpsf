@@ -11,15 +11,17 @@ Frozen as of **`e5c36c9` (2026-07-25)**, at the point the C++ port began.
 - **The design record.** Most of this project's reasoning was worked out here
   first, and the module docstrings carry it. The headers in `include/lgpsf/`
   reproduce that reasoning where it still applies.
-- **A tolerance reference.** The port's cross-language tests compare recovery
-  outcomes against this implementation. See the test doctrine in
-  [`docs/cpp-port-plan.md`](../docs/cpp-port-plan.md).
-- **A running check.** Its own tests still pass and are expected to keep
-  passing. Run them with `pytest` from this directory.
+- **A don't-rot check.** Its own tests still pass and are expected to keep
+  passing, which is what keeps the design record above honest. Run them with
+  `pytest` from this directory. They test the prototype against ITSELF; no
+  test anywhere measures the C++ against this directory.
 
 ## What it is not
 
-It is **not authoritative** where the C++ deliberately differs. Several
+It is **not a ground truth and not a test oracle.** The C++ is the ground
+truth; this is history. Where the two disagree that is a fact about the
+prototype, not a bug report against the C++ -- and the C++ must never be
+constrained to match it. Several
 design questions were reopened during the port, and in every such case the
 C++ side is the decision and this directory is the history. When the two
 disagree, read [`docs/design-notes.md`](../docs/design-notes.md) — every

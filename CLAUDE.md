@@ -35,10 +35,12 @@ design is settled.
 > question -- in which case the C++ side follows, and both get the same
 > bit-identity or tolerance certification the frozen work carried.
 >
-> Do not "improve" the prototype to match something learned in C++
-> without saying so explicitly: the two are supposed to be comparable,
-> and the prototype is what the cross-language tolerance tests measure
-> against.
+> **The C++ is the GROUND TRUTH; this directory is history.** Nothing in
+> the C++ or binding test suites measures against it, and a disagreement
+> between the two is a fact about the prototype rather than a bug report
+> against the C++. Do not "improve" the prototype to match something
+> learned in C++ without saying so explicitly -- and equally, never
+> constrain the C++ to match the prototype.
 
 **Derived from, but diverges from, prior research.** The original method
 was developed in `~/repos/nicks_research_experiments/ellipsoid_psf_pig`

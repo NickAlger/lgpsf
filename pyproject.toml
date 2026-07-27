@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: MIT
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.12"]
+build-backend = "scikit_build_core.build"
+
+[project]
+# Distribution (PyPI) name — matches the repo. The import name is `lgpsf`.
+name = "lgpsf"
+version = "0.1.0"
+description = "Laguerre-Gaussian PSF operator approximation with VarPro ellipsoid fitting (header-only C++ core with Python bindings)"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Nick Alger" }]
+requires-python = ">=3.9"
+dependencies = ["numpy"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+
+[project.optional-dependencies]
+# Only `assemble_sparse` needs it: pybind11's Eigen sparse caster hands back a
+# scipy.sparse matrix. Everything else is numpy-only.
+sparse = ["scipy"]
+
+[project.urls]
+Homepage = "https://github.com/NickAlger/lgpsf"
+Repository = "https://github.com/NickAlger/lgpsf"
+
+[tool.scikit-build]
+cmake.version = ">=3.16"
+
+[tool.scikit-build.cmake.define]
+LGPSF_BUILD_PYTHON = "ON"
+LGPSF_BUILD_TESTS = "OFF"
+LGPSF_BUILD_EXAMPLES = "OFF"
+
+[tool.cibuildwheel]
+# CPython 3.9-3.13. Skip musllinux (Alpine), 32-bit, and PyPy, matching
+# ellipsoid_tree: ARM/HPC users consume the header-only C++ core from source.
+build = "cp39-* cp310-* cp311-* cp312-* cp313-*"
+skip = "*-musllinux* *_i686 *-win32"
+build-frontend = "build"
+test-requires = "pytest numpy scipy"
+test-command = "pytest {project}/bindings/tests"
+
+[tool.cibuildwheel.macos]
+archs = "universal2"

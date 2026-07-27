@@ -100,9 +100,14 @@ Hard rules for every session working on the C++ side:
   `gil_scoped_release` + `num_threads` on batched calls,
   scikit-build-core + cibuildwheel + Trusted Publishing, exactly per
   the ellipsoid_tree pyproject/workflow pattern.
-- **(e) Prototype: frozen historical reference** (see Status header).
-  It remains the generator of golden fixtures and the tolerance
-  reference; its tests keep running in CI.
+- **(e) Prototype: frozen historical ARTIFACT** (see Status header).
+  **The C++ is the ground truth.** The prototype is not a reference
+  implementation, not a generator of golden fixtures, and not a test
+  oracle: nothing in the C++ or binding suites measures against it. It
+  is kept for the design record its docstrings carry, and its own tests
+  keep running in CI as a don't-rot check on that record -- which
+  certifies the prototype against itself, not the C++ against the
+  prototype.
 
 ## File -> header map (1:1, dependency order)
 
@@ -274,8 +279,10 @@ iterate paths):
 6. Result fields: theta, success, message, n_iterations (accepted
    steps), n_function_evals, final jacobian.
 
-Validation: the prototype's synthetic recovery suite at tolerance
-(theta/c/s to 1e-6, cost floors), plus M5's PIG replay.
+Validation, as actually done in M2: the LM STANDALONE against problems
+with published answers, then a synthetic VarPro recovery suite in C++
+(theta/c/s to 1e-6, cost floors) -- neither of which measures against
+the prototype. M5's PIG replay is the end-to-end check.
 
 ## Randomness + determinism (current design, 2026-07-25 -- revisitable)
 
@@ -356,14 +363,22 @@ nothing in the row fitter.
 2. **Internal-equivalence tests** (legacy-config == policy
    fingerprints; FWL == joint fit): assert path-A == path-B within the
    C++ implementation; never against Python golden values.
-3. **Cross-language tolerance tests**: synthetic recovery outcomes vs
-   the frozen prototype (fixture problems dumped to files), and the
-   acceptance test -- **replay PIG slices 38/39 through the bindings**
-   and match the committed numbers at tolerance (smooth beta ~0.015 @
-   k=100 clipped+sym; rough beta ~0.057; forensic col-resids
-   0.06-0.14). Caveat from the survey: end-to-end Python numbers are
-   entangled with MINPACK + PCG64, so "tolerance" means statistically
-   indistinguishable quality, not matching digits.
+3. **Binding-equivalence tests**: the bindings are the same core with a
+   different caller, so they must reproduce it **EXACTLY** -- no
+   tolerance is appropriate, and any drift is a marshalling bug. The
+   acceptance test is the PIG replay through the bindings matched
+   BIT-FOR-BIT against the C++ raw-binary bridge (`dev/pig_fit.cpp`,
+   `dev/rb_fit.cpp`), which is where the authoritative numbers come
+   from. Marshalling gets its own checks: layout round-trips, dtype and
+   shape handling, error mapping, and determinism across thread counts.
+
+   **NOT against the frozen prototype.** The C++ is the ground truth and
+   the prototype is history, so a red test there would pressure the C++
+   to match an artifact -- backwards. The prototype's recorded PIG
+   figures (smooth beta 0.0147 @ k=100 clipped+sym; rough beta 0.0561;
+   forensic col-resids 0.06-0.14) are a comparison ALREADY MADE and
+   recorded in `docs/design-notes.md`; they are a historical benchmark,
+   not an oracle to re-run.
 
 ## Milestones (each a reviewable unit, riskiest early)
 
@@ -460,9 +475,37 @@ nothing in the row fitter.
   ellipsoid_tree. Accept: M1!=M2 synthetic operator suite;
   deployed-support invariant; bit-identical results across num_threads
   in {1, 4}.
-- **M5** bindings + pyproject + wheels config. Accept: bindings pytest
-  (boundary/marshalling, rows-in/rows-out); **the PIG slice-38/39
-  replay through the bindings**.
+- **M5 -- IN PROGRESS.** bindings + pyproject + wheels config.
+  **Accept: the PIG slice-38/39 replay through the bindings reproducing
+  the C++ raw-binary bridge BIT-FOR-BIT**, plus a marshalling pytest
+  (layout round-trips, dtype/shape handling, error mapping,
+  determinism across thread counts). Not a tolerance comparison against
+  the prototype -- see the test doctrine.
+
+  **Binding scope: two tiers, both in.**
+  - *Tier A, the product*: `fit_operator`, `LGOperator` and its
+    helpers, `fit_from_probes`, `LGExpansion`, the configs, the mode
+    policies, the enums.
+  - *Tier B, the primitives*: `lg_functions`, `harmonic_polynomials`,
+    `ellipsoid_transform`, `whitening`, `varpro` -- free-function forms
+    only, not the stateful `LGBasisAt`/`FeatureAt`/`WhitenedBasisAt`
+    evaluation objects. **Justified by day-to-day research use from
+    Python** (Nick, 2026-07-27), not by any comparison against the
+    prototype. Its tests are therefore marshalling tests; the math is
+    already covered by the C++ suite.
+
+  **Settled decisions.** `LGOperator` binds as a C++ class with numpy
+  properties, not a Python dataclass, so the helpers take it directly
+  and it round-trips through `build_operator`. `RowStatus`/`RowStop`
+  bind as enums with the diagnostics arrays exposed as `int8` for
+  masking. `assemble_sparse` returns what pybind11's Eigen sparse
+  caster gives (a `scipy.sparse` matrix), making scipy an OPTIONAL
+  dependency of that one function. **No Python-defined mode policies**:
+  `fit_operator` releases the GIL and calls `propose` from worker
+  threads, so a trampoline would have to re-acquire per call --
+  serializing the fit and inviting deadlock. Built-ins only; the
+  extension point is deliberately closed. Bare extension module, no
+  Python wrapper package, so there is no second place to keep in sync.
   - The slice-38 half of that replay is ALREADY DISCHARGED, ahead of the
     bindings, through a raw-binary bridge (`dev/pig_fit.cpp`): the whole
     6557-row PIG operator at k=100, shells to level 6, window-clipped and
@@ -471,7 +514,9 @@ nothing in the row fitter.
     coefficients, 0 failures) and gating changes no live row's prediction
     by a single bit. See `docs/design-notes.md` and the maintainer-local
     `dev/pig-cxx-2026-07-26.md`. What the bindings still owe M5 is the
-    ergonomics and the marshalling tests, not the numerical result.
+    ergonomics and the marshalling tests, not the numerical result --
+    and the bindings are checked against THOSE numbers, bit for bit,
+    rather than against the prototype's.
   - **Slice 39 (rough beta) is discharged too**, by the same route
     (`dev/rb_fit.cpp`): five cells (k = 20/50/100 x smoothed/pointwise
     sigma), QC on the 30 held-out pairs plus the 10 impulse-column
@@ -501,7 +546,9 @@ Rationale and the profile behind it are in `docs/design-notes.md`;
 `dev/perf-2026-07-26.md` also lists what was looked at and deliberately
 left alone.
 - **M6** infra: CI (g++/clang matrix + sanitizers at -j2 +
-  version-consistency + a prototype-tests job), docs generation +
+  version-consistency + a prototype-tests job -- the don't-rot check on
+  the design record, which certifies nothing about the C++), docs
+  generation +
   Doxygen, README/CHANGELOG/CITATION/CONTRIBUTING per the
   ellipsoid_tree conventions (incl. the compile-memory section).
 

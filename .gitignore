@@ -83,3 +83,7 @@ dev/
 *.fls
 *.fdb_latexmk
 *.synctex.gz
+
+# Python bindings build/scratch
+build-py/
+*.egg-info/
