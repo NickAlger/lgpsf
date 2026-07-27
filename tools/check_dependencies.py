@@ -22,12 +22,14 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
-# Everything that ends up in a wheel, a tarball, or a user's build, plus the
-# docs a public reader is pointed at. `archive/` is excluded from the sdist
-# (see pyproject.toml) and `dev/` is maintainer-local scratch; neither is
-# checked, because neither reaches a user.
-SHIPPED = ["include", "bindings", "tests", "examples", "docs", "cmake",
-           "CMakeLists.txt", "pyproject.toml", "README.md"]
+# Every tracked directory a reader can reach: what ships in a wheel or
+# tarball, plus the docs, developer notes and experiments that are public on
+# the repo even when excluded from the sdist. `archive/` is the one exception
+# -- it is frozen third-party-to-us history, excluded from the sdist, and
+# editing it to satisfy a lint would falsify the record.
+SHIPPED = ["include", "bindings", "tests", "examples", "docs", "dev",
+           "experiments", "cmake", "CMakeLists.txt", "pyproject.toml",
+           "README.md"]
 
 # `ellipsoid_tree` is a PUBLIC library we explicitly depend on, so referencing
 # it is correct rather than a leak. Everything else outside the repo is not.

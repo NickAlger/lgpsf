@@ -72,8 +72,11 @@ Testing/
 __pycache__/
 *.pyc
 
-# Maintainer-local scratch
-dev/
+# dev/ is TRACKED: developer notes and plans are part of the repo. Its
+# scratch -- raw data dumps, compiled harnesses, profiler output -- is not.
+dev/**/*.bin
+dev/**/*.out
+dev/**/*.npz
 
 # Sandbox mount artifacts: shell rc files bind-mounted to /dev/null, and an
 # empty tree left by a relative path that escaped. Not files, not ours.
@@ -97,3 +100,6 @@ dev/
 # Python bindings build/scratch
 build-py/
 *.egg-info/
+
+# Claude Code scratch
+**/.cc-writes/
