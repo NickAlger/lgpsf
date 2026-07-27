@@ -481,6 +481,11 @@ nothing in the row fitter.
   plus a marshalling pytest (layout round-trips, dtype/shape handling,
   error mapping, determinism across thread counts).
 
+  The maintainer-local PIG replay adds a bit-identity check against the
+  C++ bridge, **qualified: identical between builds compiled with the
+  same flags, not across them.** Verified for both window shapes on all
+  of score, baseline_score, status and the three deployment variants.
+
   **The gate must be publicly runnable** (Nick, 2026-07-27). lgpsf is
   the general-purpose library and the glaciology work is a downstream
   consumer of it, so the dependency runs one way: PIG may depend on

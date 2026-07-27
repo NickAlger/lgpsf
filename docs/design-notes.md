@@ -1496,3 +1496,43 @@ IGNORES `asfortranarray`, so a Fortran-ordered array does not land as
 column-major. The first run gave CV ~0.97 and infinite errors; running the
 PROTOTYPE on the same dumped bytes reproduced the ~0.98, which located the fault
 in the bridge rather than in either implementation.
+
+## `-march=native` changes the answer on a few rows, and that is the problem's fault (2026-07-27)
+
+Replaying the whole PIG fit through the Python bindings and comparing against
+the C++ raw-binary bridge was expected to be bit-identical -- same core, two
+callers. It was not, until the two were compiled with the SAME FLAGS. The
+bridge had `-march=native`; the bindings module has plain `-O3`.
+
+The disagreement is almost entirely last-bit:
+
+| |Δscore| over the 5076 live rows | rows |
+|---|---|
+| > 0 | 4634 (91%) |
+| > 1e-15 | 1380 (27%) |
+| > 1e-9 | 279 (5.5%) |
+| > 1e-3 | **4 (0.08%)** |
+
+Median `|Δscore|` is **1.1e-16**, one ULP. But the maximum is 5.1e-2, a
+relative 0.62 on one row.
+
+**That tail is not a bug and not a marshalling error.** `-march=native` enables
+FMA and wider vectors, which reorders floating-point reductions; a 1-ULP
+difference early in a row's fit is occasionally enough to send the
+Levenberg-Marquardt loop into a DIFFERENT LOCAL MINIMUM. The VarPro landscape
+is multimodal, so two nearby basins can both be admissible and the row lands in
+whichever the trajectory reaches. Every row still made the same ship decision --
+`status` was identical even before the flags matched -- so nothing downstream
+noticed.
+
+With matched flags, everything is bit-identical: score, baseline_score, status
+and all three deployment variants, for both window shapes.
+
+**Consequences worth remembering.** Bit-identity is a within-build property
+here, not a cross-build one, so any acceptance criterion phrased as
+"bit-for-bit" has to say against which build. Comparing results across
+machines, compilers or `-march` settings should expect a handful of marginal
+rows to differ materially while the field statistics do not move. And the
+reverse inference is available too: if a comparison shows MANY rows differing,
+that is not floating point -- 91% differing by one ULP is, but 5% differing by
+1e-3 would not be.
