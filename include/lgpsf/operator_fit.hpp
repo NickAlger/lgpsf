@@ -210,6 +210,12 @@ struct OperatorFitConfig
     /// 0 lets the implementation choose. Results are bit-identical across
     /// thread counts by construction: rows write disjoint slots, and every
     /// shared registry is built serially in row order afterwards.
+    ///
+    /// That is a WITHIN-BUILD guarantee. Across builds compiled with different
+    /// flags a few rows can land on a different local minimum, because one ULP
+    /// is enough to choose a basin where the objective is flat. See
+    /// `docs/reproducibility.md` -- measured at 0.08% of rows, with no effect
+    /// on the field.
     int num_threads = 0;
 };
 

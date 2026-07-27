@@ -1,6 +1,8 @@
 # docs
 
 - [design-notes.md](design-notes.md) -- running log of design decisions relevant to the C++ port.
+- [validation.md](validation.md) -- what the library was validated against at field scale (the PIG glaciology Hessian): the problem, the measurements, and which defaults came out of them. The anchor for the PIG citations in the headers.
+- [reproducibility.md](reproducibility.md) -- what is bit-exact and what is not: identical across threads, runs, callers and the QR/SVD inner solve; NOT across builds with different compiler flags, where ~0.08% of rows can land on a different local minimum. Includes how to read a failed comparison.
 - [varpro-whitening-notes.pdf](varpro-whitening-notes.pdf) ([.tex](varpro-whitening-notes.tex)) -- noise-whitening derivation: combining theta-dependent smooth and theta-independent extra basis functions without mass matrices in the VarPro fit.
 - [robust-init-notes.md](robust-init-notes.md) -- PARKED design note: the portfolio/init-dictionary recipe for robust per-row fitting, the anisotropy-stress evidence behind it, and the enrichment-saddle fact.
 - [probe-moment-ellipsoids.md](probe-moment-ellipsoids.md) -- PARKED idea sketch: conservative per-row ellipsoid fields from probe data alone (squared-kernel moment identity, iterated window shrinkage, cross-row smoothing), with the feasibility analysis and the free decisive experiment.
