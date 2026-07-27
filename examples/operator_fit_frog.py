@@ -12,6 +12,11 @@ product that makes it mildly negative in places. That rotation is the point --
 a stationary convolution cannot represent it, and it is exactly what a fitted
 per-row ellipsoid can.
 
+The kernel is anchored at the TARGET, i.e. transposed relative to how it is
+usually written, so that a ROW of the operator is a point-spread function.
+That is the object `fit_operator` models, so it is also the object worth
+plotting; see `frog_row` for why the other orientation goes wrong.
+
     H[i, j] = m1[i] * m2[j] * phi(x_i, x_j)
 
 on a uniform grid over the unit square, with `m` the lumped mass. The fitter
@@ -53,16 +58,23 @@ def _bump(x):
 
 
 def frog_row(target, sources, sigma0_diag=SIGMA0_DIAG):
-    """phi(target, sources): one operator ROW of the continuum kernel.
+    """Row `target` of the kernel: its point-spread function, over all sources.
 
-    `target` is (2,), `sources` is (2, K); returns (K,). The rotation and the
-    bump are evaluated at the SOURCE, matching the original definition.
+    `target` is (2,), `sources` is (2, K); returns (K,).
+
+    **The shape is anchored at the TARGET**, which is the transpose of how the
+    frog kernel is usually written. That is deliberate and it matters: the
+    fitter models a ROW as a smooth function of the source coordinate, so
+    anchoring here makes the object the method represents and the object you
+    plot the same thing. Anchor it at the source instead and each row becomes a
+    transversal of many different local shapes -- which the LG expansion cannot
+    represent smoothly, and which shows up as speckle.
     """
     sd = np.asarray(sigma0_diag)
-    angle = _angle(sources)                      # (K,)
+    angle = _angle(target)                       # scalar: the local rotation
     cos, sin = np.cos(angle), np.sin(angle)
-    d = target[:, None] - sources                # (2, K)
-    # p = R(source) @ d, with R = [[cos, -sin], [sin, cos]]
+    d = sources - target[:, None]                # (2, K)
+    # p = R(target) @ d, with R = [[cos, -sin], [sin, cos]]
     p0 = cos * d[0] - sin * d[1]
     p1 = sin * d[0] + cos * d[1]
 
@@ -70,16 +82,16 @@ def frog_row(target, sources, sigma0_diag=SIGMA0_DIAG):
     gaussian = np.exp(-0.5 * maha2) / (2.0 * np.pi * np.sqrt(sd.prod()))
     modulation = (np.cos(p0 / (np.sqrt(sd[0]) / 2.0))
                   * np.sin(p1 / (np.sqrt(sd[1]) / 2.0)))
-    return _bump(sources) * (1.0 + A_MOD * modulation) * gaussian
+    return _bump(target) * (1.0 + A_MOD * modulation) * gaussian
 
 
 def frog_covariance(x, sigma0_diag=SIGMA0_DIAG):
     """The kernel's local covariance at x -- the a-priori ellipsoid field.
 
-    From maha2 = d^T R^T diag(1/sd) R d, so Sigma = R^T diag(sd) R. This is the
-    honest "best guess a physicist would supply": the right shape and
-    orientation, but nothing about the modulation, which is what the LG modes
-    have to discover.
+    From maha2 = d^T R^T diag(1/sd) R d, so Sigma = R^T diag(sd) R, evaluated
+    at the row's own point. This is the honest "best guess a physicist would
+    supply": the right shape and orientation, but nothing about the modulation,
+    which is what the LG modes have to discover.
     """
     angle = _angle(x)
     cos, sin = np.cos(angle), np.sin(angle)
@@ -145,7 +157,7 @@ def relative_frobenius(approx, H):
 # the curve is meant to show.
 CONVERGENCE_K = [10, 14, 20, 30, 45, 70, 110]
 IMPULSE_K = [10, 20, 45]
-IMPULSE_SOURCES = [(0.30, 0.30), (0.55, 0.35), (0.70, 0.65)]
+IMPULSE_TARGETS = [(0.30, 0.30), (0.55, 0.35), (0.70, 0.65)]
 
 
 def main():
@@ -200,19 +212,20 @@ def main():
     fig.savefig("examples/operator_fit_frog_convergence.png", dpi=130)
     print("\nwrote examples/operator_fit_frog_convergence.png")
 
-    # Impulse responses: a column of H is the response to a point source, which
-    # is what the eye can actually judge.
-    fig, axes = plt.subplots(len(IMPULSE_SOURCES), len(IMPULSE_K) + 1,
+    # A ROW of H is the point-spread function at that target -- one model,
+    # evaluated over every source. It is what the fitter represents, so it is
+    # what the eye should judge.
+    fig, axes = plt.subplots(len(IMPULSE_TARGETS), len(IMPULSE_K) + 1,
                              figsize=(3.1 * (len(IMPULSE_K) + 1),
-                                      2.9 * len(IMPULSE_SOURCES)))
-    for row, source in enumerate(IMPULSE_SOURCES):
-        j = int(np.argmin(np.linalg.norm(
-            problem["x"] - np.array(source)[:, None], axis=0)))
-        truth = problem["H"][:, j].reshape(grid, grid)
+                                      2.9 * len(IMPULSE_TARGETS)))
+    for row, target in enumerate(IMPULSE_TARGETS):
+        i = int(np.argmin(np.linalg.norm(
+            problem["x"] - np.array(target)[:, None], axis=0)))
+        truth = problem["H"][i, :].reshape(grid, grid)
         limit = np.abs(truth).max()
         for col, (title, field) in enumerate(
                 [("true", truth)]
-                + [(f"k = {k}", keep[k][:, j].reshape(grid, grid))
+                + [(f"k = {k}", keep[k][i, :].reshape(grid, grid))
                    for k in IMPULSE_K]):
             ax = axes[row, col]
             ax.imshow(field.T, origin="lower", extent=(0, 1, 0, 1),
@@ -221,8 +234,9 @@ def main():
             if row == 0:
                 ax.set_title(title)
             if col == 0:
-                ax.set_ylabel(f"source {source}")
-    fig.suptitle("Impulse responses: the truth, and fits at three probe budgets")
+                ax.set_ylabel(f"target {target}")
+    fig.suptitle("Point-spread functions (rows of H): truth, and fits at "
+                 "three probe budgets")
     fig.tight_layout()
     fig.savefig("examples/operator_fit_frog_impulses.png", dpi=130)
     print("wrote examples/operator_fit_frog_impulses.png")

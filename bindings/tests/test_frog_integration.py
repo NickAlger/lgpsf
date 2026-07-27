@@ -58,16 +58,50 @@ def test_matvec_and_the_assembled_matrix_agree_on_the_real_operator(problem):
                                (assembled @ probes.T).T, atol=1e-14)
 
 
-def test_the_kernel_row_matches_a_pointwise_evaluation(problem):
-    # Guards the vectorized-over-source rewrite in the example: the operator
-    # row is phi(target, .) with the rotation taken at the SOURCE, and getting
-    # that backwards would silently build a different operator to fit.
+def test_the_row_envelope_is_the_targets_own_covariance(problem):
+    """Pins the anchoring, which is the example's whole setup.
+
+    The kernel is anchored at the TARGET, so a row is one point-spread function
+    and `frog_covariance(target)` is exactly its envelope. Anchor it at the
+    source instead and a row becomes a transversal of many different local
+    shapes -- a perfectly good operator, but not one a per-row smooth expansion
+    can represent, and the prior handed to the fitter would be the wrong shape.
+
+    Derived here from `frog_covariance` independently of `frog_row`, so the two
+    cannot drift apart silently.
+    """
     x = problem["x"]
     target = x[:, 137]
     row = frog_row(target, x)
-    for j in (0, 55, 199, 380):
-        single = frog_row(target, x[:, j:j + 1])[0]
-        assert row[j] == pytest.approx(single)
+
+    sigma = frog_covariance(target)
+    d = x - target[:, None]
+    maha2 = np.einsum("ik,ij,jk->k", d, np.linalg.inv(sigma), d)
+    envelope = np.exp(-0.5 * maha2) / (2.0 * np.pi * np.sqrt(np.linalg.det(sigma)))
+
+    # row = bump(target) * (1 + A_MOD * modulation) * envelope, and the
+    # modulation is a product of a cos and a sin, so the ratio lies in [0, 2].
+    from operator_fit_frog import A_MOD, _bump
+    near = envelope > 1e-6 * envelope.max()
+    ratio = row[near] / (envelope[near] * _bump(target))
+    assert ratio.min() > -1e-9
+    assert ratio.max() < 1.0 + A_MOD + 1e-9
+
+
+def test_a_fitted_row_is_no_rougher_than_the_row_it_fits(problem):
+    """The smooth basis, made checkable.
+
+    Note the TRUTH is smooth in both directions -- it is a smooth function of
+    both arguments -- so this is not inherited from the operator. Rows are
+    smooth because one smooth model produces each; columns carry no such
+    guarantee, since a column takes one value from each of many independently
+    fitted rows.
+    """
+    fit, approx = fit_at(problem, 45)
+    scale = np.abs(problem["H"]).max()
+    truth = np.abs(np.diff(problem["H"], n=2, axis=1)).mean() / scale
+    fitted = np.abs(np.diff(approx, n=2, axis=1)).mean() / scale
+    assert fitted <= truth * 1.05
 
 
 def test_the_prior_covariance_is_the_kernels_own_shape():
