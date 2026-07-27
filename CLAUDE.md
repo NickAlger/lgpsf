@@ -443,11 +443,17 @@ PDE-Hessian probe data -- PIG slices 38/39 in the separate
 maintainer-local research repo: it beats the prior psfladder reference
 at every probe budget, at both smooth and rough basal-friction states;
 the in-repo tests remain synthetic by design. **The C++ port reproduces
-that result**: the whole 6557-row PIG operator at k=100, shells to
-level 6, window-clipped and symmetrized, scores 0.0147 -- the recorded
-prototype figure to all four digits. See `docs/design-notes.md`, and
-note that comparing any PIG number requires matching slice38's
-deployment variant, of which there are three.)
+that result at BOTH states**: smooth beta (slice 38), the whole
+6557-row operator at k=100 shells-L6, window-clipped and symmetrized,
+scores 0.0147 -- the recorded prototype figure to all four digits; and
+rough beta (slice 39), where 8 of 10 impulse-column forensics match to
+three decimals and the sigma-insensitivity finding holds. See
+`docs/design-notes.md`, and note that comparing any PIG number requires
+matching the deployment variant, of which slice38 has three. The one
+systematic divergence: the baseline guard's corrected counting rule
+lets the a-priori model ship more often, worth +16% at smooth beta
+k=40 and -7% at rough beta k=20 -- a lever on how often the PRIOR
+ships, so its sign follows the prior's quality.)
 
 ## Where to look for more
 

@@ -1349,6 +1349,54 @@ padding width for every set, not that set's mode count -- which reads as "every
 row used the same number of modes" and hides exactly the effect above. Count
 `(tab[i][:, 0] >= 0).sum()`.
 
+## Rough beta: the baseline-cap lever cuts the other way (2026-07-26)
+
+Slice 39 replayed in C++ -- the alpha=0.01 MAP state, where the pointwise
+a-priori sigma is 3-5x too wide at the channel. slice39's configuration
+verbatim (`WedgeLadder(10,2)`, mu pinned, tau_window 5, ungated, ball window),
+scored on its 30 held-out pairs. Detail in `dev/rb-cxx-2026-07-26.md`.
+
+| cell | prototype +sym | C++ +sym | delta |
+|---|---|---|---|
+| smoothed k=20 | 0.1864 | 0.1998 | +7.2% |
+| smoothed k=50 | 0.0899 | 0.0920 | +2.3% |
+| smoothed k=100 | 0.0567 | **0.0561** | -1.1% |
+| pointwise k=20 | 0.1917 | 0.2041 | +6.5% |
+| pointwise k=100 | 0.0549 | **0.0545** | -0.7% |
+
+**The C++ is worse at small k here, where at smooth beta it was 16% better.**
+Same knob, opposite sign, and the mechanism is confirmed off the shipped
+models: the baseline guard's counting-rule fix (pinned parameter size 3, not
+the free-mu 5) lets the BASELINE use 6 wedge modes instead of 3 at k=20 and 21
+instead of 18 at k=50, and nothing extra at k=100 where both reach the ladder's
+top. The cap gap tracks the result gap monotonically and vanishes exactly where
+it should.
+
+All the fix does is let the a-priori-sigma model win the CV comparison more
+often. At smooth beta the prior is nearly right and that was worth +16% at
+k=40; at rough beta the prior is wrong precisely at the channel and it costs
+~7% at k=20. **The counting rule is correct -- it counts the parameters
+actually being fit -- but it is a lever on how often the PRIOR ships, and the
+prior's quality is state-dependent.** It does not break the guard's guarantee
+(every shipped row still beats the status quo on its own CV); the loss is
+windowed CV being optimistic about a wrong prior, the same optimism on record
+from the released-mu finding. The effect is bounded and shrinking with k, and
+lgpsf still beats psfladder by >= 1.5x in every cell.
+
+**The column forensics reproduce nearly exactly**, which locates the gap. Ten
+impulse columns, 60-km off-diagonal sqrt(mL)-weighted relative L2 from the
+deployed operator: at k=100, EIGHT OF TEN match the prototype to three
+decimals, all 8 channel nodes land in 0.081-0.136 against 0.079-0.136, and node
+1757 -- advected 9.6 km, fitted with mu PINNED -- matches at 0.117 to the
+digit. At k=20 it is again 8 of 10 identical. So the field is not drifting; the
+gap lives entirely in the rows where the two make a different ship decision.
+
+**Sigma-insensitivity survives the port.** At k=100 the raw pointwise prior is
+marginally BETTER than the hand-smoothed one in both implementations (0.0545 vs
+0.0561 in C++, 0.0549 vs 0.0567 in the prototype), and at k=20 both show the
+same 2-3% penalty. Fitted theta absorbing ordinary prior error is a property of
+the method, not of the implementation.
+
 ## Dead rows need no gate in C++ either (2026-07-26)
 
 slice38 ran ungated on the argument that a dead row (response identically zero)
