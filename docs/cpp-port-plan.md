@@ -1,6 +1,10 @@
 # C++17/Eigen port plan -- agreed design
 
-**Status: IN PROGRESS -- M0 through M4 complete, M5 next.** The operator
+**Status: IN PROGRESS -- M0-M4 complete; M5's code is done and its
+packaging is not.** Bindings, the public end-to-end gate
+(`examples/operator_fit_frog.py`) and the maintainer-local PIG replay all
+land; what M5 still owes is a CI workflow, an exercised cibuildwheel run,
+and a docs pass. The operator
 layer was restructured after M4 landed: the data structure (`LGOperator`,
 `lg_operator.hpp`) is now separate from the fitting that produces it
 (`operator_fit.hpp`), and depends on none of the fitting stack. Two

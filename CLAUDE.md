@@ -429,7 +429,8 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
   without the fitter ever being included. **`LGExpansion`**
   (`lg_expansion.hpp`) is one target's model -- absolute theta, its mode
   list, `c` and `s` -- and is both the per-row content of an `LGOperator`
-  and the model half of `CandidateFit`/`ProbeFitResult`. M5 is bindings;
+  and the model half of `CandidateFit`/`ProbeFitResult`. M5 bindings are
+  built (see below); what remains there is packaging. Also:
   **the PIG slice-38 AND slice-39 replays are already discharged** ahead
   of them, through a raw-binary bridge, so what the bindings still owe is
   ergonomics and marshalling tests, not the numerical result.
@@ -449,8 +450,24 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
 - Level-2 cross-row amortization (neighbor warm starts /
   smoothed-theta seeds as candidate injection) and field-level QC maps
   over status/stop_reason/spike-measure -- build on `fit_operator`.
-- Python bindings (`bindings/` doesn't exist yet; port milestone M5;
-  the hook location is marked by a comment in `CMakeLists.txt`).
+- **M5 bindings: BUILT, packaging outstanding.** `bindings/` exists and
+  covers the whole API in two tiers -- the product (`fit_operator`,
+  `LGOperator` + helpers, `fit_from_probes`, `LGExpansion`, configs,
+  mode policies, enums) and the primitives (`lg_functions`,
+  `harmonic_polynomials`, `ellipsoid_transform`, `whitening`,
+  `varpro`), free-function forms only. 49 pytest cases. Build with
+  `-DLGPSF_BUILD_PYTHON=ON`. Still owed: a CI workflow, an exercised
+  cibuildwheel run, and a docs pass for the `dev/*` links that
+  `design-notes.md` and the port plan still dangle.
+  - **Point batches are `(N, K)` at the Python boundary** -- coordinates
+    down, points across -- because a C-contiguous numpy `(N, K)` and a
+    column-major Eigen `(K, N)` are the SAME BYTES, so nothing is
+    copied. Per-row records are row-first, `(R, ...)`, since
+    `fit.mu[rho]` is how anyone reads one. Note both differ from
+    `ellipsoid_tree`'s Python convention, which takes points as rows.
+  - Mode policies bind as built-ins only: `fit_operator` releases the
+    GIL and calls `propose` from worker threads, so a Python subclass
+    would have to re-acquire per call.
 
 (The library HAS been validated at field scale against real
 PDE-Hessian probe data -- PIG slices 38/39 in the separate
@@ -473,6 +490,20 @@ ships, so its sign follows the prior's quality.)
 
 - `docs/design-notes.md` -- terse, running log of C++-port-relevant
   decisions (layout, vectorization principle, etc.).
+- `docs/validation.md` -- **what PIG is**, what was measured, and which
+  library defaults came out of it. The public anchor that makes the PIG
+  citations scattered through the headers resolve. lgpsf is the
+  general-purpose library and the glaciology work is a DOWNSTREAM
+  consumer: PIG may depend on lgpsf, never the reverse, and
+  `tools/check_dependencies.py` enforces that over the shipping
+  directories (naming a private problem in prose is fine; a PATH into
+  one is not).
+- `docs/reproducibility.md` -- what is bit-exact and what is not.
+  Identical across threads, runs, callers and the QR/SVD inner solve;
+  NOT across builds with different compiler flags, where ~0.08% of rows
+  land on a different local minimum. Carries a table for reading a
+  failed comparison, which is the fastest way to tell this phenomenon
+  from an actual bug.
 - `docs/varpro-whitening-notes.tex`/`.pdf` -- the whitening derivation in
   full, with the row-model and reconciliation-with-earlier-analysis
   arguments spelled out.
