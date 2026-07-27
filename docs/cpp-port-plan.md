@@ -3,7 +3,10 @@
 **Status: IN PROGRESS -- M0 through M4 complete, M5 next.** The operator
 layer was restructured after M4 landed: the data structure (`LGOperator`,
 `lg_operator.hpp`) is now separate from the fitting that produces it
-(`operator_fit.hpp`), and depends on none of the fitting stack. The
+(`operator_fit.hpp`), and depends on none of the fitting stack. Two
+further post-M4 items are recorded at the end of the milestone list: the
+PIG slice-38 AND slice-39 replays are already discharged ahead of the
+bindings, and the inner solve went QR-first (2.1x, same answers). The
 prototype is FROZEN as of `e5c36c9` (2026-07-25); see `prototype/README.md`
 for what it is now for and where the C++ deliberately differs from it.
 
@@ -112,7 +115,7 @@ Hard rules for every session working on the C++ side:
 | ellipsoid_transform.py | ellipsoid_transform.hpp | **DONE (M1).** No `N` parameter and no optional `mu0`: `mu0` is required (the fitting layers already require it), so `N = mu0.size()`, and the sentinel becomes `enum class MuMode {Pinned, Fitted}`. Public `theta` vs internal `theta_hat` -- see design-notes |
 | lg_ellipsoid_feature.py | lg_ellipsoid_feature.hpp | **DONE (M1).** `FeatureAt` + free wrappers; `jac()` is indexed by PARAMETER (num_params of (K, num_modes)), which is how Golub-Pereyra slices it. Does not retain `x` -- the pullback's derivatives need only `u` |
 | whitening.py | whitening.hpp | **DONE (M1).** The ONLY masses layer (invariant preserved). `whitened_basis` became `WhitenedBasis`, a functor with `operator()(theta_hat) -> WhitenedBasisAt` -- a concrete type, not `std::function`, so `varpro.hpp` templates on it |
-| varpro.py | varpro.hpp | **DONE (M2).** BDCSVD inner solve, FWL, Kaufman one-sweep, structs for options/results, `enum class JacobianVariant`. The basis is a TEMPLATE parameter, so there is no indirect call per trial point and Golub-Pereyra availability is a compile-time trait rather than `hasattr`. **The LM lives in `detail/levenberg_marquardt.hpp`**, not here -- it is the one piece with no reference to port, so it is generic and tested in isolation |
+| varpro.py | varpro.hpp | **DONE (M2).** QR-first inner solve (`detail::InnerFactors`; SVD retained for Golub-Pereyra and rank deficiency -- see the post-M4 note), FWL, Kaufman one-sweep, structs for options/results, `enum class JacobianVariant`. The basis is a TEMPLATE parameter, so there is no indirect call per trial point and Golub-Pereyra availability is a compile-time trait rather than `hasattr`. **The LM lives in `detail/levenberg_marquardt.hpp`**, not here -- it is the one piece with no reference to port, so it is generic and tested in isolation |
 | init_dictionary.py | init_dictionary.hpp | **DONE (M3).** `theta_from_L` -> `theta_hat_from_cholesky` (pinned encoding). First place the ellipsoid_tree layout flip bites: its KDTree wants points as COLUMNS, so the batch transposes on the way in. Degenerate inputs the prototype answered with inf/NaN now raise |
 | probe_moments.py | probe_moments.hpp | **DONE (M3).** `spike_index < 0` replaces the None sentinel; thresholds that suppress every weight raise rather than returning a silent NaN |
 | mode_policy.py | mode_policy.hpp | **DONE (M3).** Virtual `ModePolicy` base with `propose` **const**, so statelessness is enforced by the type rather than by convention; `SequencePolicy` + FixedSet/ShellLadder/ExplicitLadder/WedgeLadder/RadialFirstLadder. **MarginGreedy stays Python-side while parked.** `LevelRecord` carries a `bool has_winner` rather than the winning fit -- policies only ever test it for existence, and the boolean breaks what would be a circular dependency on the engine's header |
@@ -230,8 +233,11 @@ constructor argument.
 
 ## The numerics map (what replaces scipy)
 
-- `np.linalg.svd` -> `Eigen::BDCSVD` (inner solve `(k, m)`, range
-  basis `(k, n_extra)`; rank cutoff `max(shape)*eps*sigma_max` kept).
+- `np.linalg.svd` -> `Eigen::BDCSVD` for the range basis `(k, n_extra)`
+  and as the inner solve's FALLBACK; rank cutoff
+  `max(shape)*eps*sigma_max` kept. The inner solve's common path is
+  `ColPivHouseholderQR` instead -- see the post-M4 note, and note this
+  is a place the C++ deliberately diverges from `varpro.py`.
 - `lstsq` -> `ColPivHouseholderQR` (or BDCSVD) solve; `qr` ->
   `HouseholderQR`; `eigh` -> `SelfAdjointEigenSolver`; `cholesky` ->
   `LLT` (throw -> the per-row "failed" path); `inv` on N<=4 ->
@@ -465,8 +471,35 @@ nothing in the row fitter.
     coefficients, 0 failures) and gating changes no live row's prediction
     by a single bit. See `docs/design-notes.md` and the maintainer-local
     `dev/pig-cxx-2026-07-26.md`. What the bindings still owe M5 is the
-    ergonomics and the marshalling tests, not the numerical result; slice
-    39 (rough beta) is untouched.
+    ergonomics and the marshalling tests, not the numerical result.
+  - **Slice 39 (rough beta) is discharged too**, by the same route
+    (`dev/rb_fit.cpp`): five cells (k = 20/50/100 x smoothed/pointwise
+    sigma), QC on the 30 held-out pairs plus the 10 impulse-column
+    forensics, of which **8 of 10 match the prototype to three decimals**
+    at k=100 -- node 1757, advected 9.6 km and fitted with mu PINNED,
+    included. `dev/rb-cxx-2026-07-26.md`. The one systematic divergence
+    across both states is the baseline guard's corrected counting rule,
+    which is a lever on how often the a-priori model ships: +16% at
+    smooth beta k=40, -7% at rough beta k=20, sign following the prior's
+    quality.
+
+### Post-M4: the inner solve went QR-first
+
+`varpro.hpp`'s `inner_solve` gained `detail::InnerFactors`. `RangeOnly` --
+what the reduced residual and the default Kaufman Jacobian need -- takes a
+`ColPivHouseholderQR`, with the ridge applied by a stacked
+`[R; sqrt(ridge) I]` least-squares solve rather than by forming
+`R^T R + ridge I`, so the conditioning is not traded for the speed. The
+SVD is retained for `Full` (Golub-Pereyra reads `sigma`/`V`) and for
+QR-reported rank deficiency, where a basic solution differs from the
+minimum-norm one.
+
+Worth **2.09x** on a whole-field smooth-beta L6 k=100 fit with every field
+number unchanged to four digits, and 1.43x at rough beta with all ten
+forensic columns identical. Suite now **145 cases / 105,699 assertions**.
+Rationale and the profile behind it are in `docs/design-notes.md`;
+`dev/perf-2026-07-26.md` also lists what was looked at and deliberately
+left alone.
 - **M6** infra: CI (g++/clang matrix + sanitizers at -j2 +
   version-consistency + a prototype-tests job), docs generation +
   Doxygen, README/CHANGELOG/CITATION/CONTRIBUTING per the

@@ -427,8 +427,10 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
   without the fitter ever being included. **`LGExpansion`**
   (`lg_expansion.hpp`) is one target's model -- absolute theta, its mode
   list, `c` and `s` -- and is both the per-row content of an `LGOperator`
-  and the model half of `CandidateFit`/`ProbeFitResult`. M5 is bindings + the PIG
-  slice-38/39 replay.
+  and the model half of `CandidateFit`/`ProbeFitResult`. M5 is bindings;
+  **the PIG slice-38 AND slice-39 replays are already discharged** ahead
+  of them, through a raw-binary bridge, so what the bindings still owe is
+  ergonomics and marshalling tests, not the numerical result.
 - A hand-rolled Levenberg-Marquardt loop (port milestone M2): the
   prototype's outer loop delegates to scipy/MINPACK -- the one
   delegated numeric; everything else in `varpro.py` is library-free.

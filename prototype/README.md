@@ -35,6 +35,7 @@ Deliberate divergences so far:
 | operator window | a kd-ball of radius `tau * largest 1-sigma axis` | one continuous `window_aspect_cap` (1 = that ball, infinity = the caller's ellipsoid, the default) |
 | window derivation | one ball query per row | all rows from ONE dual-tree descent |
 | counting rule | the free-mu parameter count everywhere, including for pinned fits | the count of the parameters **actually being fit** |
+| inner solve | one BDCSVD per trial point | QR-first (`InnerFactors::RangeOnly`), the SVD kept for Golub-Pereyra and for rank deficiency — 2.1x on a whole-field fit, same answers |
 
 ## Known-stale comments
 
