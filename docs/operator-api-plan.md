@@ -1,8 +1,8 @@
 # Operator-level fitting API -- agreed design (2026-07-24)
 
 **Status: IMPLEMENTED (session 2026-07-24) as
-`prototype/operator_fit.py`** (`fit_operator` -> `OperatorFit` + the
-helper table below), tests in `prototype/test_operator_fit.py`. This
+`archive/python-prototype/operator_fit.py`** (`fit_operator` -> `OperatorFit` + the
+helper table below), tests in `archive/python-prototype/test_operator_fit.py`. This
 doc remains the design record; implementation-level decisions made
 during the port (free-mu theta storage, the `target_mass` kwarg on
 `fit_from_probes`, baseline-guard fold sharing) are logged in

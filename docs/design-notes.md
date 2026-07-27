@@ -12,7 +12,7 @@ numpy. These are transposes of each other -- deliberately, not a mistake to
 reconcile later.
 
 **Why:** the LG evaluation code (`eval_lg_nd`, `grad_eval_lg_nd` in
-`prototype/lg_functions.py`) vectorizes over points in a
+`archive/python-prototype/lg_functions.py`) vectorizes over points in a
 structure-of-arrays (SoA) pattern: every elementwise operation runs on "one
 coordinate's value across all `K` points" as a single contiguous array. That
 access pattern -- contiguous per-dimension slices -- is what should be free
@@ -115,8 +115,8 @@ depth `p` -- are fine, and often preferable, since they keep memory at
 `O(batch)` instead of `O(axis * batch)`. Don't reach for `einsum`/broadcast
 tricks over those other axes by default; a small Python loop over a
 small, fixed axis is the *correct* choice here, not a compromise. See
-`prototype/lg_functions.py` (loop over the monomial table) and
-`prototype/ellipsoid_transform.py` (loops over `N`/`P` in the theta
+`archive/python-prototype/lg_functions.py` (loop over the monomial table) and
+`archive/python-prototype/ellipsoid_transform.py` (loops over `N`/`P` in the theta
 pack/unpack functions) for the pattern.
 
 ## Triangular solves via explicit inverse, not substitution
@@ -235,7 +235,7 @@ header.
 
 ## The row-fit orchestration layer: raw interface, holdout selection
 
-**Decisions (2026-07-24, `prototype/row_fit.py`; evidence: the
+**Decisions (2026-07-24, `archive/python-prototype/probe_fit.py`; evidence: the
 frog-kernel robustness study in `docs/robust-init-notes.md` and the PIG
 slice-37 refits in the research repo):**
 
@@ -310,7 +310,7 @@ slice-37 refits in the research repo):**
 ## Mass matrices confined to a single layer, via noise whitening
 
 **Decision (2026-07-24):** `M1` (row mass) and `M2` (column mass) appear in
-exactly one file, `prototype/whitening.py`. Everything below it
+exactly one file, `archive/python-prototype/whitening.py`. Everything below it
 (`lg_functions.py`, `ellipsoid_transform.py`, `lg_ellipsoid_feature.py`) is
 mass-free; everything above it (the VarPro fitting core) only ever sees
 already-whitened arrays and never imports or references a mass matrix.
@@ -340,7 +340,7 @@ anywhere for whitening itself.
 
 ## The operator layer: parametric output, free-mu storage, target-mass routing
 
-**Decision (2026-07-24):** `prototype/operator_fit.py` implements the
+**Decision (2026-07-24):** `archive/python-prototype/operator_fit.py` implements the
 agreed whole-operator design (`docs/operator-api-plan.md`): the output
 is the parametric two-component object `H~ = M1 Phi~ M2 + M1 S` as
 padded flat arrays, never a matrix; every matrix format is a

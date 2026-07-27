@@ -1,7 +1,7 @@
 # Mode-growth policies: the extensible ladder axis -- agreed design
 
 **Status: IMPLEMENTED (session 2026-07-25) as
-`prototype/mode_policy.py`** + the probe_fit policy-poll loop, in the
+`archive/python-prototype/mode_policy.py`** + the probe_fit policy-poll loop, in the
 two planned steps (the axis with feedback-blind built-ins, then
 MarginGreedy). Equivalence of the legacy config fields is pinned by
 fingerprint tests (`test_mode_policy.py`); this doc remains the design
@@ -110,7 +110,7 @@ injection at the operator layer, per the operator-api plan.
 
 ## Implementation plan
 
-1. `prototype/mode_policy.py`: protocol + context + the five fixed
+1. `archive/python-prototype/mode_policy.py`: protocol + context + the five fixed
    policies. `lg_functions.modes_up_to_level` gains an `ell_max`
    kwarg (shared by the wedge builders).
 2. `probe_fit.fit_from_probes`: the static `for mlabel, mlist in

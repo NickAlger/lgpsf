@@ -11,7 +11,7 @@ layer was restructured after M4 landed: the data structure (`LGOperator`,
 further post-M4 items are recorded at the end of the milestone list: the
 PIG slice-38 AND slice-39 replays are already discharged ahead of the
 bindings, and the inner solve went QR-first (2.1x, same answers). The
-prototype is FROZEN as of `e5c36c9` (2026-07-25); see `prototype/README.md`
+prototype is FROZEN as of `e5c36c9` (2026-07-25); see `archive/python-prototype/README.md`
 for what it is now for and where the C++ deliberately differs from it.
 
 **Several decisions in this plan were reopened during implementation and

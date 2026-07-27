@@ -19,28 +19,26 @@ a discrete "spike" correction for the part of the point-spread function the
 mesh can't resolve. Fit via random probing (matvecs are the expensive
 currency) and nonlinear least squares.
 
-**Two-phase plan.** Build and verify the whole method in Python first
-(`prototype/`), as the reference implementation; port to a header-only
-C++17 library (`include/`, depends on Eigen + `ellipsoid_tree`) once the
-design is settled.
+**The implementation is the C++.** `lgpsf` is a header-only C++17 library
+(`include/lgpsf/`, depending on Eigen + `ellipsoid_tree`) with Python
+bindings (`bindings/`). That is the library; `import lgpsf` gives you the
+bindings.
 
-> ### PROTOTYPE FROZEN as of `e5c36c9` (2026-07-25)
+> ### THE PYTHON PROTOTYPE IS ARCHIVED — do not treat it as the library
 >
-> The C++ port has started (`docs/cpp-port-plan.md`, milestones M0-M6).
-> From that commit, **`prototype/` is the frozen reference
-> implementation**: its tests keep running and stay green, but new
-> development lands C++-first. Change it only for (a) fixes needed to
-> keep its own tests passing, (b) the harmonic-table generator's C++
-> emission mode, and (c) deliberate, recorded re-openings of a design
-> question -- in which case the C++ side follows, and both get the same
-> bit-identity or tolerance certification the frozen work carried.
+> The method was developed in Python first, then ported. That Python is at
+> **`archive/python-prototype/`**, frozen at `e5c36c9` (2026-07-25). It is
+> not built, not packaged, not in the sdist, and not collected by `pytest`.
+> Do not read it to learn how the library works and do not copy code from
+> it — everything it does, the C++ does, and in several places differently
+> and on purpose (see its README for the divergence table).
 >
-> **The C++ is the GROUND TRUTH; this directory is history.** Nothing in
-> the C++ or binding test suites measures against it, and a disagreement
-> between the two is a fact about the prototype rather than a bug report
-> against the C++. Do not "improve" the prototype to match something
-> learned in C++ without saying so explicitly -- and equally, never
-> constrain the C++ to match the prototype.
+> **The C++ is the GROUND TRUTH.** Nothing in the C++ or binding test
+> suites measures against the archive, and a disagreement between the two
+> is a fact about the archive rather than a bug report against the C++.
+> Never constrain the C++ to match it. Its own tests still pass (82,
+> `pytest` from that directory) and that is the only property it is kept
+> for.
 
 **Derived from, but diverges from, prior research.** The original method
 was developed in `~/repos/nicks_research_experiments/ellipsoid_psf_pig`
@@ -104,7 +102,14 @@ whitened bases is exactly the correct (dual-space-respecting) projection,
 and that the whitening operator being fixed/symmetric means every
 existing JVP/VJP composes with it for free -- no new derivative math.
 
-## Code architecture (`prototype/`, bottom-up)
+## Code architecture (bottom-up)
+
+> NOTE (cleanup in progress): the entries below are still written against
+> the archived prototype's `.py` module names. The C++ headers mirror them
+> one-to-one (`lg_functions.py` -> `include/lgpsf/lg_functions.hpp`, and so
+> on), so the layering is accurate even where the filenames are not. This
+> section is being rewritten against `include/lgpsf/`; until then, read the
+> names as layers rather than as paths.
 
 1. **`lg_functions.py`** -- pure LG basis math, no ellipsoid/theta.
    `genlaguerre` (3-term recurrence, no scipy -- ports directly to C++,
@@ -350,9 +355,8 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
   hand-rolled LM contract, and the COMPILE MEMORY SAFETY rules: this
   machine has been OOM-crashed by large `-j` builds -- **read that
   section before building any C++**). Shipped in M0:
-  `include/lgpsf/detail/lg_harmonics_table.hpp` (generated alongside
-  the Python table by the same run of
-  `prototype/generate_lg_harmonics_table.py`, so they cannot drift),
+  `include/lgpsf/detail/lg_harmonics_table.hpp` (generated offline by
+  `tools/generate_lg_harmonics_table.py`; committed, and never built),
   `include/lgpsf/harmonic_polynomials.hpp`,
   `include/lgpsf/lg_functions.hpp` (`Mode`, `genlaguerre`, `lg_norm`,
   `modes_up_to_level`, `LGBasisAt` with values/grad/vjp, the

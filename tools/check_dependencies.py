@@ -22,9 +22,12 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
-# Everything that ends up in a wheel, a tarball, or a user's build.
-SHIPPED = ["include", "bindings", "tests", "examples", "prototype", "cmake",
-           "CMakeLists.txt", "pyproject.toml"]
+# Everything that ends up in a wheel, a tarball, or a user's build, plus the
+# docs a public reader is pointed at. `archive/` is excluded from the sdist
+# (see pyproject.toml) and `dev/` is maintainer-local scratch; neither is
+# checked, because neither reaches a user.
+SHIPPED = ["include", "bindings", "tests", "examples", "docs", "cmake",
+           "CMakeLists.txt", "pyproject.toml", "README.md"]
 
 # `ellipsoid_tree` is a PUBLIC library we explicitly depend on, so referencing
 # it is correct rather than a leak. Everything else outside the repo is not.

@@ -5,10 +5,10 @@
 /// @file
 /// @brief GENERATED harmonic-polynomial coefficient table -- do not hand-edit.
 ///
-/// Produced by `python prototype/generate_lg_harmonics_table.py`, which writes
-/// this header and the Python table in the same run from the same
-/// exact-rational computation (monomial harmonic projection + Gram-Schmidt
-/// against Gaussian moments), so the two cannot drift.
+/// Produced by `python tools/generate_lg_harmonics_table.py` from an exact-
+/// rational computation (monomial harmonic projection + Gram-Schmidt against
+/// Gaussian moments). Regenerate only to change the table's extent; an
+/// ordinary build never runs the generator.
 ///
 /// Each degree-ell harmonic polynomial in N variables is stored as its NONZERO
 /// terms only: 91.5% of the dense coefficients are exactly zero for structural

@@ -75,6 +75,16 @@ __pycache__/
 # Maintainer-local scratch
 dev/
 
+# Sandbox mount artifacts: shell rc files bind-mounted to /dev/null, and an
+# empty tree left by a relative path that escaped. Not files, not ours.
+/.bash_profile
+/.bashrc
+/.gitconfig
+/.profile
+/.zprofile
+/.zshrc
+/home/
+
 # Editor-local (machine-specific paths)
 .vscode/
 

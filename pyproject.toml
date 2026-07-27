@@ -37,6 +37,16 @@ Repository = "https://github.com/NickAlger/lgpsf"
 
 [tool.scikit-build]
 cmake.version = ">=3.16"
+# The sdist would otherwise take everything git-tracked. `archive/` is
+# superseded code kept for provenance and `experiments/` is research about the
+# library; neither builds, and neither belongs in a source distribution.
+sdist.exclude = ["archive", "experiments", "dev"]
+
+[tool.pytest.ini_options]
+# The shipped Python test suite is the bindings' — nothing else. Without this,
+# a bare `pytest` from the repo root also collects `archive/python-prototype/`,
+# whose 82 tests exercise superseded code and would read as part of the suite.
+testpaths = ["bindings/tests"]
 
 [tool.scikit-build.cmake.define]
 LGPSF_BUILD_PYTHON = "ON"

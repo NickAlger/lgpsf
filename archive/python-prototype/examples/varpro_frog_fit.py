@@ -112,7 +112,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "prototype"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 
 from ellipsoid_transform import unpack_theta
 from lg_ellipsoid_feature import eval_feature

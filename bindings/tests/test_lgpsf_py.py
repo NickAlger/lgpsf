@@ -8,7 +8,7 @@ module docstring in `bindings/lgpsf_bindings.cpp` for why.
 
 These tests check the BINDINGS -- marshalling, layout, error mapping -- not the
 mathematics, which the C++ suite owns. Nothing here compares against
-`prototype/`: the C++ is the ground truth and that directory is history.
+the archived Python prototype: the C++ is the ground truth and that directory is history.
 """
 
 import pathlib

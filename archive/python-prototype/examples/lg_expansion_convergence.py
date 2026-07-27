@@ -23,7 +23,7 @@ import sys
 import numpy as np
 import matplotlib.pyplot as plt
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "prototype"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 from harmonic_polynomials import max_degree, num_harmonics
 from lg_functions import eval_lg_nd
 
