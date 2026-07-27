@@ -94,6 +94,16 @@ inline Eigen::MatrixXd scale_rows( const Eigen::Ref<const Eigen::MatrixXd>& a,
 inline Eigen::MatrixXd whiten_probes( const Eigen::Ref<const Eigen::MatrixXd>& z,
                                       const Eigen::Ref<const Eigen::VectorXd>& m2_diag )
 {
+    // Checked here rather than left to `sqrt`: a non-positive column mass
+    // otherwise yields a NaN design matrix that survives all the way to a
+    // cost, where it reads as a bad fit instead of a bad input. Both siblings
+    // validate (`whiten_data` directly, `whiten_extra` through
+    // `whitening_scale`); this one used to be the exception.
+    if ( (m2_diag.array() <= 0.0).any() )
+    {
+        throw std::invalid_argument(
+            "lgpsf::whitening: every entry of m2_diag must be positive");
+    }
     return detail::scale_rows(z, m2_diag.cwiseSqrt());
 }
 

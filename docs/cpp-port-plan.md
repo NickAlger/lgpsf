@@ -545,6 +545,21 @@ forensic columns identical. Suite now **145 cases / 105,699 assertions**.
 Rationale and the profile behind it are in `docs/design-notes.md`;
 `dev/perf-2026-07-26.md` also lists what was looked at and deliberately
 left alone.
+- **After M5, before/with M6: a user-facing Python example of
+  `fit_operator`** (Nick, 2026-07-27). Teaches the operator fit AND
+  doubles as a standalone integration test of the whole pipeline
+  through the bindings.
+  - Operator: the **rotating frog kernel**, defined in
+    `~/repos/ellipsoid_psf/examples/frog_kernel.cpp` (Nick, 2026-07-27).
+  - Mass matrix `diag(1/h^2)` as specified -- confirm the convention
+    against the `H = M1 Phi M2` row model when writing it, since the
+    lumped mass of a uniform 2-D cell is `h^2`.
+  - Fit at several probe counts `k`; plot a **convergence curve of
+    Frobenius error against k** (many k values).
+  - Plot **true vs approximate impulse responses** for a few source
+    locations at a few k. Some k must be SMALL for the error to be
+    visually distinguishable -- start from k = 5, 10, 20 and tune by
+    eye.
 - **M6** infra: CI (g++/clang matrix + sanitizers at -j2 +
   version-consistency + a prototype-tests job -- the don't-rot check on
   the design record, which certifies nothing about the C++), docs
