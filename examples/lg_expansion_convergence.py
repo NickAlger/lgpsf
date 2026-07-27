@@ -14,7 +14,7 @@ a laptop, so this script only covers N = 1, 2, 3, growing the mode set one
 oscillator level at a time and plotting relative L2 error vs mode count.
 
 Needs matplotlib, so run with the `tttt` conda env rather than `t3toolbox`:
-    /home/nick/miniconda3/envs/tttt/bin/python examples/lg_expansion_convergence.py
+    python examples/lg_expansion_convergence.py
 """
 import math
 import os

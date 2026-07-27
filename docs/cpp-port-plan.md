@@ -476,11 +476,21 @@ nothing in the row fitter.
   deployed-support invariant; bit-identical results across num_threads
   in {1, 4}.
 - **M5 -- IN PROGRESS.** bindings + pyproject + wheels config.
-  **Accept: the PIG slice-38/39 replay through the bindings reproducing
-  the C++ raw-binary bridge BIT-FOR-BIT**, plus a marshalling pytest
-  (layout round-trips, dtype/shape handling, error mapping,
-  determinism across thread counts). Not a tolerance comparison against
-  the prototype -- see the test doctrine.
+  **Accept: `examples/operator_fit_frog.py` -- an end-to-end fit of a
+  known analytic operator whose error falls with the probe budget** --
+  plus a marshalling pytest (layout round-trips, dtype/shape handling,
+  error mapping, determinism across thread counts).
+
+  **The gate must be publicly runnable** (Nick, 2026-07-27). lgpsf is
+  the general-purpose library and the glaciology work is a downstream
+  consumer of it, so the dependency runs one way: PIG may depend on
+  lgpsf, lgpsf may not depend on PIG. The PIG replay through the
+  bindings, matched bit-for-bit against the C++ raw-binary bridge, is
+  still run and still valuable -- as a MAINTAINER-LOCAL regression
+  check in `dev/`, not as an acceptance criterion. `docs/validation.md`
+  is the public anchor for what PIG is, so the header citations
+  resolve; `tools/check_dependencies.py` enforces the direction of
+  dependence mechanically.
 
   **Binding scope: two tiers, both in.**
   - *Tier A, the product*: `fit_operator`, `LGOperator` and its
@@ -549,8 +559,9 @@ left alone.
   `fit_operator`** (Nick, 2026-07-27). Teaches the operator fit AND
   doubles as a standalone integration test of the whole pipeline
   through the bindings.
-  - Operator: the **rotating frog kernel**, defined in
-    `~/repos/ellipsoid_psf/examples/frog_kernel.cpp` (Nick, 2026-07-27).
+  - Operator: the **rotating frog kernel**, already VENDORED into this repo
+    (`examples/varpro_frog_fit.py` carries a Python port). A public example
+    must not reach into a private checkout for it.
   - Mass matrix `diag(1/h^2)` as specified -- confirm the convention
     against the `H = M1 Phi M2` row model when writing it, since the
     lumped mass of a uniform 2-D cell is `h^2`.

@@ -99,7 +99,7 @@ output:
      initializing SMALL (r <= 0.07) beats the Gaussian pilot.
 
 Needs matplotlib, so run with the `tttt` conda env rather than `t3toolbox`:
-    /home/nick/miniconda3/envs/tttt/bin/python examples/varpro_frog_fit.py
+    python examples/varpro_frog_fit.py
 """
 import math
 import os
@@ -126,8 +126,8 @@ from whitening import (
 )
 
 # ---------------------------------------------------------------------------
-# The frog kernel (localpsf paper eq. 7.4), copied from
-# ellipsoid_psf/examples/frog_kernel.cpp and vectorized over the y batch.
+# The frog kernel (localpsf paper eq. 7.4), ported from the ellipsoid_psf
+# examples and vectorized over the y batch. Self-contained here on purpose.
 # ---------------------------------------------------------------------------
 
 SIGMA0_DIAG = np.array([0.01, 0.0025])  # variances along the unrotated axes

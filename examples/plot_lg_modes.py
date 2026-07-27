@@ -6,7 +6,7 @@ the (p, ell) table in lg-split-method-notes.tex. Saves the figure next to
 this script; does not call plt.show() so it runs headless.
 
 Needs matplotlib, so run with the `tttt` conda env rather than `t3toolbox`:
-    /home/nick/miniconda3/envs/tttt/bin/python examples/plot_lg_modes.py
+    python examples/plot_lg_modes.py
 """
 import os
 import sys

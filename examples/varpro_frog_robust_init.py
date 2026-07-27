@@ -86,7 +86,7 @@ Findings at aspect 8:1 (the printed tables + the sweep figures):
     so the expensive currency (matvecs) is spent once.
 
 Needs matplotlib, so run with the `tttt` conda env rather than `t3toolbox`:
-    /home/nick/miniconda3/envs/tttt/bin/python examples/varpro_frog_robust_init.py
+    python examples/varpro_frog_robust_init.py
 """
 import math
 import os
