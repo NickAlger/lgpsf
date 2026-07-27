@@ -1349,6 +1349,43 @@ padding width for every set, not that set's mode count -- which reads as "every
 row used the same number of modes" and hides exactly the effect above. Count
 `(tab[i][:, 0] >= 0).sum()`.
 
+## The fit is SVD-bound, not basis-bound, at production mode counts (2026-07-26)
+
+Profiled on smooth-beta PIG with the ellipsoid window and `WedgeLadder(10,2)`,
+k = 20/40/100, by callgrind. Detail in `dev/perf-2026-07-26.md`.
+
+| share of all instructions | k=20 | k=40 | k=100 |
+|---|---|---|---|
+| **all SVD** | **23.9%** | **49.6%** | **60.9%** |
+| basis vjp + values + harmonics | 40.2% | 23.1% | 11.6% |
+
+**This overturns the earlier timing note's "the LM is essentially all basis
+evaluation".** That was measured at 6 modes, where it holds. The inner solve is
+O(k m^2) with a large constant and the basis is O(K m), so the crossover
+arrives early: by k=40 the SVD is already half the run, and at k=100 it is
+three fifths of everything.
+
+**The SVD is replaceable exactly.** `inner_solve`'s filter
+`sigma/(sigma^2 + ridge)` IS Tikhonov -- it computes
+`(A^T A + ridge I)^-1 A^T y` -- so a thin QR gives both an orthonormal basis of
+range(A~), which is all the default Kaufman Jacobian needs, and an R whose
+`m x m` Cholesky yields the same `c`. Eigen's SVD is 6-9x slower than a QR at
+these sizes regardless of conditioning.
+
+Measured on a patched copy: **1.15x / 1.41x / 1.57x** end to end at
+k = 20/40/100, and 1.58x on a whole-field shells-L6 fit at k=40 with the field
+error IDENTICAL to four digits (0.0354 clipped, 0.0269 +sym, either way) and the
+searched/baseline split moving on 3 rows of 6557. The test suite passes 124 of
+126 cases against it; the two failures are exactly the predicted ones -- the
+rank-deficiency test and the Golub-Pereyra Jacobian, which needs `sigma` and
+`V`. A landable version therefore keeps the SVD as the fallback for those two
+cases rather than deleting it.
+
+Also established, so it need not be re-checked: **there is no redundant
+computation.** `solve_at`'s one-entry cache hits ~48% of calls, which is the
+residual/Jacobian pairing working as designed, and basis evaluations equal
+inner solves plus the CV and startability checks.
+
 ## Rough beta: the baseline-cap lever cuts the other way (2026-07-26)
 
 Slice 39 replayed in C++ -- the alpha=0.01 MAP state, where the pointwise
