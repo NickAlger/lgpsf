@@ -30,6 +30,7 @@ using lgpsf::VarProOptions;
 using lgpsf::VarProResult;
 using lgpsf::WhitenedBasis;
 using lgpsf::WhitenedBasisAt;
+using lgpsf::detail::InnerFactors;
 using lgpsf::detail::InnerSolve;
 using lgpsf::detail::ReducedProblem;
 using lgpsf::detail::inner_solve;
@@ -241,6 +242,95 @@ TEST_CASE("the inner solve detects rank deficiency")
     CHECK(solution.c.allFinite());
 }
 
+TEST_CASE("RangeOnly takes the QR and answers the same as the SVD")
+{
+    // The fast path is not an approximation: the SVD's sigma/(sigma^2 + ridge)
+    // filter IS Tikhonov, so a QR reaches the same coefficients. What legitimately
+    // differs is U -- a different orthonormal basis of the SAME subspace -- which
+    // is why the check is on the PROJECTOR, the only way U is ever used.
+    std::mt19937 gen(31);
+    for ( int num_modes : {3, 6, 12} )
+    {
+        for ( double ridge : {0.0, 1e-8, 1e-3} )
+        {
+            const Eigen::MatrixXd A = test_helpers::randn_points(30, num_modes, gen);
+            const Eigen::VectorXd y = test_helpers::randn_points(30, 1, gen).col(0);
+
+            const InnerSolve full = inner_solve(A, y, ridge, InnerFactors::Full);
+            const InnerSolve range = inner_solve(A, y, ridge, InnerFactors::RangeOnly);
+
+            CHECK((range.c - full.c).cwiseAbs().maxCoeff() < 1e-10);
+            CHECK((range.residual - full.residual).cwiseAbs().maxCoeff() < 1e-10);
+            CHECK((range.col_scale - full.col_scale).cwiseAbs().maxCoeff() < 1e-12);
+
+            // the QR path really did skip the SVD
+            CHECK(range.sigma.size() == 0);
+            CHECK(full.sigma.size() == num_modes);
+
+            // U orthonormal, and the same projector -- what the Jacobian uses
+            CHECK(range.U.cols() == num_modes);
+            CHECK((range.U.transpose() * range.U
+                   - Eigen::MatrixXd::Identity(num_modes, num_modes))
+                      .cwiseAbs().maxCoeff() < 1e-12);
+            const Eigen::MatrixXd probe = test_helpers::randn_points(30, 4, gen);
+            CHECK((project_out(range.U, probe) - project_out(full.U, probe))
+                      .cwiseAbs().maxCoeff() < 1e-10);
+        }
+    }
+}
+
+TEST_CASE("RangeOnly falls back to the SVD when the QR reports rank deficiency")
+{
+    // The one case where QR and SVD genuinely disagree: a pivoted QR returns a
+    // basic solution, the SVD the minimum-norm one, and the minimum-norm one is
+    // the point of having a rank cutoff. So the fast path must decline.
+    std::mt19937 gen(32);
+    Eigen::MatrixXd A = test_helpers::randn_points(15, 4, gen);
+    A.col(3) = A.col(1);
+    const Eigen::VectorXd y = test_helpers::randn_points(15, 1, gen).col(0);
+
+    const InnerSolve range = inner_solve(A, y, 0.0, InnerFactors::RangeOnly);
+    const InnerSolve full = inner_solve(A, y, 0.0, InnerFactors::Full);
+
+    // sigma present at all is the evidence the fallback fired
+    CHECK(range.sigma.size() == 3);
+    CHECK(range.U.cols() == 3);
+    CHECK((range.c - full.c).cwiseAbs().maxCoeff() < 1e-12);
+    CHECK((range.residual - full.residual).cwiseAbs().maxCoeff() < 1e-12);
+
+    // and the minimum-norm property is what a basic solution would have lost
+    CHECK(std::abs(range.c(1) - range.c(3)) < 1e-9);
+}
+
+TEST_CASE("a Golub-Pereyra request re-solves a point cached range-only")
+{
+    // fit_varpro configures the problem once from options.jacobian, but the
+    // per-call variant is what decides what the factorization must contain.
+    // Asking for the exact Jacobian at a point whose cache holds no sigma has
+    // to recompute rather than divide by an empty vector.
+    std::mt19937 gen(33);
+    const Problem problem = make_problem(gen);
+    const Eigen::VectorXd y_hat =
+        test_helpers::randn_points(static_cast<int>(problem.num_probes), 1, gen).col(0);
+    ReducedProblem<WhitenedBasis> reduced(problem.z_hat, y_hat, problem.e_hat,
+                                          problem.basis, 0.0,
+                                          InnerFactors::RangeOnly);
+
+    const Eigen::VectorXd residual = reduced.residual(problem.theta_hat);
+    CHECK(reduced.solve_at(problem.theta_hat, InnerFactors::RangeOnly).sigma.size() == 0);
+
+    const Eigen::MatrixXd exact = reduced.jacobian(
+        problem.theta_hat, JacobianVariant::GolubPereyra, problem.num_params);
+    CHECK(exact.allFinite());
+
+    ReducedProblem<WhitenedBasis> reference(problem.z_hat, y_hat, problem.e_hat,
+                                            problem.basis, 0.0, InnerFactors::Full);
+    const Eigen::MatrixXd expected = reference.jacobian(
+        problem.theta_hat, JacobianVariant::GolubPereyra, problem.num_params);
+    CHECK((exact - expected).cwiseAbs().maxCoeff() < 1e-9);
+    CHECK((residual - reference.residual(problem.theta_hat)).cwiseAbs().maxCoeff() < 1e-12);
+}
+
 TEST_CASE("Frisch-Waugh-Lovell: residualize then fit equals the joint fit")
 {
     // This identity is what licenses projecting the extra block out ONCE up
@@ -326,7 +416,8 @@ TEST_CASE("Kaufman and Golub-Pereyra differ only in the quadratic model")
         problem.theta_hat, JacobianVariant::Kaufman, problem.num_params);
     const Eigen::MatrixXd exact = reduced.jacobian(
         problem.theta_hat, JacobianVariant::GolubPereyra, problem.num_params);
-    const InnerSolve& solution = reduced.solve_at(problem.theta_hat);
+    const InnerSolve& solution =
+        reduced.solve_at(problem.theta_hat, InnerFactors::Full);
 
     // the dropped term is genuinely present
     const Eigen::MatrixXd dropped = exact - kaufman;

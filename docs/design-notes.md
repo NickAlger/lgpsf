@@ -1372,14 +1372,45 @@ range(A~), which is all the default Kaufman Jacobian needs, and an R whose
 `m x m` Cholesky yields the same `c`. Eigen's SVD is 6-9x slower than a QR at
 these sizes regardless of conditioning.
 
-Measured on a patched copy: **1.15x / 1.41x / 1.57x** end to end at
-k = 20/40/100, and 1.58x on a whole-field shells-L6 fit at k=40 with the field
-error IDENTICAL to four digits (0.0354 clipped, 0.0269 +sym, either way) and the
-searched/baseline split moving on 3 rows of 6557. The test suite passes 124 of
-126 cases against it; the two failures are exactly the predicted ones -- the
-rank-deficiency test and the Golub-Pereyra Jacobian, which needs `sigma` and
-`V`. A landable version therefore keeps the SVD as the fallback for those two
-cases rather than deleting it.
+**LANDED**, as `detail::InnerFactors` on `inner_solve`:
+
+- `RangeOnly` -- what the reduced residual and the Kaufman Jacobian need -- runs
+  a `ColPivHouseholderQR` whose threshold mirrors the SVD branch's rank cutoff.
+  `U` is `Q`'s leading columns; the projector built from it is basis-independent,
+  so the Jacobian is unchanged.
+- The ridge is applied by a small stacked least-squares solve,
+  `[R; sqrt(ridge) I] d = [Q^T y; 0]`, rather than by forming `R^T R + ridge I`.
+  Same Tikhonov answer, but the condition number is the square root of the
+  normal-equation one, so the speed does not come out of the conditioning.
+- **The SVD still runs in the two cases that need it**: when `Full` is asked for
+  (Golub-Pereyra reads `sigma` and `V`) and when the QR reports RANK DEFICIENCY.
+  There the two genuinely differ -- a pivoted QR returns a basic solution where
+  the SVD returns the minimum-norm one -- and the minimum-norm one is the point
+  of having a rank cutoff.
+- `ReducedProblem` records what its cache holds, so a Golub-Pereyra request at a
+  point cached range-only re-solves rather than dividing by an empty `sigma`.
+- `linear_cv_score`'s folds take the same QR-with-SVD-fallback route.
+
+Measured, whole field, 4 threads:
+
+| | SVD | landed | speedup | clipped | +sym |
+|---|---|---|---|---|---|
+| shells-L6 k=100, ball | 785.9 s | **376.8 s** | **2.09x** | 0.0189 both | **0.0147 both** |
+| shells-L6 k=100, ellipsoid | 777.0 s | 401.4 s | 1.94x | 0.0191 both | 0.0150 both |
+| shells-L6 k=40, ball | 185.3 s | 123.2 s | 1.50x | 0.0354 both | 0.0269 both |
+| shells-L6 k=40, ellipsoid | 140.8 s | 103.0 s | 1.37x | 0.0358 both | 0.0275 both |
+
+**Every headline field number is unchanged to four digits**, including the
+0.0147 that matches the prototype. One or two rows in 6557 change their
+searched/baseline decision. Per row single-threaded the gain is 1.13x / 1.37x /
+1.54x at k = 20/40/100; the whole-field figure is better because the SVD's
+allocator traffic was also costing memory bandwidth across threads.
+
+Suite: 145 cases / 105,699 assertions, with three new tests pinning that
+`RangeOnly` and `Full` agree on coefficients, residual and PROJECTOR (not `U`
+itself, which is legitimately a different basis of the same subspace); that the
+fallback fires on rank deficiency and recovers the minimum-norm solution; and
+that a Golub-Pereyra request re-solves a range-only cache.
 
 Also established, so it need not be re-checked: **there is no redundant
 computation.** `solve_at`'s one-entry cache hits ~48% of calls, which is the

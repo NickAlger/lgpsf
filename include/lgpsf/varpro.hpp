@@ -156,6 +156,9 @@ inline Eigen::MatrixXd orthonormal_range( const Eigen::Ref<const Eigen::MatrixXd
 /// Everything one trial point's linear solve produced: the coefficients and
 /// residual the outer loop needs, plus the factorization pieces the Jacobian
 /// reuses, so nothing is factored twice per trial point.
+///
+/// `sigma`/`V` are present only when the solve was asked for `InnerFactors::Full`
+/// -- see `inner_solve`. Everything else is always populated.
 struct InnerSolve
 {
     Eigen::VectorXd c;         ///< (num_modes,)
@@ -166,15 +169,40 @@ struct InnerSolve
     Eigen::VectorXd col_scale; ///< (num_modes,) column norms divided out
 };
 
+/// How much of the factorization the caller will actually use.
+///
+/// The distinction is worth a parameter because it is worth a lot of time: at
+/// PIG scale with 21 modes the SVD was 61% of the whole fit, and `RangeOnly`
+/// is served by a QR that measures 6-9x faster at these sizes.
+enum class InnerFactors
+{
+    /// `c`, `residual`, `U` and `col_scale`. What the reduced residual and the
+    /// Kaufman Jacobian need, and all they need.
+    RangeOnly,
+    /// Additionally `sigma` and `V`, which only the Golub-Pereyra Jacobian uses.
+    Full
+};
+
 /// The inner least-squares solve -- the "projection" in variable projection.
 ///
-/// One SVD powers everything: the ridge-regularized coefficients, the
-/// orthonormal range basis the Jacobian's projector needs, and rank detection
-/// for features the probes cannot distinguish. Columns are equilibrated first,
-/// so `ridge` acts on singular values of a matrix whose scale is known rather
-/// than on the caller's units, and so the rank cutoff means something.
+/// Columns are equilibrated first, so `ridge` acts on singular values of a
+/// matrix whose scale is known rather than on the caller's units, and so the
+/// rank cutoff means something.
+///
+/// **Two factorizations, one answer.** The ridge filter
+/// `sigma / (sigma^2 + ridge)` IS Tikhonov -- it computes
+/// `(A^T A + ridge I)^-1 A^T y` -- so when the caller needs no singular values
+/// a column-pivoted QR gets there too: `Q`'s leading columns are an orthonormal
+/// basis of `range(A~)` (the projector built from them is basis-independent, so
+/// the Jacobian is unchanged), and `c` follows from a small stacked QR that
+/// applies the ridge without ever forming `R^T R`. The SVD still runs when
+/// `Full` is asked for, and when the QR reports RANK DEFICIENCY -- there the two
+/// genuinely differ, since a pivoted QR returns a basic solution where the SVD
+/// returns the minimum-norm one, and the minimum-norm one is what a rank cutoff
+/// is for.
 inline InnerSolve inner_solve( const Eigen::MatrixXd& A_tilde,
-                               const Eigen::VectorXd& y_tilde, double ridge )
+                               const Eigen::VectorXd& y_tilde, double ridge,
+                               InnerFactors factors = InnerFactors::Full )
 {
     InnerSolve out;
     const Eigen::Index num_modes = A_tilde.cols();
@@ -199,6 +227,47 @@ inline InnerSolve inner_solve( const Eigen::MatrixXd& A_tilde,
         out.sigma = Eigen::VectorXd::Zero(0);
         out.V = Eigen::MatrixXd::Zero(0, 0);
         return out;
+    }
+
+    if ( factors == InnerFactors::RangeOnly )
+    {
+        // Threshold chosen to mirror the SVD branch's rank cutoff: Eigen tests
+        // |R(i,i)| against maxpivot * threshold(), and maxpivot plays the role
+        // of sigma_max, so max(rows, cols) * eps makes the two agree in form.
+        Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(equilibrated);
+        qr.setThreshold(static_cast<double>(std::max(equilibrated.rows(), num_modes))
+                        * std::numeric_limits<double>::epsilon());
+        if ( qr.rank() == num_modes )
+        {
+            const Eigen::MatrixXd R = qr.matrixR()
+                                          .topLeftCorner(num_modes, num_modes)
+                                          .triangularView<Eigen::Upper>();
+            out.U = qr.householderQ()
+                    * Eigen::MatrixXd::Identity(equilibrated.rows(), num_modes);
+
+            // The ridge, applied WITHOUT squaring the conditioning: solving
+            // [R; sqrt(ridge) I] d = [Q^T y; 0] in least squares is the same
+            // Tikhonov problem as (R^T R + ridge I) d = R^T Q^T y, and its
+            // condition number is the square root of that system's.
+            Eigen::MatrixXd stacked(2 * num_modes, num_modes);
+            stacked.topRows(num_modes) = R;
+            stacked.bottomRows(num_modes) =
+                std::sqrt(std::max(ridge, 0.0))
+                * Eigen::MatrixXd::Identity(num_modes, num_modes);
+            Eigen::VectorXd target = Eigen::VectorXd::Zero(2 * num_modes);
+            target.head(num_modes) = out.U.transpose() * y_tilde;
+
+            const Eigen::VectorXd permuted = stacked.householderQr().solve(target);
+            const Eigen::VectorXd scaled = qr.colsPermutation() * permuted;
+
+            out.sigma = Eigen::VectorXd::Zero(0);   // not computed on this path
+            out.V = Eigen::MatrixXd::Zero(num_modes, 0);
+            out.c = scaled.array() / out.col_scale.array();
+            out.residual = y_tilde - A_tilde * out.c;
+            return out;
+        }
+        // rank deficient: fall through to the SVD, which is what the rank
+        // cutoff and the minimum-norm solution exist for
     }
 
     Eigen::BDCSVD<Eigen::MatrixXd> svd(equilibrated,
@@ -285,9 +354,10 @@ public:
 
     ReducedProblem( Eigen::MatrixXd z_hat, Eigen::VectorXd y_hat,
                     const Eigen::Ref<const Eigen::MatrixXd>& e_hat,
-                    const Basis& basis, double ridge )
+                    const Basis& basis, double ridge,
+                    InnerFactors factors = InnerFactors::Full )
         : z_hat_(std::move(z_hat)), y_hat_(std::move(y_hat)), basis_(basis),
-          ridge_(ridge)
+          ridge_(ridge), factors_(factors)
     {
         B_ = z_hat_.transpose() * e_hat;
         Q_B_ = orthonormal_range(B_);
@@ -301,14 +371,21 @@ public:
     /// A(theta_hat) before residualization -- the back-solve for s needs it.
     Eigen::MatrixXd design_matrix( const Eigen::VectorXd& theta_hat )
     {
-        solve_at(theta_hat);
+        solve_at(theta_hat, factors_);
         return z_hat_.transpose() * evaluation_->values();
     }
 
-    const InnerSolve& solve_at( const Eigen::VectorXd& theta_hat )
+    /// @param factors what this caller needs. A cache entry computed for
+    ///        `RangeOnly` does not satisfy a later `Full` request, so the
+    ///        point is re-solved -- which keeps a caller that mixes variants
+    ///        correct rather than quietly handing it an empty `sigma`.
+    const InnerSolve& solve_at( const Eigen::VectorXd& theta_hat,
+                                InnerFactors factors )
     {
         if ( have_cache_ && theta_hat.size() == cached_point_.size()
-             && theta_hat == cached_point_ )
+             && theta_hat == cached_point_
+             && !( factors == InnerFactors::Full
+                   && cached_factors_ == InnerFactors::RangeOnly ) )
         {
             return cache_;
         }
@@ -342,7 +419,7 @@ public:
 
         if ( usable )
         {
-            cache_ = inner_solve(A_tilde, y_tilde_, ridge_);
+            cache_ = inner_solve(A_tilde, y_tilde_, ridge_, factors);
         }
         else
         {
@@ -355,19 +432,25 @@ public:
             cache_.col_scale = Eigen::VectorXd::Ones(num_modes_);
         }
         cached_point_ = theta_hat;
+        cached_factors_ = factors;
         have_cache_ = true;
         return cache_;
     }
 
     Eigen::VectorXd residual( const Eigen::VectorXd& theta_hat )
     {
-        return solve_at(theta_hat).residual;
+        return solve_at(theta_hat, factors_).residual;
     }
 
     Eigen::MatrixXd jacobian( const Eigen::VectorXd& theta_hat,
                               JacobianVariant variant, int num_params )
     {
-        const InnerSolve& solution = solve_at(theta_hat);
+        // Golub-Pereyra reads sigma and V, so it needs the full factorization
+        // whatever this problem was configured for.
+        const InnerSolve& solution =
+            solve_at(theta_hat, variant == JacobianVariant::GolubPereyra
+                                    ? InnerFactors::Full
+                                    : factors_);
         if ( !evaluation_.has_value() )
         {
             return Eigen::MatrixXd::Zero(z_hat_.cols(), num_params);
@@ -419,6 +502,7 @@ private:
     Eigen::VectorXd y_hat_;  ///< (k,)
     const Basis& basis_;
     double ridge_;
+    InnerFactors factors_;
 
     Eigen::MatrixXd B_;        ///< (k, num_extra)
     Eigen::MatrixXd Q_B_;      ///< (k, rank)
@@ -428,6 +512,7 @@ private:
     Eigen::VectorXd cached_point_;
     InnerSolve cache_;
     bool have_cache_ = false;
+    InnerFactors cached_factors_ = InnerFactors::Full;
     Eigen::Index num_modes_ = 0;
 };
 
@@ -492,8 +577,13 @@ VarProResult fit_varpro(
             + " probes < " + std::to_string(num_params) + " parameters");
     }
 
-    detail::ReducedProblem<Basis> reduced(z_hat, y_hat, e_hat, basis,
-                                          options.ridge);
+    // Kaufman reads only the range basis, so its solves take the QR path; the
+    // exact Jacobian needs sigma and V and pays for the SVD.
+    detail::ReducedProblem<Basis> reduced(
+        z_hat, y_hat, e_hat, basis, options.ridge,
+        options.jacobian == JacobianVariant::GolubPereyra
+            ? detail::InnerFactors::Full
+            : detail::InnerFactors::RangeOnly);
 
     // Validate the start point before the loop, so a caller's bad scaling is a
     // loud error rather than a fit that silently never moves.
@@ -542,7 +632,8 @@ VarProResult fit_varpro(
                                              static_cast<int>(num_params));
         if ( callback )
         {
-            const detail::InnerSolve& solution = reduced.solve_at(point);
+            const detail::InnerSolve& solution =
+                reduced.solve_at(point, detail::InnerFactors::RangeOnly);
             callback(point, solution.c, solution.residual);
             last_callback_point = point;
         }
@@ -562,7 +653,8 @@ VarProResult fit_varpro(
 
     VarProResult result;
     result.theta_hat = lm.parameters;
-    const detail::InnerSolve& final_solve = reduced.solve_at(result.theta_hat);
+    const detail::InnerSolve& final_solve =
+        reduced.solve_at(result.theta_hat, detail::InnerFactors::RangeOnly);
     result.c = final_solve.c;
 
     // Close the trace on the returned point, so the callback always ends where

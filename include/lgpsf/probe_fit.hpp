@@ -391,8 +391,16 @@ double linear_cv_score( const Eigen::Ref<const Eigen::MatrixXd>& z_hat,
             train.row(i) = design.row(fold.train(i));
             target(i) = y_hat(fold.train(i));
         }
+        // A pivoted QR where the fold is full rank, the SVD where it is not:
+        // the two agree there, and only the rank-deficient case needs the
+        // minimum-norm solution the SVD gives. Same trade as `inner_solve`.
+        Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(train);
         const Eigen::VectorXd coefficients =
-            train.bdcSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(target);
+            ( qr.rank() == train.cols() )
+                ? Eigen::VectorXd(qr.solve(target))
+                : Eigen::VectorXd(
+                      train.bdcSvd(Eigen::ComputeThinU | Eigen::ComputeThinV)
+                          .solve(target));
         for ( Eigen::Index i = 0; i < fold.validation.size(); ++i )
         {
             const Eigen::Index row = fold.validation(i);

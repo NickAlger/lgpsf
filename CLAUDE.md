@@ -380,6 +380,16 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
   / 98,652 assertions. The LM solves its trust-region subproblem by an
   SVD hook step rather than MINPACK's `lmpar`; measured against scipy
   it is marginally faster to converge with identical answers.
+  **THE INNER SOLVE IS QR-FIRST, unlike the prototype's**
+  (`detail::InnerFactors`): the ridge filter `sigma/(sigma^2+ridge)` IS
+  Tikhonov, so `RangeOnly` -- all the reduced residual and the default
+  Kaufman Jacobian need -- gets `c` from a pivoted QR plus a small
+  stacked ridge solve, and `U` from `Q` (the projector is
+  basis-independent, so the Jacobian is unchanged). The SVD still runs
+  for `Full` (Golub-Pereyra reads `sigma`/`V`) and whenever the QR
+  reports RANK DEFICIENCY, where the minimum-norm solution differs from
+  a basic one. Worth 2.1x on a whole-field k=100 fit with every field
+  number unchanged to four digits; see `docs/design-notes.md`.
   Shipped in M3: `init_dictionary.hpp`, `probe_moments.hpp`,
   `mode_policy.hpp` (virtual `ModePolicy` with `propose` **const**;
   MarginGreedy stays parked Python-side) and `probe_fit.hpp`. Suite:
