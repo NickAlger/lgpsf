@@ -548,3 +548,263 @@ def test_lg_expansion_is_self_decoding_and_checkable():
 
 def test_infeasible_parameters_is_its_own_exception():
     assert issubclass(lgpsf.InfeasibleParameters, RuntimeError)
+
+
+# --------------------------------------------------------------------------
+# The operator layer.
+#
+# Two conventions meet here. A POINT BATCH is (N, K) in both directions; a
+# PER-ROW RECORD is row-first, (R, ...), because `fit.mu[rho]` is how anyone
+# reads one. R != N in any real problem, so mixing them is a shape error.
+# --------------------------------------------------------------------------
+
+def synthetic_operator(per_side=9, num_probes=30, fitted_rows=4, prior_scale=2.0,
+                       seed=11):
+    """A synthetic operator with a known model on a few interior rows.
+
+    Every other row's response is identically ZERO, which makes this the
+    dead-row situation in miniature as well.
+    """
+    rng = np.random.default_rng(seed)
+    axis = np.linspace(-1.0, 1.0, per_side)
+    grid = np.meshgrid(axis, axis, indexing="ij")
+    x_cols = np.vstack([grid[0].ravel(), grid[1].ravel()])     # (2, K)
+    count = x_cols.shape[1]
+
+    m1 = rng.uniform(0.7, 1.5, size=count)
+    m2 = rng.uniform(0.4, 1.1, size=count)          # M1 != M2 throughout
+    modes = lgpsf.modes_up_to_level(2, 1)
+    V = rng.normal(size=(num_probes, count))        # (num_probes, K)
+    HV = np.zeros((num_probes, count))              # (num_probes, R)
+
+    stride = count // (fitted_rows + 1)
+    chosen = [stride * (i + 1) for i in range(fitted_rows)]
+    theta_hat = np.array([np.log(0.26 * 1.6), np.log(0.26), 0.03])
+    sigma = np.tile(np.eye(2), (count, 1, 1))
+    truth = {}
+    for rho in chosen:
+        center = x_cols[:, rho].copy()
+        frame = lgpsf.unpack_theta(lgpsf.to_theta(theta_hat, center,
+                                                  lgpsf.MuMode.Pinned))
+        # the caller's prior is deliberately wrong by a scale factor, so the
+        # baseline is beatable and the search has something to do
+        sigma[rho] = prior_scale**2 * frame.L @ frame.L.T
+
+        basis = lgpsf.WhitenedBasis(x_cols, m1[rho], m2, modes, center,
+                                    lgpsf.MuMode.Pinned)
+        c = rng.normal(size=len(modes))
+        s = 0.4
+        h_row = np.sqrt(m1[rho]) * np.sqrt(m2) * (c @ basis.values(theta_hat))
+        h_row[rho] += m1[rho] * s
+        HV[:, rho] = V @ h_row
+        truth[rho] = dict(c=c, s=s, theta=lgpsf.to_theta(theta_hat, center,
+                                                         lgpsf.MuMode.Pinned))
+
+    return dict(x_cols=x_cols, m1=m1, m2=m2, V=V, HV=HV, sigma=sigma,
+                modes=modes, chosen=chosen, truth=truth, count=count)
+
+
+def operator_config(op, **kwargs):
+    config = lgpsf.OperatorFitConfig()
+    config.tau_window = 10.0
+    config.spike = True
+    config.row.mode_policy = lgpsf.FixedSet(op["modes"], "truth")
+    config.row.target_score = None
+    config.row.num_rungs = 3
+    for key, value in kwargs.items():
+        setattr(config, key, value)
+    return config
+
+
+def fit_synthetic(op, **kwargs):
+    rows = kwargs.pop("rows", np.array(op["chosen"]))
+    return lgpsf.fit_operator(op["x_cols"], op["m1"], op["m2"], op["V"],
+                              op["HV"], op["sigma"],
+                              config=operator_config(op, **kwargs), rows=rows)
+
+
+def test_fit_operator_recovers_a_synthetic_operator_row_by_row():
+    op = synthetic_operator()
+    fit = fit_synthetic(op)
+
+    for rho, truth in op["truth"].items():
+        assert fit.model.has_model(rho)
+        np.testing.assert_allclose(fit.model.theta[rho], truth["theta"], atol=1e-6)
+        np.testing.assert_allclose(fit.model.c[rho, :len(truth["c"])],
+                                   truth["c"], atol=1e-6)
+        np.testing.assert_allclose(fit.model.s[rho], truth["s"], atol=1e-6)
+        assert fit.diagnostics.score[rho] < 1e-6
+
+
+def test_point_batches_round_trip_but_per_row_records_are_row_first():
+    op = synthetic_operator()
+    fit = fit_synthetic(op)
+    dim, count = op["x_cols"].shape
+
+    # what went in comes back out, same shape
+    np.testing.assert_allclose(fit.model.x_cols, op["x_cols"])
+    assert fit.model.x_rows is None                 # square dof context
+
+    # per-row records lead with the row
+    assert fit.model.num_rows == count
+    assert fit.model.mu.shape == (count, dim)
+    assert fit.model.L.shape == (count, dim, dim)
+    assert fit.model.theta.shape == (count, lgpsf.theta_size(dim))
+    assert fit.model.window_center.shape == (count, dim)
+    assert fit.model.window_covariance.shape == (count, dim, dim)
+    assert fit.diagnostics.score.shape == (count,)
+
+    # L really is the lower-triangular factor, not its transpose
+    for rho in op["chosen"]:
+        L = fit.model.L[rho]
+        assert L[0, 1] == 0.0
+        np.testing.assert_allclose(L @ L.T,
+                                   lgpsf.unpack_theta(fit.model.theta[rho]).L
+                                   @ lgpsf.unpack_theta(fit.model.theta[rho]).L.T,
+                                   atol=1e-12)
+
+
+def test_rows_accepts_a_mask_or_indices_and_they_agree():
+    op = synthetic_operator()
+    mask = np.zeros(op["count"], dtype=bool)
+    mask[op["chosen"]] = True
+    by_mask = fit_synthetic(op, rows=mask)
+    by_index = fit_synthetic(op, rows=np.array(op["chosen"]))
+    np.testing.assert_array_equal(by_mask.diagnostics.status,
+                                  by_index.diagnostics.status)
+    np.testing.assert_allclose(by_mask.model.c, by_index.model.c)
+
+
+def test_status_is_maskable_and_names_its_enum():
+    op = synthetic_operator()
+    fit = fit_synthetic(op)
+    status = fit.diagnostics.status
+    assert status.dtype == np.int8
+    fitted = status == int(lgpsf.RowStatus.Fit)
+    gated = status == int(lgpsf.RowStatus.GatedOut)
+    assert fitted.sum() + gated.sum() == op["count"]
+    assert set(np.flatnonzero(fitted)) == set(op["chosen"])
+    assert fit.diagnostics.failures == {}
+    assert fit.diagnostics.released.dtype == np.bool_
+
+
+def test_dead_rows_need_no_gate():
+    # Every ungated row of this problem has HV == 0, so dropping the gate makes
+    # it the PIG situation in miniature: a dead row must cost one candidate and
+    # ship zeros, and must not disturb any live row.
+    op = synthetic_operator()
+    gated = fit_synthetic(op)
+    ungated = fit_synthetic(op, rows=None)
+
+    assert ungated.diagnostics.failures == {}
+    for rho in op["chosen"]:
+        np.testing.assert_array_equal(ungated.model.c[rho], gated.model.c[rho])
+        assert ungated.model.s[rho] == gated.model.s[rho]
+        assert ungated.diagnostics.score[rho] == gated.diagnostics.score[rho]
+
+    dead = [r for r in range(op["count"]) if r not in op["chosen"]]
+    assert np.all(ungated.diagnostics.score[dead] == 0.0)
+    assert np.all(ungated.model.c[dead] == 0.0)
+    assert np.all(ungated.model.s[dead] == 0.0)
+
+    probes = np.random.default_rng(0).normal(size=(3, op["count"]))
+    applied = lgpsf.matvec(ungated.model, probes)
+    assert np.all(applied[:, dead] == 0.0)
+
+
+def test_results_are_identical_across_thread_counts():
+    op = synthetic_operator()
+    one = fit_synthetic(op, num_threads=1)
+    four = fit_synthetic(op, num_threads=4)
+    for name in ("theta", "mu", "c", "s"):
+        a, b = getattr(one.model, name), getattr(four.model, name)
+        both_nan = np.isnan(a) & np.isnan(b)
+        assert np.array_equal(np.where(both_nan, 0.0, a),
+                              np.where(both_nan, 0.0, b))
+    np.testing.assert_array_equal(one.diagnostics.status, four.diagnostics.status)
+
+
+def test_matvec_agrees_with_the_assembled_sparse_operator():
+    pytest.importorskip("scipy")
+    op = synthetic_operator()
+    fit = fit_synthetic(op)
+    probes = np.random.default_rng(1).normal(size=(4, op["count"]))
+
+    A = lgpsf.assemble_sparse(fit.model, np.inf)
+    np.testing.assert_allclose(lgpsf.matvec(fit.model, probes),
+                               (A @ probes.T).T, atol=1e-12)
+
+    As = lgpsf.assemble_sparse(fit.model, np.inf, lgpsf.Symmetrize.Average)
+    dense, dense_sym = np.asarray(A.todense()), np.asarray(As.todense())
+    np.testing.assert_allclose(dense_sym, 0.5 * (dense + dense.T), atol=1e-14)
+
+
+def test_the_deployed_operator_is_window_restricted():
+    op = synthetic_operator()
+    fit = fit_synthetic(op)
+    for rho in op["chosen"]:
+        window = set(fit.model.row_window(rho))
+        outside = [j for j in range(op["count"]) if j not in window]
+        if not outside:
+            continue
+        values = lgpsf.eval_entries(fit.model, [rho] * len(outside), outside)
+        np.testing.assert_array_equal(values, 0.0)
+        # ...and the opt-out really does extend past it
+        extended = lgpsf.eval_kernel_unrestricted(
+            fit.model, [rho], op["x_cols"][:, outside])
+        assert np.any(extended != 0.0)
+
+
+def test_qc_map_spike_measure_and_the_ellipsoid_field():
+    op = synthetic_operator()
+    fit = fit_synthetic(op)
+
+    qc = lgpsf.qc_map(fit.model, op["V"], op["HV"])
+    assert qc.shape == (op["count"],)
+    assert np.all(qc[op["chosen"]] < 1e-6)          # exact fit, exact recovery
+
+    np.testing.assert_allclose(lgpsf.spike_measure(fit.model),
+                               op["m1"] * fit.model.s, equal_nan=True)
+
+    mu, sigma = lgpsf.ellipsoid_field(fit.model)
+    assert mu.shape == (op["count"], 2) and sigma.shape == (op["count"], 2, 2)
+    for rho in op["chosen"]:
+        np.testing.assert_allclose(sigma[rho], sigma[rho].T, atol=1e-14)
+
+
+def test_build_operator_round_trips_through_row_expansion():
+    # The physics-based construction path: an operator can be built without the
+    # fitter ever being involved, and a fitted one can be taken apart.
+    op = synthetic_operator()
+    fit = fit_synthetic(op)
+
+    rows = []
+    for rho in range(op["count"]):
+        if not fit.model.has_model(rho):
+            rows.append(None)
+            continue
+        rows.append(lgpsf.OperatorRow(lgpsf.row_expansion(fit.model, rho),
+                                      fit.model.window_center[rho],
+                                      fit.model.window_covariance[rho],
+                                      fit.model.row_window(rho)))
+
+    rebuilt = lgpsf.build_operator(op["x_cols"], op["m1"], op["m2"], True, rows)
+    assert lgpsf.validate_operator(rebuilt) == []
+    probes = np.random.default_rng(2).normal(size=(3, op["count"]))
+    np.testing.assert_allclose(lgpsf.matvec(rebuilt, probes),
+                               lgpsf.matvec(fit.model, probes), atol=1e-12)
+
+
+def test_the_window_aspect_cap_moves_the_shape():
+    op = synthetic_operator()
+    ball = fit_synthetic(op, tau_window=1.5, window_aspect_cap=1.0)
+    ellipse = fit_synthetic(op, tau_window=1.5,
+                            window_aspect_cap=float("inf"))
+    for rho in op["chosen"]:
+        cap1 = ball.model.window_covariance[rho]
+        capinf = ellipse.model.window_covariance[rho]
+        # cap = 1 is isotropic; the untouched prior is not
+        np.testing.assert_allclose(cap1, cap1[0, 0] * np.eye(2), atol=1e-12)
+        assert abs(capinf[0, 0] - capinf[1, 1]) > 1e-12
+        # the ball contains the ellipsoid, so it can only have more points
+        assert len(ball.model.row_window(rho)) >= len(ellipse.model.row_window(rho))

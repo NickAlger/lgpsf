@@ -39,8 +39,10 @@
 #include "lgpsf/harmonic_polynomials.hpp"
 #include "lgpsf/lg_functions.hpp"
 #include "lgpsf/lg_expansion.hpp"
+#include "lgpsf/lg_operator.hpp"
 #include "lgpsf/lgpsf.hpp"
 #include "lgpsf/mode_policy.hpp"
+#include "lgpsf/operator_fit.hpp"
 #include "lgpsf/probe_fit.hpp"
 #include "lgpsf/varpro.hpp"
 #include "lgpsf/whitening.hpp"
@@ -116,6 +118,102 @@ py::array_t<double> stack_batch_last( const std::vector<Eigen::MatrixXd>& mats )
                     sizeof(double) * static_cast<std::size_t>(other * batch));
     }
     return out;
+}
+
+/// A (R, N, N) numpy stack as the per-row covariances the C++ API takes.
+///
+/// Built elementwise rather than mapped. A covariance is SYMMETRIC, so a
+/// transposed read of it is completely invisible -- there is no shape error and
+/// no wrong answer until someone passes a non-symmetric matrix. Explicit
+/// indexing costs nothing at R x 2 x 2 and removes the trap.
+std::vector<Eigen::MatrixXd> sigma_from_array( const py::array_t<double>& sigma,
+                                               Eigen::Index num_rows, int dim )
+{
+    if ( sigma.ndim() != 3 || sigma.shape(0) != num_rows || sigma.shape(1) != dim
+         || sigma.shape(2) != dim )
+    {
+        throw std::invalid_argument(
+            "lgpsf: sigma must have shape (num_rows, N, N) = ("
+            + std::to_string(num_rows) + ", " + std::to_string(dim) + ", "
+            + std::to_string(dim) + ")");
+    }
+    auto view = sigma.unchecked<3>();
+    std::vector<Eigen::MatrixXd> out(static_cast<std::size_t>(num_rows));
+    for ( Eigen::Index r = 0; r < num_rows; ++r )
+    {
+        Eigen::MatrixXd block(dim, dim);
+        for ( int i = 0; i < dim; ++i )
+        {
+            for ( int j = 0; j < dim; ++j ) { block(i, j) = view(r, i, j); }
+        }
+        out[static_cast<std::size_t>(r)] = std::move(block);
+    }
+    return out;
+}
+
+/// A (R, N*N) row-major-per-row block as a (R, N, N) numpy stack.
+py::array_t<double> unflatten_blocks( const Eigen::MatrixXd& flat, int dim )
+{
+    const py::ssize_t rows = flat.rows();
+    py::array_t<double> out({rows, static_cast<py::ssize_t>(dim),
+                             static_cast<py::ssize_t>(dim)});
+    auto view = out.mutable_unchecked<3>();
+    for ( py::ssize_t r = 0; r < rows; ++r )
+    {
+        for ( int i = 0; i < dim; ++i )
+        {
+            for ( int j = 0; j < dim; ++j ) { view(r, i, j) = flat(r, i * dim + j); }
+        }
+    }
+    return out;
+}
+
+/// An enum-valued per-row diagnostic as an int8 array, so masking works.
+template <typename Enum>
+py::array_t<std::int8_t> codes_of( const std::vector<Enum>& values )
+{
+    py::array_t<std::int8_t> out(static_cast<py::ssize_t>(values.size()));
+    for ( std::size_t i = 0; i < values.size(); ++i )
+    {
+        out.mutable_at(static_cast<py::ssize_t>(i)) =
+            static_cast<std::int8_t>(values[i]);
+    }
+    return out;
+}
+
+/// `rows` as the C++ gate: a boolean mask OR an index array, both of which a
+/// caller reaches for naturally, and neither of which the C++ takes.
+std::vector<char> gate_from_rows( const py::object& rows, Eigen::Index num_rows )
+{
+    if ( rows.is_none() ) { return {}; }
+    const py::array array = py::array::ensure(rows);
+    if ( !array ) { throw std::invalid_argument("lgpsf: rows must be array-like"); }
+    std::vector<char> gate(static_cast<std::size_t>(num_rows), 0);
+    if ( py::isinstance<py::array_t<bool>>(array) )
+    {
+        const auto mask = array.cast<py::array_t<bool>>();
+        if ( mask.size() != num_rows )
+        {
+            throw std::invalid_argument(
+                "lgpsf: a boolean rows mask must have one entry per row");
+        }
+        for ( py::ssize_t i = 0; i < mask.size(); ++i )
+        {
+            gate[static_cast<std::size_t>(i)] = mask.at(i) ? 1 : 0;
+        }
+        return gate;
+    }
+    const auto indices = array.cast<py::array_t<py::ssize_t>>();
+    for ( py::ssize_t i = 0; i < indices.size(); ++i )
+    {
+        const py::ssize_t rho = indices.at(i);
+        if ( rho < 0 || rho >= num_rows )
+        {
+            throw std::invalid_argument("lgpsf: rows index out of range");
+        }
+        gate[static_cast<std::size_t>(rho)] = 1;
+    }
+    return gate;
 }
 
 } // end anonymous namespace
@@ -643,6 +741,332 @@ PYBIND11_MODULE(lgpsf, m)
           "sigma0"_a = std::nullopt, "target_mass"_a = std::nullopt,
           "Fit a target known only through inner products with probe fields. "
           "x is (N, K), z is (num_probes, K), y is (num_probes,).");
+
+    // ---- the operator ------------------------------------------------------
+    //
+    // TWO conventions meet here, and the difference is worth stating plainly.
+    // A POINT BATCH is (N, K) in both directions: what you pass as `x_cols`
+    // comes back as `x_cols`. A PER-ROW RECORD is row-first, (R, ...), because
+    // the leading axis is "which row" and `fit.mu[rho]` is how anyone reads
+    // one. So `x_cols` is (N, K) while `mu` is (R, N); R != N in any real
+    // problem, so a mix-up is a shape error rather than a silent wrong answer.
+
+    py::enum_<RowStatus>(m, "RowStatus", "What happened to a row.")
+        .value("Fit", RowStatus::Fit, "The searched fit beat the baseline.")
+        .value("GatedOut", RowStatus::GatedOut, "The caller's gate excluded it.")
+        .value("FallbackBaseline", RowStatus::FallbackBaseline,
+               "The baseline shipped; the search did not beat it.")
+        .value("Failed", RowStatus::Failed, "The row raised; see failures.");
+
+    py::enum_<RowStop>(m, "RowStop")
+        .value("None_", RowStop::None)
+        .value("Target", RowStop::Target)
+        .value("ModePatience", RowStop::ModePatience)
+        .value("Exhausted", RowStop::Exhausted)
+        .value("SearchInfeasible", RowStop::SearchInfeasible);
+
+    py::enum_<Symmetrize>(m, "Symmetrize",
+                          "What assemble_sparse does about symmetry. An "
+                          "ASSEMBLY POLICY, not a fit property.")
+        .value("None_", Symmetrize::None, "Rows exactly as fitted.")
+        .value("Average", Symmetrize::Average, "(A + A^T) / 2; square context only.");
+
+    py::class_<OperatorFitConfig>(m, "OperatorFitConfig")
+        .def(py::init<>())
+        .def_readwrite("tau_window", &OperatorFitConfig::tau_window)
+        .def_readwrite("window_aspect_cap", &OperatorFitConfig::window_aspect_cap,
+                       "1 = an isotropic window (a ball), inf = the caller's "
+                       "ellipsoid untouched, kappa = cap the axis ratio there. "
+                       "Moves the window's SHAPE, never its scale.")
+        .def_readwrite("spike", &OperatorFitConfig::spike)
+        .def_readwrite("row", &OperatorFitConfig::row,
+                       "The per-row config. Its split and jitter are "
+                       "OVERWRITTEN here: the operator layer owns them, so "
+                       "every row and the baseline guard score on identical "
+                       "folds.")
+        .def_readwrite("seed", &OperatorFitConfig::seed,
+                       "None gives deterministic round-robin folds and a "
+                       "deterministic jitter table -- the whole fit is then "
+                       "reproducible with nothing to remember.")
+        .def_readwrite("num_threads", &OperatorFitConfig::num_threads);
+
+    py::class_<LGOperator>(m, "LGOperator",
+                           "The fitted operator as a data structure: "
+                           "H~ = M1 Phi~ M2 + M1 S, never a matrix. Knows "
+                           "nothing about fitting -- operator_fit is one "
+                           "producer of these, not their definition.")
+        .def_readonly("dim", &LGOperator::dim)
+        .def_property_readonly("x_cols",
+                               []( const LGOperator& f ) { return batch_last(f.x_cols); },
+                               "(N, K) column-dof coordinates -- a point batch.")
+        .def_property_readonly("x_rows",
+                               []( const LGOperator& f ) -> py::object {
+                                   if ( !f.x_rows ) { return py::none(); }
+                                   return batch_last(*f.x_rows);
+                               },
+                               "(N, R), or None in the square dof context.")
+        .def_readonly("m1_diag", &LGOperator::m1_diag)
+        .def_readonly("m2_diag", &LGOperator::m2_diag)
+        .def_readonly("spike", &LGOperator::spike)
+        .def_readonly("theta", &LGOperator::theta,
+                      "(R, P) in the PUBLIC absolute encoding, so every row "
+                      "decodes with unpack_theta alone.")
+        .def_readonly("mu", &LGOperator::mu, "(R, N)")
+        .def_property_readonly("L",
+                               []( const LGOperator& f )
+                               { return unflatten_blocks(f.L, f.dim); },
+                               "(R, N, N) Cholesky factors; Sigma = L L^T.")
+        .def_readonly("c", &LGOperator::c, "(R, m_max), zero-padded.")
+        .def_readonly("s", &LGOperator::s, "(R,) additive spike coefficients.")
+        .def_readonly("mode_set_id", &LGOperator::mode_set_id, "(R,), -1 = no model.")
+        .def_readonly("mode_sets", &LGOperator::mode_sets)
+        .def_property_readonly("window_center", []( const LGOperator& f )
+                               { return f.window_center; }, "(R, N)")
+        .def_property_readonly("window_covariance",
+                               []( const LGOperator& f )
+                               { return unflatten_blocks(f.window_covariance, f.dim); },
+                               "(R, N, N), pre-scaled so membership is "
+                               "Mahalanobis <= 1.")
+        .def_readonly("window_indptr", &LGOperator::window_indptr)
+        .def_readonly("window_indices", &LGOperator::window_indices)
+        .def_property_readonly("num_rows", &LGOperator::num_rows)
+        .def_property_readonly("num_cols", &LGOperator::num_cols)
+        .def("has_model", &LGOperator::has_model, "rho"_a)
+        .def("row_window", &LGOperator::row_window, "rho"_a,
+             "Row rho's fit-window column indices, sorted. The DEPLOYED "
+             "support: every evaluation is zero outside it.")
+        .def("row_modes", &LGOperator::row_modes, "rho"_a)
+        .def("__repr__", []( const LGOperator& f ) {
+                 std::ostringstream out;
+                 out << "LGOperator(dim=" << f.dim << ", num_rows=" << f.num_rows()
+                     << ", num_cols=" << f.num_cols() << ")";
+                 return out.str();
+             });
+
+    py::class_<FitDiagnostics>(m, "FitDiagnostics",
+                               "Per-row provenance: how each row went, not "
+                               "what it produced. Nothing here is read by any "
+                               "evaluation.")
+        .def_readonly("score", &FitDiagnostics::score)
+        .def_readonly("baseline_score", &FitDiagnostics::baseline_score)
+        .def_property_readonly("status",
+                               []( const FitDiagnostics& d )
+                               { return codes_of(d.status); },
+                               "(R,) int8 of RowStatus, so masking works: "
+                               "`status == int(RowStatus.Fit)`.")
+        .def_property_readonly("stop_reason",
+                               []( const FitDiagnostics& d )
+                               { return codes_of(d.stop_reason); },
+                               "(R,) int8 of RowStop.")
+        .def_property_readonly("released",
+                               []( const FitDiagnostics& d ) {
+                                   py::array_t<bool> out(
+                                       static_cast<py::ssize_t>(d.released.size()));
+                                   for ( std::size_t i = 0; i < d.released.size(); ++i )
+                                   {
+                                       out.mutable_at(static_cast<py::ssize_t>(i)) =
+                                           d.released[i] != 0;
+                                   }
+                                   return out;
+                               })
+        .def_readonly("failures", &FitDiagnostics::failures,
+                      "Row -> message, for rows that raised.")
+        .def_readonly("config", &FitDiagnostics::config, "Provenance echo.");
+
+    py::class_<OperatorFit>(m, "OperatorFit",
+                            "What fit_operator returns: the operator, and how "
+                            "it went. Separate halves on purpose.")
+        .def_readonly("model", &OperatorFit::model)
+        .def_readonly("diagnostics", &OperatorFit::diagnostics);
+
+    m.def("fit_operator",
+          []( const PointsIn& x_cols, const Eigen::VectorXd& m1_diag,
+              const Eigen::VectorXd& m2_diag, const PointsIn& V,
+              const PointsIn& HV, const py::array_t<double>& sigma,
+              const OperatorFitConfig& config,
+              const std::optional<PointsIn>& mu0,
+              const std::optional<PointsIn>& x_rows, const py::object& rows ) {
+              const Eigen::MatrixXd columns(map_points(x_cols, "x_cols"));
+              const Eigen::MatrixXd probes(map_batch(V, "V"));
+              const Eigen::MatrixXd responses(map_batch(HV, "HV"));
+              const int dim = static_cast<int>(columns.cols());
+              std::vector<Eigen::MatrixXd> covariances =
+                  sigma_from_array(sigma, m1_diag.size(), dim);
+              std::optional<Eigen::MatrixXd> centers;
+              if ( mu0 ) { centers = Eigen::MatrixXd(map_points(*mu0, "mu0")); }
+              std::optional<Eigen::MatrixXd> row_points;
+              if ( x_rows )
+              {
+                  row_points = Eigen::MatrixXd(map_points(*x_rows, "x_rows"));
+              }
+              const std::vector<char> gate = gate_from_rows(rows, m1_diag.size());
+
+              py::gil_scoped_release unlock;
+              return fit_operator(columns, m1_diag, m2_diag, probes, responses,
+                                  covariances, config, centers, row_points, gate);
+          },
+          "x_cols"_a, "m1_diag"_a, "m2_diag"_a, "V"_a, "HV"_a, "sigma"_a,
+          py::kw_only(), "config"_a = OperatorFitConfig(),
+          "mu0"_a = std::nullopt, "x_rows"_a = std::nullopt,
+          "rows"_a = py::none(),
+          "Fit the whole operator, one row at a time.\n\n"
+          "x_cols (N, K), V (num_probes, K), HV (num_probes, R), sigma "
+          "(R, N, N), mu0 (N, R). `rows` accepts a boolean mask OR an index "
+          "array and selects which rows to attempt; None (the default) "
+          "attempts every row, WHICH IS THE RECOMMENDED SETTING -- a dead row "
+          "costs one candidate and ships zeros, and gating buys nothing.");
+
+    // ---- evaluating a fitted operator --------------------------------------
+
+    m.def("model_rows", &model_rows, "fit"_a,
+          "Indices of the rows carrying a shipped model.");
+
+    m.def("eval_kernel",
+          []( const LGOperator& fit, const std::vector<int>& rows,
+              const PointsIn& x_query, double truncation_tau )
+          { return batch_last(eval_kernel(fit, rows, map_points(x_query, "x_query"),
+                                          truncation_tau)); },
+          "fit"_a, "rows"_a, "x_query"_a,
+          "truncation_tau"_a = std::numeric_limits<double>::infinity(),
+          "The smooth component at arbitrary query points (N, Q), RESTRICTED "
+          "TO THE FIT WINDOW and zero outside it. Returns (num_rows, Q).");
+
+    m.def("eval_kernel_unrestricted",
+          []( const LGOperator& fit, const std::vector<int>& rows,
+              const PointsIn& x_query )
+          { return batch_last(eval_kernel_unrestricted(
+                fit, rows, map_points(x_query, "x_query"))); },
+          "fit"_a, "rows"_a, "x_query"_a,
+          "The fitted form extended BEYOND its window -- the named opt-out. "
+          "Out-of-window model mass is unpenalized by the fit, not merely "
+          "unverified, so asking for it requires saying so.");
+
+    m.def("eval_entries",
+          []( const LGOperator& fit, const std::vector<int>& rows,
+              const std::vector<int>& cols, double truncation_tau )
+          { return eval_entries(fit, rows, cols, truncation_tau); },
+          "fit"_a, "rows"_a, "cols"_a,
+          "truncation_tau"_a = std::numeric_limits<double>::infinity(),
+          "Paired entries of the deployed operator; rows and cols are "
+          "equal-length index arrays.");
+
+    m.def("matvec",
+          []( const LGOperator& fit, const PointsIn& v, double truncation_tau,
+              int num_threads ) {
+              const Eigen::MatrixXd vectors(map_batch(v, "v"));
+              Eigen::MatrixXd result;
+              {
+                  // The release must END before the numpy array is built:
+                  // `batch_last` allocates a PYTHON OBJECT, and doing that
+                  // without the GIL is a segfault, not an error. Every other
+                  // released call here returns a C++ value and lets pybind11
+                  // cast it after the scope closes.
+                  py::gil_scoped_release unlock;
+                  result = matvec(fit, vectors, truncation_tau, num_threads);
+              }
+              return batch_last(result);
+          },
+          "fit"_a, "v"_a,
+          "truncation_tau"_a = std::numeric_limits<double>::infinity(),
+          "num_threads"_a = 0,
+          "Apply the deployed operator with zero assembly. v is "
+          "(num_vectors, K); returns (num_vectors, R).");
+
+    m.def("assemble_sparse",
+          []( const LGOperator& fit, double tau, Symmetrize symmetrize,
+              int num_threads ) {
+              py::gil_scoped_release unlock;
+              return assemble_sparse(fit, tau, symmetrize, num_threads);
+          },
+          "fit"_a, "tau"_a, "symmetrize"_a = Symmetrize::None,
+          "num_threads"_a = 0,
+          "Sparse decompression of the deployed operator: the tau-ellipsoid "
+          "support INTERSECTED with each row's fit window, plus the spike. "
+          "Returns a scipy.sparse matrix -- the one function here that needs "
+          "scipy.");
+
+    m.def("qc_map",
+          []( const LGOperator& fit, const PointsIn& V_qc, const PointsIn& HV_qc,
+              int num_threads ) {
+              const Eigen::MatrixXd probes(map_batch(V_qc, "V_qc"));
+              const Eigen::MatrixXd responses(map_batch(HV_qc, "HV_qc"));
+              py::gil_scoped_release unlock;
+              return Eigen::VectorXd(qc_map(fit, probes, responses, num_threads));
+          },
+          "fit"_a, "V_qc"_a, "HV_qc"_a, "num_threads"_a = 0,
+          "Per-row relative residual against held-out probes -- the "
+          "scorecard. V_qc (num_qc, K), HV_qc (num_qc, R); NaN where no model.");
+
+    m.def("spike_measure", &spike_measure, "fit"_a,
+          "m1 * s, the mass-weighted spike content. Where it is large, the "
+          "mesh is starving.");
+
+    m.def("ellipsoid_field",
+          []( const LGOperator& fit ) {
+              const EllipsoidField field = ellipsoid_field(fit);
+              py::array_t<double> sigma({static_cast<py::ssize_t>(field.sigma.size()),
+                                         static_cast<py::ssize_t>(fit.dim),
+                                         static_cast<py::ssize_t>(fit.dim)});
+              auto view = sigma.mutable_unchecked<3>();
+              for ( std::size_t r = 0; r < field.sigma.size(); ++r )
+              {
+                  for ( int i = 0; i < fit.dim; ++i )
+                  {
+                      for ( int j = 0; j < fit.dim; ++j )
+                      {
+                          view(static_cast<py::ssize_t>(r), i, j) =
+                              field.sigma[r](i, j);
+                      }
+                  }
+              }
+              return py::make_tuple(field.mu, sigma);
+          },
+          "fit"_a,
+          "The fitted (mu, Sigma) field as ((R, N), (R, N, N)) -- what "
+          "ellipsoid_tree consumes.");
+
+    m.def("validate_operator",
+          []( const LGOperator& fit ) { return validate(fit); }, "fit"_a,
+          "Structural complaints about a hand-built operator; empty is fine.");
+
+    m.def("row_expansion", &row_expansion, "fit"_a, "rho"_a,
+          "Extract one row's model as a standalone LGExpansion.");
+
+    py::class_<OperatorRow>(m, "OperatorRow",
+                            "One row of a hand-built operator: its model and "
+                            "its window.")
+        .def(py::init([]( LGExpansion model, Eigen::VectorXd window_center,
+                          Eigen::MatrixXd window_covariance,
+                          std::vector<int> window_indices ) {
+                 return OperatorRow{std::move(model), std::move(window_center),
+                                    std::move(window_covariance),
+                                    std::move(window_indices)};
+             }),
+             "model"_a, "window_center"_a, "window_covariance"_a,
+             "window_indices"_a)
+        .def_readonly("model", &OperatorRow::model);
+
+    m.def("build_operator",
+          []( const PointsIn& x_cols, const Eigen::VectorXd& m1_diag,
+              const Eigen::VectorXd& m2_diag, bool spike,
+              const std::vector<std::optional<OperatorRow>>& rows,
+              const std::optional<PointsIn>& x_rows ) {
+              std::optional<Eigen::MatrixXd> row_points;
+              if ( x_rows )
+              {
+                  row_points = Eigen::MatrixXd(map_points(*x_rows, "x_rows"));
+              }
+              return build_operator(Eigen::MatrixXd(map_points(x_cols, "x_cols")),
+                                    m1_diag, m2_diag, spike, rows, row_points);
+          },
+          "x_cols"_a, "m1_diag"_a, "m2_diag"_a, "spike"_a, "rows"_a,
+          "x_rows"_a = std::nullopt,
+          "Assemble an operator from per-row expansions -- the path for a "
+          "physics-based approximation, with no fitter involved. Unmodeled "
+          "rows are None.");
+
+    m.def("concatenate_rows", &concatenate_rows, "parts"_a,
+          "Merge operators covering disjoint row ranges.");
 
     // ---- layout probe -----------------------------------------------------
     // Not part of the API; a permanent regression hook for the one bug this
