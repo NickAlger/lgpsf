@@ -35,9 +35,14 @@
 #include <pybind11/stl.h>
 
 #include "lgpsf/ellipsoid_transform.hpp"
+#include "lgpsf/exceptions.hpp"
 #include "lgpsf/harmonic_polynomials.hpp"
 #include "lgpsf/lg_functions.hpp"
+#include "lgpsf/lg_expansion.hpp"
 #include "lgpsf/lgpsf.hpp"
+#include "lgpsf/mode_policy.hpp"
+#include "lgpsf/probe_fit.hpp"
+#include "lgpsf/varpro.hpp"
 #include "lgpsf/whitening.hpp"
 
 namespace py = pybind11;
@@ -373,6 +378,271 @@ PYBIND11_MODULE(lgpsf, m)
           "E_hat = sqrt(target_mass) M2^(-1/2) E for an extra basis of shape "
           "(num_extra, K). The INVERSE power of M2, unlike the smooth basis: "
           "extra functions are discrete corrections, not quadrature objects.");
+
+    // ---- VarPro core -------------------------------------------------------
+
+    py::register_exception<InfeasibleParameters>(m, "InfeasibleParameters",
+                                                 PyExc_RuntimeError);
+
+    py::enum_<JacobianVariant>(m, "JacobianVariant",
+                               "Which Jacobian of the reduced residual the "
+                               "outer loop is given. Both give the SAME exact "
+                               "gradient; only the quadratic model differs.")
+        .value("Kaufman", JacobianVariant::Kaufman,
+               "One reverse sweep through the basis. The default.")
+        .value("GolubPereyra", JacobianVariant::GolubPereyra,
+               "The exact Jacobian; needs a basis offering jac().");
+
+    py::class_<VarProOptions>(m, "VarProOptions",
+                              "Numerics of one nonlinear fit. Nothing here "
+                              "adjudicates a modelling question.")
+        .def(py::init<>())
+        .def_readwrite("ridge", &VarProOptions::ridge,
+                       "Tikhonov ridge on the COEFFICIENTS, after per-column "
+                       "equilibration. The returned residual is the plain "
+                       "model misfit.")
+        .def_readwrite("jacobian", &VarProOptions::jacobian)
+        .def_readwrite("max_evaluations", &VarProOptions::max_evaluations)
+        .def_readwrite("ftol", &VarProOptions::ftol)
+        .def_readwrite("xtol", &VarProOptions::xtol)
+        .def_readwrite("gtol", &VarProOptions::gtol);
+
+    py::class_<VarProResult>(m, "VarProResult")
+        .def_readonly("theta_hat", &VarProResult::theta_hat)
+        .def_readonly("c", &VarProResult::c)
+        .def_readonly("s", &VarProResult::s)
+        .def_readonly("residual", &VarProResult::residual)
+        .def_readonly("cost", &VarProResult::cost)
+        .def_readonly("success", &VarProResult::success)
+        .def_readonly("num_iterations", &VarProResult::num_iterations)
+        .def_readonly("num_residual_evaluations",
+                      &VarProResult::num_residual_evaluations)
+        .def_readonly("message", &VarProResult::message);
+
+    py::class_<WhitenedBasis>(m, "WhitenedBasis",
+                              "The LG feature basis on an ellipsoid, scaled by "
+                              "the masses. The only object in the fitting core "
+                              "that knows a mass matrix exists.")
+        .def(py::init([]( const PointsIn& x, double target_mass,
+                          const Eigen::VectorXd& m2_diag,
+                          std::vector<Mode> modes, const Eigen::VectorXd& mu0,
+                          MuMode mu_mode ) {
+                 return WhitenedBasis(Eigen::MatrixXd(map_points(x, "x")),
+                                      target_mass, m2_diag, std::move(modes),
+                                      mu0, mu_mode);
+             }),
+             "x"_a, "target_mass"_a, "m2_diag"_a, "modes"_a, "mu0"_a, "mu_mode"_a,
+             "x is (N, K).")
+        .def_property_readonly("dim", &WhitenedBasis::dim)
+        .def("values",
+             []( const WhitenedBasis& basis, const Eigen::VectorXd& theta_hat )
+             { return batch_last(basis(theta_hat).values()); },
+             "theta_hat"_a, "Whitened basis values at theta_hat: (num_modes, K).");
+
+    m.def("fit_varpro",
+          []( const PointsIn& z_hat, const Eigen::VectorXd& y_hat,
+              const WhitenedBasis& basis, const Eigen::VectorXd& theta_hat_init,
+              const PointsIn& e_hat, const VarProOptions& options ) {
+              const Eigen::MatrixXd extra(map_batch(e_hat, "e_hat"));
+              py::gil_scoped_release unlock;
+              return fit_varpro(map_batch(z_hat, "z_hat"), y_hat, basis,
+                                theta_hat_init, extra, options);
+          },
+          "z_hat"_a, "y_hat"_a, "basis"_a, "theta_hat_init"_a,
+          "e_hat"_a = Eigen::MatrixXd(), "options"_a = VarProOptions(),
+          "Fit one target's nonlinear parameters, eliminating the linear "
+          "coefficients in closed form at every trial point. z_hat is "
+          "(num_probes, K), e_hat is (num_extra, K); both already whitened.");
+
+    // ---- mode policies -----------------------------------------------------
+    // Built-ins only. `fit_operator` releases the GIL and calls propose() from
+    // worker threads, so a Python-defined policy would have to re-acquire on
+    // every call -- serializing the fit and inviting deadlock. The extension
+    // point is deliberately closed.
+
+    py::class_<ModePolicy, std::shared_ptr<ModePolicy>>(
+        m, "ModePolicy", "Base class of the mode-growth policies. Not "
+                         "subclassable from Python -- see the module notes.");
+
+    py::class_<FixedSet, ModePolicy, std::shared_ptr<FixedSet>>(m, "FixedSet")
+        .def(py::init<std::vector<Mode>, std::string>(),
+             "modes"_a, "label"_a = "explicit",
+             "One explicit mode list, proposed once.");
+
+    py::class_<ShellLadder, ModePolicy, std::shared_ptr<ShellLadder>>(m, "ShellLadder")
+        .def(py::init<std::vector<int>>(), "levels"_a,
+             "Nested shells: rung i is every mode up to oscillator level "
+             "levels[i].");
+
+    py::class_<ExplicitLadder, ModePolicy, std::shared_ptr<ExplicitLadder>>(
+        m, "ExplicitLadder")
+        .def(py::init<std::vector<std::vector<Mode>>>(), "sets"_a,
+             "A caller-supplied nested list of mode sets.");
+
+    py::class_<WedgeLadder, ModePolicy, std::shared_ptr<WedgeLadder>>(m, "WedgeLadder")
+        .def(py::init<int, int>(), "max_level"_a = 10, "ell_max"_a = 2,
+             "Level-ordered with the angular degree capped -- the strongest "
+             "fixed policy on PIG at k >= 40, and the operator layer's usual "
+             "choice.");
+
+    py::class_<RadialFirstLadder, ModePolicy, std::shared_ptr<RadialFirstLadder>>(
+        m, "RadialFirstLadder")
+        .def(py::init<int, int, int>(),
+             "max_level"_a = 10, "ell_max"_a = 2, "groups_per_rung"_a = 2);
+
+    // ---- the row fit --------------------------------------------------------
+
+    py::enum_<MuPolicy>(m, "MuPolicy")
+        .value("Pinned", MuPolicy::Pinned, "Pin the center at mu0. The default.")
+        .value("Free", MuPolicy::Free, "Fit the center from the start.")
+        .value("PinnedThenRelease", MuPolicy::PinnedThenRelease);
+
+    py::enum_<StopReason>(m, "StopReason")
+        .value("Target", StopReason::Target)
+        .value("ModePatience", StopReason::ModePatience)
+        .value("Exhausted", StopReason::Exhausted);
+
+    py::class_<CvFold>(m, "CvFold")
+        .def_readonly("train", &CvFold::train)
+        .def_readonly("validation", &CvFold::validation);
+
+    m.def("kfold_split",
+          []( int num_probes, int num_folds, std::optional<std::uint32_t> seed ) {
+              return seed ? kfold_split(num_probes, num_folds, *seed)
+                          : kfold_split(num_probes, num_folds);
+          },
+          "num_probes"_a, "num_folds"_a, "seed"_a = std::nullopt,
+          "Round-robin folds with no generator at all when seed is None, which "
+          "is what makes a fit reproducible with nothing to remember.");
+
+    m.def("jitter_table",
+          []( int num_params, int num_levels, std::uint32_t seed )
+          { return jitter_table(num_params, num_levels, seed); },
+          "num_params"_a, "num_levels"_a, "seed"_a = 0u,
+          "Warm-start perturbations, one per ladder level. Exact warm starts "
+          "sit on the enrichment saddle, so the perturbation matters; its "
+          "distribution does not.");
+
+    py::class_<ProbeFitConfig>(m, "ProbeFitConfig",
+                               "The row fit's policy and numerics. Structural "
+                               "facts -- window, probes, masses, spike index -- "
+                               "are caller-declared, never adjudicated here.")
+        .def(py::init<>())
+        .def_readwrite("mu", &ProbeFitConfig::mu)
+        .def_readwrite("mode_policy", &ProbeFitConfig::mode_policy,
+                       "REQUIRED. One mechanism: an explicit list is FixedSet, "
+                       "a level ladder is ShellLadder.")
+        .def_readwrite("num_rungs", &ProbeFitConfig::num_rungs)
+        .def_readwrite("window_shape_rungs", &ProbeFitConfig::window_shape_rungs)
+        .def_readwrite("target_score", &ProbeFitConfig::target_score,
+                       "Absolute early-exit certificate; None disables it.")
+        .def_readwrite("mode_patience", &ProbeFitConfig::mode_patience)
+        .def_readwrite("tie_delta", &ProbeFitConfig::tie_delta)
+        .def_readwrite("cv_folds", &ProbeFitConfig::cv_folds)
+        .def_readwrite("split", &ProbeFitConfig::split,
+                       "The CV split AS DATA. Empty means the deterministic "
+                       "round-robin split from cv_folds.")
+        .def_readwrite("jitter", &ProbeFitConfig::jitter)
+        .def_readwrite("varpro", &ProbeFitConfig::varpro);
+
+    py::class_<LGExpansion>(m, "LGExpansion",
+                            "One target's model: absolute theta, its mode "
+                            "list, and the coefficients. Self-decoding -- the "
+                            "ellipsoid comes from frame() with no mu0 and no "
+                            "mode.")
+        .def(py::init([]( Eigen::VectorXd theta, std::vector<Mode> modes,
+                          Eigen::VectorXd c, Eigen::VectorXd s ) {
+                 return LGExpansion{std::move(theta), std::move(modes),
+                                    std::move(c), std::move(s)};
+             }),
+             "theta"_a, "modes"_a, "c"_a, "s"_a = Eigen::VectorXd())
+        .def_readonly("theta", &LGExpansion::theta)
+        .def_readonly("modes", &LGExpansion::modes)
+        .def_readonly("c", &LGExpansion::c)
+        .def_readonly("s", &LGExpansion::s)
+        .def_property_readonly("dim", &LGExpansion::dim)
+        .def_property_readonly("num_modes", &LGExpansion::num_modes)
+        .def("frame", &LGExpansion::frame)
+        .def("__repr__", []( const LGExpansion& e ) {
+                 std::ostringstream out;
+                 out << "LGExpansion(dim=" << e.dim() << ", num_modes="
+                     << e.num_modes() << ")";
+                 return out.str();
+             });
+
+    m.def("eval_expansion",
+          []( const LGExpansion& expansion, const PointsIn& x )
+          { return Eigen::VectorXd(
+                eval_expansion(expansion, map_points(x, "x"))); },
+          "expansion"_a, "x"_a,
+          "The smooth part at arbitrary query points (N, K); returns (K,). The "
+          "spike has no off-grid meaning and is not included.");
+
+    m.def("validate_expansion",
+          []( const LGExpansion& expansion ) { return validate(expansion); },
+          "expansion"_a,
+          "Structural complaints about a hand-built expansion; empty is fine.");
+
+    py::class_<CandidateFit>(m, "CandidateFit",
+                             "One scored entry of the candidate table: the "
+                             "model it found, and how it went.")
+        .def_readonly("model", &CandidateFit::model)
+        .def_readonly("label", &CandidateFit::label)
+        .def_readonly("modes_label", &CandidateFit::modes_label)
+        .def_readonly("released", &CandidateFit::released)
+        .def_readonly("theta_hat_init", &CandidateFit::theta_hat_init)
+        .def_readonly("cost", &CandidateFit::cost,
+                      "In-sample whitened cost -- a diagnostic, NEVER used for "
+                      "selection.")
+        .def_readonly("score", &CandidateFit::score)
+        .def_readonly("axes", &CandidateFit::axes)
+        .def_readonly("success", &CandidateFit::success)
+        .def_readonly("num_iterations", &CandidateFit::num_iterations)
+        .def_readonly("admissible", &CandidateFit::admissible)
+        .def_property_readonly("num_modes", &CandidateFit::num_modes);
+
+    py::class_<ProbeFitResult>(m, "ProbeFitResult",
+                               "The winning model, plus the full audit trail.")
+        .def_readonly("model", &ProbeFitResult::model)
+        .def_readonly("released", &ProbeFitResult::released)
+        .def_readonly("score", &ProbeFitResult::score)
+        .def_readonly("stop_reason", &ProbeFitResult::stop_reason)
+        .def_readonly("winner", &ProbeFitResult::winner)
+        .def_readonly("candidates", &ProbeFitResult::candidates)
+        .def_readonly("skipped", &ProbeFitResult::skipped);
+
+    m.def("linear_cv_score",
+          []( const PointsIn& z_hat, const Eigen::VectorXd& y_hat,
+              const WhitenedBasis& basis, const Eigen::VectorXd& theta_hat,
+              const PointsIn& e_hat, const CrossValidationSplit& split ) {
+              const Eigen::MatrixXd extra(map_batch(e_hat, "e_hat"));
+              py::gil_scoped_release unlock;
+              return linear_cv_score(map_batch(z_hat, "z_hat"), y_hat, basis,
+                                     theta_hat, extra, split);
+          },
+          "z_hat"_a, "y_hat"_a, "basis"_a, "theta_hat"_a, "e_hat"_a, "split"_a,
+          "Cross-validation score of a model at GIVEN parameters, with no "
+          "nonlinear fit at all -- which is what makes scoring an a-priori "
+          "field affordable before fitting anything.");
+
+    m.def("fit_from_probes",
+          []( const PointsIn& x, const Eigen::VectorXd& m2_diag,
+              const PointsIn& z, const Eigen::VectorXd& y,
+              const Eigen::VectorXd& mu0, int spike_index,
+              const ProbeFitConfig& config,
+              const std::optional<Eigen::MatrixXd>& sigma0,
+              std::optional<double> target_mass ) {
+              const Eigen::MatrixXd points(map_points(x, "x"));
+              const Eigen::MatrixXd probes(map_batch(z, "z"));
+              py::gil_scoped_release unlock;
+              return fit_from_probes(points, m2_diag, probes, y, mu0,
+                                     spike_index, config, sigma0, target_mass);
+          },
+          "x"_a, "m2_diag"_a, "z"_a, "y"_a, "mu0"_a, py::kw_only(),
+          "spike_index"_a = -1, "config"_a = ProbeFitConfig(),
+          "sigma0"_a = std::nullopt, "target_mass"_a = std::nullopt,
+          "Fit a target known only through inner products with probe fields. "
+          "x is (N, K), z is (num_probes, K), y is (num_probes,).");
 
     // ---- layout probe -----------------------------------------------------
     // Not part of the API; a permanent regression hook for the one bug this

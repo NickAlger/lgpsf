@@ -344,3 +344,207 @@ def test_whitening_rejects_a_nonpositive_mass():
         lgpsf.whiten_extra(np.ones((1, 2)), 1.0, np.array([1.0, 0.0]))
     with pytest.raises(ValueError):
         lgpsf.whitening_scale(-1.0, np.ones(2))
+
+
+# --------------------------------------------------------------------------
+# The row layer: fit one target known only through probe inner products.
+# --------------------------------------------------------------------------
+
+def synthetic_target(per_side=11, num_probes=40, level=2, seed=7):
+    """A known (theta, c, s) built through the whitened identity.
+
+    Mirrors the C++ suite's construction, which is the point: y is assembled
+    from the same whitening the fitter inverts, so an exact recovery is the
+    expected outcome and any layout slip at the boundary breaks it.
+    """
+    rng = np.random.default_rng(seed)
+    axis = np.linspace(-1.0, 1.0, per_side)
+    grid = np.meshgrid(axis, axis, indexing="ij")
+    x = np.vstack([grid[0].ravel(), grid[1].ravel()])   # (2, K)
+    count = x.shape[1]
+
+    spike_index = count // 2
+    mu0 = x[:, spike_index].copy()
+    mass = 0.8
+    m2_diag = rng.uniform(0.4, 1.1, size=count)
+    modes = lgpsf.modes_up_to_level(2, level)
+
+    theta_hat_true = np.array([np.log(0.30), np.log(0.22), 0.05])
+    basis = lgpsf.WhitenedBasis(x, mass, m2_diag, modes, mu0, lgpsf.MuMode.Pinned)
+    phi_hat = basis.values(theta_hat_true)              # (num_modes, K)
+
+    c_true = rng.normal(size=len(modes))
+    s_true = rng.normal(size=1)
+
+    z = rng.normal(size=(num_probes, count))            # (num_probes, K)
+    extra = np.zeros((1, count))
+    extra[0, spike_index] = 1.0
+    e_hat = lgpsf.whiten_extra(extra, mass, m2_diag)
+    z_hat = lgpsf.whiten_probes(z, m2_diag)
+    y_hat = z_hat @ (c_true @ phi_hat) + z_hat @ (s_true @ e_hat)
+    y = np.sqrt(mass) * y_hat
+
+    return dict(x=x, m2_diag=m2_diag, z=z, y=y, mu0=mu0, mass=mass,
+                spike_index=spike_index, modes=modes, c_true=c_true,
+                s_true=s_true, theta_hat_true=theta_hat_true, e_hat=e_hat,
+                z_hat=z_hat, y_hat=y_hat, basis=basis)
+
+
+def fixed_config(target, **kwargs):
+    config = lgpsf.ProbeFitConfig()
+    config.mode_policy = lgpsf.FixedSet(target["modes"], "truth")
+    config.mu = lgpsf.MuPolicy.Pinned
+    config.target_score = None          # walk the whole stream, no early exit
+    config.num_rungs = 3
+    for key, value in kwargs.items():
+        setattr(config, key, value)
+    return config
+
+
+def test_fit_from_probes_recovers_a_known_target():
+    target = synthetic_target()
+    result = lgpsf.fit_from_probes(
+        target["x"], target["m2_diag"], target["z"], target["y"], target["mu0"],
+        spike_index=target["spike_index"], config=fixed_config(target),
+        target_mass=target["mass"])
+
+    expected = lgpsf.to_theta(target["theta_hat_true"], target["mu0"],
+                              lgpsf.MuMode.Pinned)
+    np.testing.assert_allclose(result.model.theta, expected, atol=1e-6)
+    np.testing.assert_allclose(result.model.c, target["c_true"], atol=1e-6)
+    np.testing.assert_allclose(result.model.s, target["s_true"], atol=1e-6)
+    assert result.score < 1e-6
+    assert list(result.model.modes) == list(target["modes"])
+    assert not result.released                      # mu was pinned
+
+
+def test_the_fitted_model_evaluates_to_the_target_it_was_built_from():
+    # End to end through the OTHER direction: the model must reproduce the
+    # smooth field, not merely the parameters that generated it.
+    target = synthetic_target()
+    result = lgpsf.fit_from_probes(
+        target["x"], target["m2_diag"], target["z"], target["y"], target["mu0"],
+        spike_index=target["spike_index"], config=fixed_config(target),
+        target_mass=target["mass"])
+
+    truth = target["c_true"] @ lgpsf.eval_lg_basis(
+        target["modes"],
+        lgpsf.pullback(lgpsf.unpack_theta(
+            lgpsf.to_theta(target["theta_hat_true"], target["mu0"],
+                           lgpsf.MuMode.Pinned)), target["x"]))
+    got = lgpsf.eval_expansion(result.model, target["x"])
+    assert got.shape == (target["x"].shape[1],)
+    np.testing.assert_allclose(got, truth, atol=1e-6)
+
+
+def test_the_audit_trail_comes_back():
+    target = synthetic_target()
+    result = lgpsf.fit_from_probes(
+        target["x"], target["m2_diag"], target["z"], target["y"], target["mu0"],
+        spike_index=target["spike_index"], config=fixed_config(target),
+        target_mass=target["mass"])
+
+    assert len(result.candidates) > 1
+    assert 0 <= result.winner < len(result.candidates)
+    winner = result.candidates[result.winner]
+    assert winner.score == result.score
+    assert winner.admissible and winner.success
+    assert winner.num_modes == len(target["modes"])
+    assert winner.axes.shape == (2,)
+    assert isinstance(winner.label, str) and winner.label
+    assert result.stop_reason in (lgpsf.StopReason.Target,
+                                  lgpsf.StopReason.ModePatience,
+                                  lgpsf.StopReason.Exhausted)
+    # the in-sample cost is a diagnostic and must never be the selector
+    assert all(cand.score >= result.score for cand in result.candidates
+               if cand.admissible)
+
+
+def test_every_built_in_mode_policy_drives_a_fit():
+    target = synthetic_target()
+    for policy in (lgpsf.FixedSet(target["modes"]),
+                   lgpsf.ShellLadder([0, 1, 2]),
+                   lgpsf.ExplicitLadder([target["modes"][:1], target["modes"]]),
+                   lgpsf.WedgeLadder(4, 2),
+                   lgpsf.RadialFirstLadder(4, 2)):
+        config = fixed_config(target)
+        config.mode_policy = policy
+        result = lgpsf.fit_from_probes(
+            target["x"], target["m2_diag"], target["z"], target["y"],
+            target["mu0"], spike_index=target["spike_index"], config=config,
+            target_mass=target["mass"])
+        assert np.isfinite(result.score)
+        assert result.model.num_modes > 0
+
+
+def test_a_missing_mode_policy_is_a_loud_error():
+    target = synthetic_target()
+    config = lgpsf.ProbeFitConfig()          # mode_policy left unset
+    with pytest.raises(ValueError, match="mode_policy"):
+        lgpsf.fit_from_probes(target["x"], target["m2_diag"], target["z"],
+                              target["y"], target["mu0"], config=config)
+
+
+def test_linear_cv_score_needs_no_nonlinear_fit():
+    # The property that makes an a-priori quality map affordable: score any
+    # model at given parameters, zero fits.
+    target = synthetic_target()
+    split = lgpsf.kfold_split(target["z"].shape[0], 5)
+    at_truth = lgpsf.linear_cv_score(
+        target["z_hat"], target["y_hat"], target["basis"],
+        target["theta_hat_true"], target["e_hat"], split)
+    wrong = lgpsf.linear_cv_score(
+        target["z_hat"], target["y_hat"], target["basis"],
+        target["theta_hat_true"] + np.array([1.5, -1.2, 0.0]),
+        target["e_hat"], split)
+    assert at_truth < 1e-8
+    assert wrong > 100 * max(at_truth, 1e-12)
+
+
+def test_kfold_split_partitions_the_probes():
+    for folds in (2, 5):
+        split = lgpsf.kfold_split(23, folds)
+        assert len(split) == folds
+        seen = np.concatenate([np.asarray(f.validation) for f in split])
+        np.testing.assert_array_equal(np.sort(seen), np.arange(23))
+        for fold in split:
+            assert len(fold.train) + len(fold.validation) == 23
+            assert not set(np.asarray(fold.train)) & set(np.asarray(fold.validation))
+
+    # no seed means no generator at all, so it is reproducible with nothing
+    # to remember; a seed permutes
+    a = lgpsf.kfold_split(20, 4)
+    b = lgpsf.kfold_split(20, 4)
+    np.testing.assert_array_equal(np.asarray(a[0].validation),
+                                  np.asarray(b[0].validation))
+    seeded = lgpsf.kfold_split(20, 4, seed=12345)
+    assert len(seeded) == 4
+
+
+def test_fit_varpro_directly():
+    target = synthetic_target()
+    result = lgpsf.fit_varpro(target["z_hat"], target["y_hat"], target["basis"],
+                              target["theta_hat_true"] + 0.15,
+                              e_hat=target["e_hat"])
+    assert result.success
+    np.testing.assert_allclose(result.theta_hat, target["theta_hat_true"],
+                               atol=1e-6)
+    np.testing.assert_allclose(result.c, target["c_true"], atol=1e-6)
+    assert result.cost < 1e-12
+    assert result.num_iterations > 0
+
+
+def test_lg_expansion_is_self_decoding_and_checkable():
+    theta = np.array([0.5, -0.25, np.log(0.4), np.log(0.6), 0.1])
+    modes = lgpsf.modes_up_to_level(2, 1)
+    expansion = lgpsf.LGExpansion(theta, modes, np.ones(len(modes)))
+    assert expansion.dim == 2 and expansion.num_modes == len(modes)
+    np.testing.assert_allclose(expansion.frame().mu, [0.5, -0.25])
+    assert lgpsf.validate_expansion(expansion) == []
+
+    mismatched = lgpsf.LGExpansion(theta, modes, np.ones(len(modes) + 1))
+    assert lgpsf.validate_expansion(mismatched)
+
+
+def test_infeasible_parameters_is_its_own_exception():
+    assert issubclass(lgpsf.InfeasibleParameters, RuntimeError)
