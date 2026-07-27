@@ -1536,3 +1536,45 @@ rows to differ materially while the field statistics do not move. And the
 reverse inference is available too: if a comparison shows MANY rows differing,
 that is not floating point -- 91% differing by one ULP is, but 5% differing by
 1e-3 would not be.
+
+### Which rows, and does it matter (investigated 2026-07-27)
+
+A 2x2 -- {QR, SVD} inner solve x {plain -O3, -march=native} -- built as four
+binding modules and compared row by row, scored against the HELD-OUT probe
+pool that no fit saw.
+
+**It is not the QR's doing.** At matched flags, QR and SVD agree to a median
+|dscore| of 5.6e-17 with ZERO rows differing by more than 1e-3, and the global
+metric matches to eight digits (0.05209035 both). Under `-march=native` the SVD
+flips **exactly the same four rows** as the QR: 1326, 1627, 5083, 5819. The
+inner solve is irrelevant to this; the reduction order is what matters.
+
+**The four rows are knife-edge rows at the ice margin.**
+
+| row | \|Yt\| / median | dist. to nearest dead node | field median dist. | modes, plain -> native | score percentile |
+|---|---|---|---|---|---|
+| 1326 | 2.35 | **3.0 km** | 84.7 km | 6 -> 6 | 32 |
+| 1627 | 1.01 | 44.0 km | 84.7 km | 3 -> 6 | 90 |
+| 5083 | 6.17 | **6.6 km** | 84.7 km | 3 -> 6 | 97 |
+| 5819 | 0.19 | **4.8 km** | 84.7 km | 6 -> 6 | 55 |
+
+Three of the four sit 3-7 km from a dead node against a field median of 85 km,
+so they are at the edge of the data. They are **not small** -- one carries 6x
+the median row energy. Two of the four are in the worst 10% and worst 3% of the
+field by fit quality, which is the point: a row the method already struggles
+with is a row whose objective is flat or multimodal, and that is exactly where
+one ULP decides the basin. In two of the four the MODE LADDER stopped at a
+different rung (3 modes versus 6), so the difference is discrete rather than a
+small perturbation of one answer.
+
+**It does not matter globally.** Mean held-out qc over all 5076 live rows is
+0.1702 either way, with `-march=native` better on 2300 of them -- 45%, a coin
+flip. The global parametric error moves in the fifth decimal:
+
+    plain 0.05209035    native 0.05208739
+
+On the four rows themselves native happened to win 3-1 (mean qc 0.2188 vs
+0.2375), which at n = 4 is not evidence of anything.
+
+So: a real effect, confined to rows that are hard for independent reasons, with
+no systematic direction and no measurable consequence for the operator.
