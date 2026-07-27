@@ -22,7 +22,7 @@
 /// Point batches are (K, N): points as ROWS, dimensions as COLUMNS, so
 /// `u.col(k)` is one coordinate across the whole batch, contiguous under
 /// Eigen's column-major default. This is the transpose of the Python
-/// prototype's (N, K), deliberately -- see docs/design-notes.md.
+/// prototype's (N, K), deliberately -- see dev/design-notes.md.
 
 #include <cstddef>
 #include <stdexcept>

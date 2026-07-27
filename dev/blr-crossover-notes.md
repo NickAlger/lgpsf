@@ -85,7 +85,7 @@ flops, so the constraint -- and the price -- vanish:
    per-block LG basis (Gaussian-times-polynomial against
    Gaussian-times-polynomial -- FMM-style M2L-like re-expansion; the
    center-offset absorption is exactly the enrichment/dipole math in
-   docs/robust-init-notes.md). Block factors come out analytically:
+   robust-init-notes.md). Block factors come out analytically:
    row factor = re-expanded coefficients, column factor = shared
    modes at the halo points. Build O(N m r), NO h-dependent entry
    sweep, and "r is bounded" becomes a truncation-error statement

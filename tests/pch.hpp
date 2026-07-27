@@ -8,7 +8,7 @@
 /// (measured on ellipsoid_tree: ~1.5 s / ~180 MB per TU without a PCH vs
 /// ~0.2 s / ~125 MB with), and this machine has been OOM-crashed by
 /// parallel Eigen builds -- see the COMPILE MEMORY SAFETY section of
-/// docs/cpp-port-plan.md before building anything here.
+/// dev/HANDOFF.md before building anything here.
 ///
 /// doctest is deliberately NOT in this header: test_main.cpp defines
 /// DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN before including it, and a

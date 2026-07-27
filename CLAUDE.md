@@ -3,9 +3,13 @@
 This file is auto-loaded into context for any Claude Code session working
 in this repo. It's meant to get a fresh session oriented quickly, without
 needing to read prior conversation transcripts. Keep it current as the
-project evolves; it describes present state, not history (for
-session-by-session narrative, see `dev/HANDOFF.md` -- gitignored,
-maintainer-local, not visible here if you're reading this fresh).
+project evolves; it describes present state, not history.
+
+Where things live: `docs/` is for people USING the library, `dev/` for
+people CHANGING it (start at `dev/HANDOFF.md` for open threads,
+`dev/architecture.md` for the header map), `experiments/` for measurements
+about the library, and `archive/` for superseded code kept only as
+provenance.
 
 ## What this project is
 
@@ -153,7 +157,7 @@ existing JVP/VJP composes with it for free -- no new derivative math.
    dense coefficients are exactly zero for structural reasons (exponent
    parity classes; Gram-Schmidt staircase), the drop test is an exact
    `Fraction != 0` and never a tolerance, and the change was certified
-   bit-for-bit value-preserving. See `docs/design-notes.md`.
+   bit-for-bit value-preserving. See `dev/design-notes.md`.
 3. **`ellipsoid_transform.py`** -- the pullback $T(\theta,x)$ and its
    JVP/VJP, built as two composable stages (theta -> (mu, L), then the
    pullback geometry itself) so different theta encodings (`mu0=None` =
@@ -209,7 +213,7 @@ existing JVP/VJP composes with it for free -- no new derivative math.
    the lumped-mass quadrature weight so NO mass vector is needed; spike
    excluded via `spike_index`; `rel_threshold`/`noise_mad` noise
    thresholds). Future home of the parked conservative-field estimator
-   (`docs/probe-moment-ellipsoids.md`).
+   (`dev/probe-moment-ellipsoids.md`).
 9. **`probe_fit.py`** -- the general-purpose top layer: fit a target
    function known only through inner products with random probe fields
    (an operator row is the motivating example, not the definition).
@@ -241,7 +245,7 @@ existing JVP/VJP composes with it for free -- no new derivative math.
    exact only square-equal-mass) -- rescales only the returned `(c, s)`;
    theta/scores/selection are invariant.
 9b. **`mode_policy.py`** -- the mode-growth policy axis
-    (docs/mode-policy-plan.md): stateless policies proposing nested
+    (dev/archive/mode-policy-plan.md): stateless policies proposing nested
     mode sets from `ctx.history`; engine keeps every guard. Built-ins:
     `FixedSet`, `ShellLadder`, `ExplicitLadder`,
     `WedgeLadder(max_level, ell_max)` (level-ordered ell-capped --
@@ -255,7 +259,7 @@ existing JVP/VJP composes with it for free -- no new derivative math.
     k=20, wedge ties shells at 1/6 cost at k=100); WedgeLadder(10, 2)
     is the OPERATOR-LAYER DEFAULT when no mode source is given.
 10. **`operator_fit.py`** -- the whole-operator layer over (9), per
-    `docs/operator-api-plan.md`: `fit_operator(x_cols, m1_diag,
+    `dev/archive/operator-api-plan.md`: `fit_operator(x_cols, m1_diag,
     m2_diag, V, HV, sigma, mu0=, modes=, x_rows=, rows=, windows=,
     config=OperatorFitConfig(tau_window=10, spike=True,
     row=ProbeFitConfig(...)))` -> `OperatorFit`. With NO mode source
@@ -322,7 +326,7 @@ also pins the target-mass routing).
 Examples: `examples/plot_lg_modes.py` (2D mode grid),
 `examples/lg_expansion_convergence.py` ($N=1,2,3$ convergence study).
 
-## Conventions (see `docs/design-notes.md` for the full reasoning on each)
+## Conventions (see `dev/design-notes.md` for the full reasoning on each)
 
 - **Point-batched arrays are real numpy arrays, never tuples.** Shape
   `(N, *batch_shape)` -- non-batch axes first, batch axes last, matching
@@ -350,7 +354,7 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
 
 ## Current status / what's not built yet
 
-- **The C++ port: M0-M4 COMPLETE, M5 next** -- `docs/cpp-port-plan.md`
+- **The C++ port: M0-M4 COMPLETE, M5 next** -- `dev/archive/cpp-port-plan.md`
   (deps, threading, header-only, bindings, milestones M0-M6, the
   hand-rolled LM contract, and the COMPILE MEMORY SAFETY rules: this
   machine has been OOM-crashed by large `-j` builds -- **read that
@@ -369,7 +373,7 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
   `lg_ellipsoid_feature.hpp` (`FeatureAt`), `whitening.hpp`
   (`WhitenedBasis` -> `WhitenedBasisAt`, the masses layer). Suite:
   49 cases / 98,496 assertions. **THE PARAMETER VECTOR HAS TWO
-  ENCODINGS in C++** (`docs/design-notes.md`): public `theta` is
+  ENCODINGS in C++** (`dev/design-notes.md`): public `theta` is
   absolute `[mu, log-diag, strict-lower]`, always `N(N+3)/2` long, and
   `unpack_theta(theta)` needs nothing else -- that is what keeps
   `fit_operator(mu0=None)` meaningful. Internal `theta_hat` is what the
@@ -395,7 +399,7 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
   for `Full` (Golub-Pereyra reads `sigma`/`V`) and whenever the QR
   reports RANK DEFICIENCY, where the minimum-norm solution differs from
   a basic one. Worth 2.1x on a whole-field k=100 fit with every field
-  number unchanged to four digits; see `docs/design-notes.md`.
+  number unchanged to four digits; see `dev/design-notes.md`.
   Shipped in M3: `init_dictionary.hpp`, `probe_moments.hpp`,
   `mode_policy.hpp` (virtual `ModePolicy` with `propose` **const**;
   MarginGreedy stays parked Python-side) and `probe_fit.hpp`. Suite:
@@ -420,7 +424,7 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
   DEFAULT) gives the caller's ellipsoid untouched (the original design
   intent), and values between cap the axis ratio. Which is better is
   UNSETTLED and is what M5's PIG replay is for -- see
-  `docs/design-notes.md` for the archaeology. All rows' windows come
+  `dev/design-notes.md` for the archaeology. All rows' windows come
   from ONE dual-tree descent, TRUNCATION TO THE FIT WINDOW IS THE
   DEFAULT for every evaluation (`eval_kernel_unrestricted` is the named
   opt-out; out-of-window model mass is *unpenalized* by the fit, not
@@ -449,7 +453,7 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
   basin-scale `||mu - mu0||` bound before being trusted at operator
   scale; operator-level experiments pin mu meanwhile.
 - MarginGreedy adaptive mode policy: PARKED with evidence and queued
-  refinements (novelty floor first) -- see `docs/mode-policy-plan.md`'s
+  refinements (novelty floor first) -- see `dev/archive/mode-policy-plan.md`'s
   addendum. `WedgeLadder(10, 2)` is the operator-layer default.
 - Level-2 cross-row amortization (neighbor warm starts /
   smoothed-theta seeds as candidate injection) and field-level QC maps
@@ -483,7 +487,7 @@ that result at BOTH states**: smooth beta (slice 38), the whole
 scores 0.0147 -- the recorded prototype figure to all four digits; and
 rough beta (slice 39), where 8 of 10 impulse-column forensics match to
 three decimals and the sigma-insensitivity finding holds. See
-`docs/design-notes.md`, and note that comparing any PIG number requires
+`dev/design-notes.md`, and note that comparing any PIG number requires
 matching the deployment variant, of which slice38 has three. The one
 systematic divergence: the baseline guard's corrected counting rule
 lets the a-priori model ship more often, worth +16% at smooth beta
@@ -492,7 +496,7 @@ ships, so its sign follows the prior's quality.)
 
 ## Where to look for more
 
-- `docs/design-notes.md` -- terse, running log of C++-port-relevant
+- `dev/design-notes.md` -- terse, running log of C++-port-relevant
   decisions (layout, vectorization principle, etc.).
 - `docs/validation.md` -- **what PIG is**, what was measured, and which
   library defaults came out of it. The public anchor that makes the PIG

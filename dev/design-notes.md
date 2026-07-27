@@ -236,7 +236,7 @@ header.
 ## The row-fit orchestration layer: raw interface, holdout selection
 
 **Decisions (2026-07-24, `archive/python-prototype/probe_fit.py`; evidence: the
-frog-kernel robustness study in `docs/robust-init-notes.md` and the PIG
+frog-kernel robustness study in `robust-init-notes.md` and the PIG
 slice-37 refits in the research repo):**
 
 - **Raw-data interface**: the caller supplies coordinates, lumped
@@ -341,7 +341,7 @@ anywhere for whitening itself.
 ## The operator layer: parametric output, free-mu storage, target-mass routing
 
 **Decision (2026-07-24):** `archive/python-prototype/operator_fit.py` implements the
-agreed whole-operator design (`docs/operator-api-plan.md`): the output
+agreed whole-operator design (`archive/operator-api-plan.md`): the output
 is the parametric two-component object `H~ = M1 Phi~ M2 + M1 S` as
 padded flat arrays, never a matrix; every matrix format is a
 decompression helper (`eval_kernel`, `eval_entries`, `matvec` /
@@ -438,8 +438,13 @@ worth recording for the C++ port:
 helpers (`eval_entries`, `matvec`, `assemble_sparse`, hence `qc_map`)
 restrict each row to its FIT WINDOW, stored on `OperatorFit` as flat
 CSR-style arrays (`window_indptr`/`window_indices` -- exact under
-user-overridden windows, C++/MPI-friendly). `eval_kernel` remains the
-raw parametric smooth component at arbitrary points.
+user-overridden windows, C++/MPI-friendly). ~~`eval_kernel` remains the
+raw parametric smooth component at arbitrary points.~~
+
+> **SUPERSEDED** by "The fit window is a region; truncation is the default
+> everywhere" below. `eval_kernel` truncates too; the named opt-out is
+> `eval_kernel_unrestricted`. The exemption recorded here caused a rogue-row
+> failure at field scale, which is what forced the change.
 
 **Why:** the windowed CV score is blind to model energy outside the
 window, and the polynomial x Gaussian LG modes extrapolate violently
@@ -461,7 +466,7 @@ truncation now only trims the Gaussian tail INSIDE the window.
 defaults to the level-ordered ell-capped wedge -- best or tied at
 every probe budget in the PIG smooth- and rough-beta benchmarks,
 cheapest at large k. MarginGreedy is parked with its evidence and the
-queued conditioning refinements recorded in docs/mode-policy-plan.md's
+queued conditioning refinements recorded in archive/mode-policy-plan.md's
 addendum (the noise gate was half its problem; the profit score's
 near-redundancy normalization is the other half -- it can prefer
 ill-conditioned additions, the opposite of the selection-by-
@@ -950,7 +955,7 @@ uniform grid with an 8:1 prior, a ball window gives aspect **1.000** while the
 prior's own ellipse gives **8.016** (true 8.0), with 8x fewer points. The
 window-shape rungs therefore duplicate the circle rungs under a ball window --
 and indeed every PIG operator run disables them explicitly
-(`slice38_lgpsf_operator.py:116`, `slice39_lgpsf_roughbeta.py:214`).
+(the slice-38 and slice-39 operator drivers in the glaciology repo).
 
 **Why it is not a simple fix.** The ball is what every field-scale experiment
 validating this method actually ran, and it is the convention inherited from
@@ -1083,7 +1088,7 @@ that -- the gather sets it only for `Fit` and `FallbackBaseline` rows -- and
 pins the equivalence so the two cannot drift.
 
 **Why.** The strongest reason is constructibility, and it was already being
-paid: `slice38_lgpsf_operator.py:185` builds an OperatorFit by hand to merge
+paid: the slice-38 driver builds an OperatorFit by hand to merge
 per-chunk fits and must invent `stop_reason=[""]`, `status=["gated_out"]`,
 `score=nan`, `baseline_score=nan`, `failures={}`. Someone merging chunks,
 loading from disk, or building an operator from a different method should not
@@ -1152,7 +1157,7 @@ out-of-range window indices, a wrong theta encoding width, a spike alongside
 separate row coordinates. It checks SHAPE, not approximation quality -- that is
 what `qc_map` is for.
 
-`concatenate_rows`, the operation `slice38_lgpsf_operator.py` open-codes. Its
+`concatenate_rows`, the operation that driver open-codes. Its
 reason to exist is that merging means remapping every row-indexed array at once
 -- `mode_set_id` into a combined mode-set table (de-duplicated, so ids stay
 dense) and `window_indptr` by a running offset -- and getting either wrong is
@@ -1237,9 +1242,16 @@ minutes.
 `fit_varpro` is 840 us per candidate and `linear_cv_score` 219 us, so ~70% of a
 row is the outer LM loop and ~15% is cross-validation. Within the LM, one
 iteration costs `values()` (13.0 us) plus `vjp()` (25.5 us), and ~20 iterations
-of that is ~770 us of the 840 -- **the LM is essentially all basis
-evaluation**, which is what the design predicted and what the prototype
+of that is ~770 us of the 840 -- ~~**the LM is essentially all basis
+evaluation**~~, which is what the design predicted and what the prototype
 measured in Python (47% there).
+
+> **SUPERSEDED.** That held only at the SIX modes this run used. At
+> production mode counts the fit is SVD-bound -- 61% of instructions at
+> k = 100 -- which is what the QR-first inner solve came from. See "The fit
+> is SVD-bound, not basis-bound" below, and
+> `experiments/inner-solve-profile.md`. A profile taken at the wrong size
+> answers the wrong question.
 
 Note this vindicates the standing warning at the top of the port plan in a
 direction worth recording: the Python measurement said the fit was
@@ -1498,6 +1510,10 @@ PROTOTYPE on the same dumped bytes reproduced the ~0.98, which located the fault
 in the bridge rather than in either implementation.
 
 ## `-march=native` changes the answer on a few rows, and that is the problem's fault (2026-07-27)
+
+> The public write-up of this entry and the one after it is
+> [`docs/reproducibility.md`](../docs/reproducibility.md), which is the
+> version to cite and to keep current. What follows is the working record.
 
 Replaying the whole PIG fit through the Python bindings and comparing against
 the C++ raw-binary bridge was expected to be bit-identical -- same core, two

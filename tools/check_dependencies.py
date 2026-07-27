@@ -35,15 +35,21 @@ SHIPPED = ["include", "bindings", "tests", "examples", "docs", "dev",
 # it is correct rather than a leak. Everything else outside the repo is not.
 ALLOWED_EXTERNAL = {"ellipsoid_tree"}
 
-# PATHS, not names. "the localpsf paper" is a citation and must pass; a path
-# into a private checkout must not. The distinction is a trailing slash, which
-# is what turns a name into somewhere a build could actually reach.
+# POINTERS, not names. "the localpsf paper" is a citation and must pass;
+# anywhere a reader is invited to go and cannot must not. For a directory the
+# distinction is a trailing slash, which is what turns a name into somewhere a
+# build could reach. For a file it is the name itself: a public reader cannot
+# open `slice38_lgpsf_operator.py`, so citing it by filename -- with or without
+# a line number -- is a dead reference dressed up as a source. Describe it
+# instead ("the slice-38 driver in the glaciology repo").
 PATTERNS = [
     (re.compile(r"(?:~|/home/[^/\s]+|/Users/[^/\s]+)/"),
      "an absolute path that exists on one machine"),
     (re.compile(r"\b(?:nicks_research_experiments|ellipsoid_psf\w*"
                 r"|localpsf\w*|ymir[\w-]*)/"),
      "a path into a private repo"),
+    (re.compile(r"\bslice\d+[a-z]?_[a-z0-9_]+\.(?:py|npz|cpp)\b"),
+     "a file that only exists in the private research repo"),
 ]
 
 SKIP_SUFFIXES = {".png", ".pdf", ".pyc", ".so"}

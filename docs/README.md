@@ -1,12 +1,20 @@
-# docs
+# Documentation
 
-- [design-notes.md](design-notes.md) -- running log of design decisions relevant to the C++ port.
-- [validation.md](validation.md) -- what the library was validated against at field scale (the PIG glaciology Hessian): the problem, the measurements, and which defaults came out of them. The anchor for the PIG citations in the headers.
-- [reproducibility.md](reproducibility.md) -- what is bit-exact and what is not: identical across threads, runs, callers and the QR/SVD inner solve; NOT across builds with different compiler flags, where ~0.08% of rows can land on a different local minimum. Includes how to read a failed comparison.
-- [varpro-whitening-notes.pdf](varpro-whitening-notes.pdf) ([.tex](varpro-whitening-notes.tex)) -- noise-whitening derivation: combining theta-dependent smooth and theta-independent extra basis functions without mass matrices in the VarPro fit.
-- [robust-init-notes.md](robust-init-notes.md) -- PARKED design note: the portfolio/init-dictionary recipe for robust per-row fitting, the anisotropy-stress evidence behind it, and the enrichment-saddle fact.
-- [probe-moment-ellipsoids.md](probe-moment-ellipsoids.md) -- PARKED idea sketch: conservative per-row ellipsoid fields from probe data alone (squared-kernel moment identity, iterated window shrinkage, cross-row smoothing), with the feasibility analysis and the free decisive experiment.
-- [operator-api-plan.md](operator-api-plan.md) -- design record for the whole-operator fitting API, implemented as `archive/python-prototype/operator_fit.py` (H~ = M1 Phi~ M2 + M1 S two-component type structure, spike convention, inputs incl. the sigma/tau_window resolution, OperatorFit padded arrays, helper table, baseline-always-on guard, symmetry-as-assembly-policy).
-- [blr-crossover-notes.md](blr-crossover-notes.md) -- DECISION RECORD: block low rank as the intermediate matvec format for the Hessian-GLR pipeline -- sparse now, BLR at scale conditional on the measurable kappa vs r(1+c) crossover, built (if ever) by shared-basis LG re-expansion or per-block SVD on closed-form entries, never ACA+; converter targets ellipsoid_psf.BlockLowRank.
-- [mode-policy-plan.md](mode-policy-plan.md) -- AGREED DESIGN: the extensible mode-growth policy axis (ModePolicy protocol: shells/wedge/radial-first/explicit as feedback-blind instances, MarginGreedy adaptive frontier with margin-profit scoring and a noise gate; stateless policies, engine keeps all guards), motivated by the PIG slice-38 budget-dependent-ordering evidence.
-- [cpp-port-plan.md](cpp-port-plan.md) -- AGREED DESIGN: the C++17/Eigen port (file->header map, hand-rolled LM contract, randomness/determinism policy, three-tier test doctrine, milestones M0-M6, and the COMPILE MEMORY SAFETY rules -- this machine OOMs on large -j). Implementation in a fresh session; prototype frozen at port start.
+Everything here is for **using** lgpsf. Notes for people changing it live in
+[`../dev/`](../dev/).
+
+| | |
+|---|---|
+| [validation.md](validation.md) | What the library was tested against at field scale, and which defaults came out of it. Read this to make the "PIG" references in the headers resolve, and to judge whether the method suits your problem. |
+| [reproducibility.md](reproducibility.md) | What is bit-exact and what is not — identical across threads, runs, callers and the two inner-solve paths; **not** across builds with different compiler flags, where ~0.08% of rows can land on a different local minimum. Includes a table for reading a failed comparison. |
+| [varpro-whitening-notes.pdf](varpro-whitening-notes.pdf) ([.tex](varpro-whitening-notes.tex)) | The mathematics: how the smooth and spike bases combine without the fitting code ever touching a mass matrix. Needed to follow `whitening.hpp`; not needed to call the library. |
+
+Running example:
+[`../examples/operator_fit_frog.py`](../examples/operator_fit_frog.py) fits a
+whole operator from random matvecs and plots the error against the probe
+budget. It is self-contained and doubles as the integration test.
+
+> **Being written.** Installation, a quickstart, an API tour of the three
+> layers, and a page collecting the defaults with the evidence behind them.
+> Until those land, [`../CLAUDE.md`](../CLAUDE.md) is the fullest description
+> of the architecture and the headers are the API reference.

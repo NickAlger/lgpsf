@@ -57,7 +57,7 @@
 /// Point batches are (K, N): coordinate-major, so `u.col(d)` is coordinate d
 /// across the whole batch, contiguous under Eigen's column-major default. Same
 /// bytes as the Python prototype's (N, K) row-major arrays; see
-/// docs/design-notes.md. The parameter vectors are NEVER batched, so the loops
+/// dev/design-notes.md. The parameter vectors are NEVER batched, so the loops
 /// over N and P here stay plain scalar loops by design.
 
 #include <cmath>

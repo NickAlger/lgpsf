@@ -21,7 +21,7 @@
 /// is the production entry point; the one-at-a-time functions are the
 /// readable reference it is pinned against.
 ///
-/// Point batches are (K, N): points as rows. See docs/design-notes.md.
+/// Point batches are (K, N): points as rows. See dev/design-notes.md.
 
 #include <algorithm>
 #include <cmath>
@@ -257,7 +257,7 @@ public:
     ///
     /// NOT bit-identical to contracting grad() -- the regrouping reassociates
     /// the sum. Accuracy is a wash, not an improvement; the justification is
-    /// operation count and memory. See docs/design-notes.md.
+    /// operation count and memory. See dev/design-notes.md.
     Eigen::MatrixXd vjp( const Eigen::Ref<const Eigen::MatrixXd>& w )
     {
         if ( modes_.empty() )

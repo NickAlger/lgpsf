@@ -36,8 +36,14 @@ decision and this directory is the discarded alternative.
 | counting rule | the free-mu parameter count everywhere, including for pinned fits | the count of the parameters **actually being fit** |
 | inner solve | one BDCSVD per trial point | QR-first (`InnerFactors::RangeOnly`), the SVD kept for Golub-Pereyra and for rank deficiency — 2.1x on a whole-field fit, same answers |
 
-Two comments in the code are known to be wrong and were left unedited, since
-the freeze permits only changes that keep its own tests green:
+Docstrings here cite `docs/design-notes.md`, `docs/mode-policy-plan.md` and
+similar. Those paths were correct when this code was frozen; the developer
+notes have since moved to [`dev/`](../../dev/). The links are left as they
+were rather than rewritten, because a frozen artifact that gets edited is no
+longer a record of anything.
+
+Two comments in the code are known to be wrong and were left unedited, for the
+same reason:
 
 - **`probe_fit.py`** claims the operator layer supplies "a conservatively
   inflated ellipsoid, whose aspect and orientation survive the inflation",

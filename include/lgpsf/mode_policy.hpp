@@ -5,7 +5,7 @@
 /// @file
 /// @brief Mode-growth policies: the extensible ladder axis of the probe fit.
 ///
-/// See docs/mode-policy-plan.md for the design and the PIG slice-38 evidence
+/// See dev/archive/mode-policy-plan.md for the design and the PIG slice-38 evidence
 /// behind it. The short version: the best growth ORDER is budget- and
 /// row-dependent -- complete shells win at k = 20, an ell-capped radial wedge
 /// ties them at a sixth of the cost at k = 100 -- so the ladder is a pluggable

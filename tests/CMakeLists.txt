@@ -20,7 +20,7 @@ target_compile_options(lgpsf_tests PRIVATE
 
 # Eigen dominates the per-TU compile cost and this machine has been
 # OOM-crashed by parallel Eigen builds; see the COMPILE MEMORY SAFETY section
-# of docs/cpp-port-plan.md. pch.hpp explains why doctest stays out of it.
+# of dev/HANDOFF.md. pch.hpp explains why doctest stays out of it.
 target_precompile_headers(lgpsf_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/pch.hpp)
 
 add_test(NAME lgpsf_tests COMMAND lgpsf_tests)

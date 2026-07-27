@@ -140,7 +140,7 @@ def build_shell(N, ell):
     earlier one). Measured over the whole generated table: 91.5% of the
     dense coefficients are exactly zero, and the smallest surviving
     |coefficient| is 0.225 -- there is no continuum of small values near
-    the cut, because there is no cut. See docs/design-notes.md.
+    the cut, because there is no cut. See dev/design-notes.md.
     """
     monos = multi_indices(N, ell)
     D = len(monos)
@@ -238,7 +238,7 @@ def _wrap(values, per_line, indent="    "):
 def write_table_header(table, path):
     """Emit the same exact-rational table as a C++ header.
 
-    Layout (see docs/cpp-port-plan.md): NONZERO-MAJOR with two PARALLEL
+    Layout (see dev/architecture.md): NONZERO-MAJOR with two PARALLEL
     blobs -- a double per term and dim int8 exponents per term -- walked
     in lockstep, one linear pass per polynomial with no indirection.
     Deliberately not interleaved into a {double; int8[N];} struct, whose
@@ -296,7 +296,7 @@ def write_table_header(table, path):
 /// terms only: 91.5% of the dense coefficients are exactly zero for structural
 /// reasons (exponent parity classes and the Gram-Schmidt staircase), and the
 /// generator drops them on an exact-rational `!= 0` test, never a numerical
-/// tolerance. See docs/design-notes.md.
+/// tolerance. See dev/design-notes.md.
 ///
 /// Two parallel blobs, walked in lockstep: one double per term, and `dim`
 /// int8 exponents per term. Shell s = (N - 1) * (MAX_DEGREE + 1) + ell; rows

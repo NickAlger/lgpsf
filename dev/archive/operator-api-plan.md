@@ -1,12 +1,21 @@
 # Operator-level fitting API -- agreed design (2026-07-24)
 
-**Status: IMPLEMENTED (session 2026-07-24) as
+> **ARCHIVED (2026-07-27).** The API described here was implemented in Python,
+> then ported to `operator_fit.hpp`, and **five of its decisions have since
+> changed**: the window is an ellipsoid with a continuous `window_aspect_cap`
+> rather than a ball; `eval_kernel` truncates to the fit window; `OperatorFit`
+> split into `LGOperator` + `FitDiagnostics`; `to_linear_operator` was not
+> ported; and the `windows=` index-list override was removed. Read it for the
+> type-structure argument and the spike convention, which stand. Do not read
+> it for current behaviour.
+
+**Status at the time of writing: IMPLEMENTED (session 2026-07-24) as
 `archive/python-prototype/operator_fit.py`** (`fit_operator` -> `OperatorFit` + the
 helper table below), tests in `archive/python-prototype/test_operator_fit.py`. This
 doc remains the design record; implementation-level decisions made
 during the port (free-mu theta storage, the `target_mass` kwarg on
 `fit_from_probes`, baseline-guard fold sharing) are logged in
-`docs/design-notes.md`.
+`../design-notes.md`.
 
 ## The fitted object (the central decision)
 
@@ -118,7 +127,7 @@ format is a decompression of it.
 **Amendment (2026-07-25, PIG slice-38): deployed support == fit
 window.** The dof-context helpers below restrict each row to its fit
 window (stored on OperatorFit); eval_kernel stays the raw parametric
-component. Rationale in docs/design-notes.md ("Deployed support == fit
+component. Rationale in ../design-notes.md ("Deployed support == fit
 window").
 
 | helper | consumes | notes |
@@ -152,8 +161,8 @@ change.
 ## Deferred / adjacent
 
 - Scheme-C conservative ellipsoid fields from probes alone
-  (docs/probe-moment-ellipsoids.md, parked): the alternative sigma
+  (../probe-moment-ellipsoids.md, parked): the alternative sigma
   source when no physics prior exists.
-- The portfolio/init-dictionary background: docs/robust-init-notes.md.
+- The portfolio/init-dictionary background: ../robust-init-notes.md.
 - Level-2 cross-row amortization and QC maps over status/stop_reason/
   s-fields: after fit_operator exists.

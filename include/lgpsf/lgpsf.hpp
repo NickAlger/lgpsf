@@ -34,4 +34,4 @@
 #include "lgpsf/probe_moments.hpp"
 #include "lgpsf/varpro.hpp"
 #include "lgpsf/whitening.hpp"
-// Further public headers land here as the port proceeds (docs/cpp-port-plan.md).
+// See dev/architecture.md for the header map and the layering invariant.

@@ -1,12 +1,19 @@
 # Mode-growth policies: the extensible ladder axis -- agreed design
 
-**Status: IMPLEMENTED (session 2026-07-25) as
-`archive/python-prototype/mode_policy.py`** + the probe_fit policy-poll loop, in the
-two planned steps (the axis with feedback-blind built-ins, then
+> **ARCHIVED (2026-07-27).** Implemented, then ported to `mode_policy.hpp`.
+> Two things below are out of date: the C++ has **one** mode mechanism
+> (`mode_policy`) with none of the legacy `mode_levels`/`mode_sets` fields,
+> and `WedgeLadder(10, 2)` is now the operator-layer default rather than
+> "suggested". The benchmark the original header called "still owed" is the
+> **addendum at the end of this file** — it ran, and it is why MarginGreedy is
+> parked.
+
+**Status at the time of writing: IMPLEMENTED (session 2026-07-25) as
+`archive/python-prototype/mode_policy.py`** + the probe_fit policy-poll loop,
+in the two planned steps (the axis with feedback-blind built-ins, then
 MarginGreedy). Equivalence of the legacy config fields is pinned by
 fingerprint tests (`test_mode_policy.py`); this doc remains the design
-record. MarginGreedy's PIG benchmark against the fixed ladders is
-still owed before any default changes.
+record.
 
 ## Why
 

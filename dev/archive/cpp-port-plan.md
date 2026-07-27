@@ -1,6 +1,14 @@
 # C++17/Eigen port plan -- agreed design
 
-**Status: IN PROGRESS -- M0-M4 complete; M5's code is done and its
+> **ARCHIVED (2026-07-27). The port happened; this is the plan it was made
+> from, not a description of the result.** For what the code looks like now,
+> read [`../architecture.md`](../architecture.md), which carries this plan's
+> file-to-header map brought up to date. For what is still owed, read
+> [`../HANDOFF.md`](../HANDOFF.md). The build-memory rules that lived here are
+> in both. Milestone entries below were annotated as they completed and are
+> kept for the reasoning, not the status.
+
+**Status at archival: M0-M4 complete; M5's code is done and its
 packaging is not.** Bindings, the public end-to-end gate
 (`examples/operator_fit_frog.py`) and the maintainer-local PIG replay all
 land; what M5 still owes is a CI workflow, an exercised cibuildwheel run,
@@ -16,13 +24,13 @@ for what it is now for and where the C++ deliberately differs from it.
 
 **Several decisions in this plan were reopened during implementation and
 the sections below have been updated in place.** Each divergence from the
-prototype is argued in `docs/design-notes.md`; the maintainer-local
+prototype is argued in `../design-notes.md`; the maintainer-local
 `dev/session-issues-2026-07-26.md` records the problems and discrepancies
 found along the way, including the ball-vs-ellipsoid window archaeology.
 
 Before implementation began, four prototype changes settled design
 questions this plan had left open or got wrong; each is recorded in
-`docs/design-notes.md` with its measurements, and the relevant sections
+`../design-notes.md` with its measurements, and the relevant sections
 below have been updated:
 
 | | settled |
@@ -141,7 +149,7 @@ Not ported: `examples/*.py` plotting/research scripts, MarginGreedy
 
 91.5% of the dense coefficients are structurally, exactly zero, so the
 table stores each polynomial as its nonzero terms only -- see
-docs/design-notes.md for the parity-class / Gram-Schmidt-staircase
+../design-notes.md for the parity-class / Gram-Schmidt-staircase
 argument and the evidence that this is exact rather than a tolerance.
 C++ layout: **nonzero-major, two parallel arrays per shell** --
 `double coeffs[nnz]` and `int8 exponents[nnz * N]`, walked in lockstep,
@@ -381,7 +389,7 @@ nothing in the row fitter.
    to match an artifact -- backwards. The prototype's recorded PIG
    figures (smooth beta 0.0147 @ k=100 clipped+sym; rough beta 0.0561;
    forensic col-resids 0.06-0.14) are a comparison ALREADY MADE and
-   recorded in `docs/design-notes.md`; they are a historical benchmark,
+   recorded in `../design-notes.md`; they are a historical benchmark,
    not an oracle to re-run.
 
 ## Milestones (each a reviewable unit, riskiest early)
@@ -531,7 +539,7 @@ nothing in the row fitter.
     symmetrized, scores **0.0147** -- the recorded prototype figure to all
     four digits. Dead rows need no gate (score exactly 0, zero
     coefficients, 0 failures) and gating changes no live row's prediction
-    by a single bit. See `docs/design-notes.md` and the maintainer-local
+    by a single bit. See `../design-notes.md` and the maintainer-local
     `dev/pig-cxx-2026-07-26.md`. What the bindings still owe M5 is the
     ergonomics and the marshalling tests, not the numerical result --
     and the bindings are checked against THOSE numbers, bit for bit,
@@ -561,7 +569,7 @@ minimum-norm one.
 Worth **2.09x** on a whole-field smooth-beta L6 k=100 fit with every field
 number unchanged to four digits, and 1.43x at rough beta with all ten
 forensic columns identical. Suite now **145 cases / 105,699 assertions**.
-Rationale and the profile behind it are in `docs/design-notes.md`;
+Rationale and the profile behind it are in `../design-notes.md`;
 `dev/perf-2026-07-26.md` also lists what was looked at and deliberately
 left alone.
 - **After M5, before/with M6: a user-facing Python example of

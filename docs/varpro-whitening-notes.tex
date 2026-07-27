@@ -34,7 +34,7 @@ mass matrices ($M_1$ for the row/target space, $M_2$ for the column/source
 space) appear only in that one whitening layer; the VarPro fitting machinery
 itself never sees them. The whitening transform is theta-independent and
 symmetric, so it composes with the existing forward/reverse-mode derivative
-machinery (\texttt{lg\_functions.py}, \texttt{ellipsoid\_transform.py}) with
+machinery (\texttt{lg\_functions.hpp}, \texttt{ellipsoid\_transform.hpp}) with
 no new derivative math required.
 \end{abstract}
 
@@ -51,7 +51,7 @@ products; the kernel $\Phi: X'\to Y$ and the assembled operator $H = \Mone
 Each Laguerre--Gaussian smooth feature $\phi_i(\cdot;\theta)$, sampled at
 mesh nodes, is an element of $X$ -- and, because the continuum family
 $\{\psi_i\}$ is exactly $L^2(\mathbb{R}^N)$-orthonormal (verified numerically
-in \texttt{lg\_harmonics\_table.py} and \texttt{lg\_functions.py}), the
+in \texttt{lg\_harmonics\_table.hpp} and \texttt{lg\_functions.hpp}), the
 sampled $\phi_i$ are nearly $\Mtwo$-orthonormal: $\phi_i^\top \Mtwo \phi_{i'}
 \approx \delta_{ii'}$, up to mesh resolution. A user-supplied ``extra''
 basis function $e_d$ (a one-hot vector for the diagonal spike; more general
@@ -137,7 +137,7 @@ opposite sign of exponent, $-1/2$ vs.\ $+1/2$, reflecting that $e_d$ lives in
 $X'$ where $\phi_i$ lives in $X$). An earlier pass at this derivation
 omitted the $\sqrt{m_\rho}$ on $\what e_d$; this was caught by checking
 \eqref{eq:whitened-model} term by term against \eqref{eq:probe-eq} before
-implementing it, and confirmed numerically (\texttt{test\_whitening.py}) by
+implementing it, and confirmed numerically (\texttt{test\_whitening.cpp}) by
 constructing an explicit $H$ from \eqref{eq:row-model} and checking that the
 whitened quantities reproduce $y_\ell(\rho)$ to machine precision.
 
@@ -180,19 +180,19 @@ linear operators (diagonal matrices). Consequently:
   the existing VJP chain.
 \end{itemize}
 This is the same ``compose with a fixed linear map'' pattern used already
-for Stage~1/Stage~2 composition in \texttt{ellipsoid\_transform.py} and for
+for Stage~1/Stage~2 composition in \texttt{ellipsoid\_transform.hpp} and for
 the extra-basis projection in the 2026-07-23 design discussion. No new
-derivative formulas are needed anywhere; \texttt{lg\_functions.py} and
-\texttt{ellipsoid\_transform.py} are unchanged.
+derivative formulas are needed anywhere; \texttt{lg\_functions.hpp} and
+\texttt{ellipsoid\_transform.hpp} are unchanged.
 
 \section{Resulting architecture}
 
 \begin{itemize}
-\item \textbf{Mass-free composed feature layer} (\texttt{lg\_ellipsoid\_feature.py}):
+\item \textbf{Mass-free composed feature layer} (\texttt{lg\_ellipsoid\_feature.hpp}):
   $\phi_i(x;\theta) := \psi_i(T(\theta,x))$ and its JVP/VJP, built purely by
   composing the two existing modules via the chain rule. Knows nothing
   about mass matrices.
-\item \textbf{Whitening interface layer} (\texttt{whitening.py}): the only
+\item \textbf{Whitening interface layer} (\texttt{whitening.hpp}): the only
   place $\Mone,\Mtwo$ appear. Provides (a) \texttt{whiten\_probes},
   \texttt{whiten\_data}, \texttt{whiten\_extra} for the user-supplied raw
   probe/data/extra-basis arrays, and (b) whitened wrappers around the

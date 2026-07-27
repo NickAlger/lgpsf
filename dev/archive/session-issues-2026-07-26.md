@@ -107,7 +107,7 @@ The longest thread of the session. Sequence:
    window makes `window_shape` recover aspect 1.000 where the prior's own
    ellipse gives 8.016.
 2. Nick pushed back that this was drifting from work already settled.
-3. Reading `docs/operator-api-plan.md` showed the ball stated as a decision
+3. Reading `operator-api-plan.md` showed the ball stated as a decision
    with a rationale ("conservatism is supplied by tau_window inflation ... this
    justification travels with the parameter"). I withdrew the proposal.
 4. Nick said the ellipsoid was the design intent all along and asked when the
@@ -161,7 +161,7 @@ on the same mode sets — a rationalization written after the fact.
 
 ### B2. The plan's claim about per-row generators
 
-`docs/cpp-port-plan.md` stated the prototype "shares one generator across rows
+`cpp-port-plan.md` stated the prototype "shares one generator across rows
 within a chunk". It does not: `default_rng(cfg.seed)` is constructed inside
 `fit_from_probes`, so it is already per-row. Corrected.
 
@@ -414,7 +414,7 @@ Three additions the split made natural: `num_threads` on the row-parallel
 helpers (the plan's uniform convention, which `matvec`, `assemble_sparse` and
 `qc_map` had been ignoring); `validate`, since hand-construction is now a
 supported path and needs to be checkable; `concatenate_rows`, the operation
-`slice38_lgpsf_operator.py` open-codes.
+the slice-38 driver open-codes.
 
 ### G6. Further measurements
 
