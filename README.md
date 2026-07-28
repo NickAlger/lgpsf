@@ -1,6 +1,6 @@
 # lgpsf
 
-Compress a large, dense, matrix-free operator into a sparse one, using only
+Recover a large, dense, high-rank, matrix-free operator using only
 its action on random vectors.
 
 Header-only C++17, with Python bindings.
@@ -10,12 +10,11 @@ Header-only C++17, with Python bindings.
 Some operators can be applied but not inspected. The Gauss-Newton Hessian of a
 PDE-constrained inverse problem is the canonical case: one application costs a
 linearized forward solve plus an adjoint solve, and there are `n²` entries you
-will never enumerate. The same shape appears whenever applying an operator
+will never enumerate. The same situation occurs whenever applying an operator
 hides an expensive subproblem.
 
-If such an operator has **local, smoothly varying point-spread functions** —
-each row concentrated near its own node, with a shape that changes gradually
-across the domain — lgpsf recovers it from a few dozen applications:
+If such an operator has **local smooth point-spread functions**,
+each row concentrated near its own node, lgpsf recovers it from a few dozen applications:
 
 - probe with random vectors `V`, collect `HV`;
 - fit each row as a **Laguerre-Gaussian expansion on its own fitted ellipsoid**,
@@ -98,7 +97,7 @@ stable and the version is 0.1. Changes are recorded in
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). If you are proposing a change to the
-method rather than the code, open an issue first — those questions are usually
+method rather than the code, open an issue first. Those questions are usually
 settled by measurement here, and the evidence is often already in
 [docs/validation.md](docs/validation.md) or [experiments/](experiments/).
 
