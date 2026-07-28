@@ -106,12 +106,24 @@ chosen for this study rather than a property of the method.
 | 24 | 576 | 6 | 27.8 | 0.0297 |
 | 24 | 576 | 8 | 37.4 | **0.0152** |
 | 24 | 576 | 10 | 37.4 | 0.0152 |
+| 32 | 1024 | 6 | 27.8 | 0.0302 |
+| 32 | 1024 | 8 | 37.7 | **0.0152** |
+| 32 | 1024 | 10 | 37.7 | 0.0152 |
+| 48 | 2304 | 6 | 27.8 | 0.0301 |
+| 48 | 2304 | 8 | 37.8 | **0.0152** |
+| 48 | 2304 | 10 | 37.8 | 0.0152 |
 
 Raising the cap to level 8 **halves the error and reaches the 2% target the
-main table calls unreachable.** Levels 8 and 10 agree to four digits, so the
-mode *selection* has converged at 37 of the 52 modes the counting rule permits:
-the library declined the rest because they did not improve the held-out score.
-That is the guard working, not a ceiling.
+main table calls unreachable** — at every grid, to the same 0.0152. Levels 8
+and 10 then agree to four digits everywhere, so the mode *selection* has
+converged at ~37 of the 52 modes the counting rule permits: the library
+declined the rest because they did not improve the held-out score. That is the
+guard working, not a ceiling, and it is why the ladder cap and the probe
+budget have to be separated before either table means anything.
+
+This is also a second, independent sighting of mesh independence. The taller
+ladder reaches 0.0152 at 576, 1024 and 2304 dofs alike, selecting the same
+~37 modes per row — three grids, one answer, no trend.
 
 **Consequence for reading the tables above.** The `k ≤ 45` columns are
 constrained by the probe budget alone, since the cap does not bind below

@@ -22,13 +22,10 @@ narrative and open items only; when a thread closes, its record moves to
 
 Six slices, agreed 2026-07-27. Done: (1) the Python prototype archived and
 its table generator rescued into `tools/`; (2) `dev/` purged and
-redistributed. Remaining:
+redistributed; (3) `docs/` split by audience. Plus an agreed detour: the
+example set, now 15 examples covering every exported name, and the mesh
+scalability study in `experiments/`. Remaining:
 
-3. **Restructure `docs/`.** User-facing pages stay; the plan documents and
-   `design-notes.md` move here. Salvage `cpp-port-plan.md`'s file→header map
-   into a proper architecture doc rather than archiving it inside a dead
-   plan. Fix the three self-contradictions the survey found, in particular
-   `design-notes.md:442` vs `:1011` on whether `eval_kernel` truncates.
 4. **Write the user docs.** A real `README.md` — today it is two lines, and
    `pyproject.toml` names it as the PyPI long description. Then installation,
    a quickstart from the frog example, an API tour of the three layers, and a
@@ -45,6 +42,35 @@ redistributed. Remaining:
    sanitizers at `-j2`), the binding pytest, the frog example as the
    integration gate, `tools/check_dependencies.py`, and version consistency
    between `lgpsf.hpp`, `pyproject.toml` and CITATION.
+
+   **What CI builds vs runs — decided 2026-07-27, do not re-litigate:**
+
+   | | build | run |
+   |---|---|---|
+   | tests | yes | yes |
+   | bindings | yes | yes |
+   | Python examples | — | fast ones + `--quick` |
+   | C++ examples | yes | `hello_world` only |
+   | `experiments/` | **yes** (`-DLGPSF_BUILD_EXPERIMENTS=ON`) | **no** |
+
+   Experiments are built but never run. Two reasons, and the second is the
+   one that decides it. They take tens of minutes. And more importantly,
+   `docs/reproducibility.md` establishes that results legitimately differ
+   across builds with different compiler flags — so any tight numeric
+   assertion would be flaky *by construction*, and loosening it until stable
+   would leave it too weak to catch anything.
+
+   But they must still COMPILE in CI, because the failure mode an experiment
+   actually has is bit-rot, not wrong numbers. Two of the `dev/` scaffolds
+   deleted in the cleanup had been broken for months — they subprocessed into
+   a directory that no longer existed — and nobody noticed because nothing
+   ever built them.
+
+   Pipeline coverage is already served by `examples/operator_fit_frog.py
+   --quick` and `bindings/tests/test_frog_integration.py`: the whole stack,
+   on a public problem, in about ten seconds. The slow C++ examples are in the
+   build-only bucket for the same reason — their numerics are covered by the
+   Python integration test on the identical problem.
 2. **cibuildwheel, actually exercised.** `pyproject.toml` is written but no
    wheel has been built through it. The `sdist.exclude` added in the cleanup
    is likewise unverified — `scikit_build_core` is not installed here and pip
