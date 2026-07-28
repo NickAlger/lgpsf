@@ -27,6 +27,32 @@ the problem was.
 | `cv_folds` | `5` | Held-out folds for the selection score. |
 | `varpro.ridge` | `1e-8` | Damps the linear coefficients only — the ellipsoid is never regularized. |
 | `varpro.jacobian` | `Kaufman` | Drops a term that vanishes at the solution; one reverse sweep instead of a full Jacobian tensor, same answer. |
+| `varpro.ftol` | `1e-8` | Stops one nonlinear fit on relative cost reduction. **This is the one that binds** — see below. |
+| `varpro.xtol` | `1e-8` | Stops it on relative step size. |
+| `varpro.gtol` | `1e-8` | Stops it on gradient orthogonality. |
+| `varpro.max_evaluations` | `100` | Runaway guard, not a performance knob: the loop stops on `ftol` long before it reaches this. |
+
+## The solver tolerance is loosenable, and `ftol` is the knob
+
+The three tolerances are OR-ed and stop on different quantities, but `ftol` is
+the only one that fires in practice: loosening it alone to `1e-4` gives 1.81× of
+the 1.84× available from loosening all three. `xtol` needs the trust region to
+shrink on rejected steps, and `gtol` tests a cosine that never approaches zero
+here, because the reduced residual at the optimum is data noise rather than
+zero.
+
+Loosening it is nearly free in accuracy. With the mode ladder held at fixed
+depth, `1e-8` → `1e-2` is 3.25× fewer LM iterations and leaves the error
+unchanged to four significant figures.
+
+What it does affect is **selection**, because the mode ladder reads the
+cross-validation score: at `1e-3` a score perturbation of 7.5 × 10⁻⁵ was enough
+to change how many modes shipped. `1e-4` is the loosest setting measured at
+which every ladder decision matched `1e-8`, so **`1e-4` is the recommended value
+if you want the fit cheaper** — worth about 1.6× — and further than that should
+be checked against your own held-out scores rather than assumed.
+
+Measurements in [`experiments/lm-tolerance.md`](../experiments/lm-tolerance.md).
 
 ## The mode policy is required, not defaulted
 

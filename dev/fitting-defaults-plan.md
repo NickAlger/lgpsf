@@ -51,10 +51,39 @@ exist to fix". Keep that caveat attached to any conclusion.
 | `ProbeFitConfig::num_rungs` | 6 | 3 |
 | `ProbeFitConfig::circle_rungs_above_aspect` | 1.0 | 3.0 |
 | `ProbeFitConfig::window_shape_rungs` | on | unchanged — the frog cannot see what it is for |
+| `VarProOptions::ftol` / `xtol` / `gtol` | 1e-8 | 1e-4 — see Task A below, which is done |
 
 ---
 
-## Task A: the Levenberg–Marquardt tolerance
+## Task A: the Levenberg–Marquardt tolerance — DONE 2026-07-28
+
+Measured by `experiments/lm_tolerance.py`; written up in
+`experiments/lm-tolerance.md`. Findings, shortest form:
+
+- **`ftol` is the only test that binds**, worth 1.81× of the 1.84× available
+  from loosening all three. `xtol` needs the trust region to shrink on rejected
+  steps; `gtol` tests a cosine that never approaches zero, because the reduced
+  residual at the optimum is data noise.
+- **Accuracy does not move.** Ladder pinned, `1e-8` → `1e-2` is 3.25× fewer LM
+  iterations at an error unchanged to four significant figures. Whole operators
+  agree, at both `num_rungs = 6` and `3`, with and without the early exit, and
+  under a shapeless prior.
+- **The knobs are separable.** Tolerance behaves the same at both rung counts,
+  so the `num_rungs` recommendation above is unaffected. Together: 9.1 s → 3.8 s.
+- **The trap.** Both ladder stopping rules read the CV score, so a tolerance
+  change perturbing a score in its fifth decimal changes how many modes ship —
+  and modes dominate solver digits. An error column that MOVES with the
+  tolerance is reporting ladder depth, not solver quality. `1e-4` is the loosest
+  setting at which every ladder decision matched `1e-8`; `1e-3` flipped.
+- **`max_evaluations` is not binding** and should be left alone.
+
+**Recommended, NOT applied:** `ftol = xtol = gtol = 1e-4`. Left for the same
+reason as the ladder knobs — Task B tests it on a real operator. Note that
+applying it requires regenerating `docs/examples/`, because
+`examples/varpro_custom_basis.py` prints iteration counts from a
+default-constructed `VarProOptions` and CI checks those pages are current.
+
+### Background, still true
 
 **It is already a user-settable option.** Do not add one. Verified 2026-07-28:
 
