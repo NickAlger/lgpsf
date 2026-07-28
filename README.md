@@ -62,6 +62,16 @@ For C++, add it with CMake `FetchContent` or `find_package`; it is header-only
 and needs Eigen and [ellipsoid_tree](https://github.com/NickAlger/ellipsoid_tree).
 See [docs/installation.md](docs/installation.md).
 
+> ⚠️ **Compiling needs a lot of memory. Pick `-j` by RAM, not by core count.**
+>
+> Every translation unit instantiates Eigen templates heavily, and measured
+> peak compiler memory here is **~3 GB per job** in a Release build and
+> **~8 GB** under sanitizers. One job per core on a many-core machine can
+> therefore exhaust RAM and invoke the OOM killer.
+>
+> Budget `-j` ≈ `RAM_in_GB / 3`, and `-j1` for sanitizer builds unless you have
+> room to spare. See [docs/installation.md](docs/installation.md).
+
 ## Documentation
 
 - **[Quickstart](docs/quickstart.md)** — the shortest path to a fit.
@@ -82,7 +92,20 @@ The mathematics is in
 
 Alpha. The method is validated at field scale against a real PDE-derived
 Hessian — see [docs/validation.md](docs/validation.md) — but the API is not
-stable and the version is 0.1.
+stable and the version is 0.1. Changes are recorded in
+[CHANGELOG.md](CHANGELOG.md).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). If you are proposing a change to the
+method rather than the code, open an issue first — those questions are usually
+settled by measurement here, and the evidence is often already in
+[docs/validation.md](docs/validation.md) or [experiments/](experiments/).
+
+## Citing
+
+There is no paper yet; cite the software. [CITATION.cff](CITATION.cff) has the
+metadata, and GitHub renders it as a ready-made citation from the sidebar.
 
 ## License
 

@@ -66,15 +66,44 @@ ctest --test-dir build
 Options: `LGPSF_BUILD_TESTS`, `LGPSF_BUILD_EXAMPLES` (both ON when standalone),
 `LGPSF_BUILD_PYTHON`, `LGPSF_BUILD_EXPERIMENTS` (both OFF).
 
-Two warnings worth heeding:
+### ⚠️ Compiling needs a lot of memory
 
-**Build with optimization.** Every translation unit goes through Eigen's
-expression templates, and a Debug build is not marginally slower but ~33×
-slower — enough to make an example look hung. If a run seems to have stalled,
-check `CMAKE_BUILD_TYPE` first.
+**Choose `-j` by available RAM, not by core count.** Every translation unit
+instantiates Eigen expression templates heavily, and the compiler's peak
+resident set scales with that rather than with the size of the source file.
+Measured here on a Release build with GCC:
 
-**Do not use a bare `-j`.** Each compile job can peak above a gigabyte. `-j3`
-is a reasonable default and `-j2` for sanitizer builds.
+| translation unit | build | peak RSS |
+|---|---|---|
+| `test_operator_fit.cpp` | Release | **2.8 GB** |
+| `examples/operator_fit_frog.cpp` | Release | 3.0 GB |
+| `test_varpro.cpp` | Release | 1.9 GB |
+| `test_lg_functions.cpp` | Release | 0.8 GB |
+| `test_operator_fit.cpp` | **ASan+UBSan** | **7.9 GB** |
+
+So building with one job per core is actively dangerous. On a 16-core machine
+that is up to ~48 GB of compiler for an ordinary build, and the usual outcome
+is the OOM killer taking the build — or the rest of your session — with it.
+
+A safe rule is **`-j` ≈ RAM in GB ÷ 3**, capped at the core count.
+
+**Sanitizer builds need their own budget: ~8 GB per job.** Two concurrent jobs
+already exceed a 16 GB machine, so use `-j1` there unless you have room to
+spare. This is not hypothetical — it is how the development machine for this
+library was repeatedly OOM-crashed.
+
+Building specific targets rather than everything also helps:
+
+```sh
+cmake --build build --target lgpsf_tests -j3
+```
+
+### ⚠️ Build with optimization
+
+A Debug build is not marginally slower but **~33× slower** — enough to make an
+example look hung. The same whole-operator example run takes 79 seconds at
+`-O3` and 43 minutes unoptimized. If something seems stalled, check
+`CMAKE_BUILD_TYPE` before anything else.
 
 ## Python bindings from source
 

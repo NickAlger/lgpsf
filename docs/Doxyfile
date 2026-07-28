@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: MIT
+# Doxygen configuration for the lgpsf API reference.
+#
+#   doxygen docs/Doxyfile        (run from the repository root)
+#
+# Output lands in docs/_build/doxygen/html; CI publishes it to GitHub Pages.
+
+PROJECT_NAME           = "lgpsf"
+PROJECT_NUMBER         = 0.1.0
+PROJECT_BRIEF          = "Laguerre-Gaussian PSF operator approximation"
+OUTPUT_DIRECTORY       = docs/_build/doxygen
+
+INPUT                  = include/lgpsf docs/mainpage.md
+FILE_PATTERNS          = *.hpp *.md
+RECURSIVE              = YES
+
+# detail/ is implementation, and the generated harmonic table is 278 KB of
+# literals that would swamp the index.
+EXCLUDE_PATTERNS       = */detail/*
+EXCLUDE_SYMBOLS        = *::detail *::detail::*
+
+USE_MDFILE_AS_MAINPAGE = docs/mainpage.md
+STRIP_FROM_PATH        = include
+STRIP_FROM_INC_PATH    = include
+
+EXTRACT_ALL            = YES
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+JAVADOC_AUTOBRIEF      = YES
+MARKDOWN_SUPPORT       = YES
+
+# Declaration order is meaningful here: the headers are written bottom-up, and
+# a class's members follow the order you would use them in.
+SORT_MEMBER_DOCS       = NO
+
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO
+
+GENERATE_LATEX         = NO
+VERBATIM_HEADERS       = NO
+
+GENERATE_HTML          = YES
+GENERATE_TREEVIEW      = YES
+DISABLE_INDEX          = NO
+FULL_SIDEBAR           = NO
+HTML_COLORSTYLE        = LIGHT
+HTML_EXTRA_STYLESHEET  = docs/doxygen-awesome/doxygen-awesome.css \
+                         docs/doxygen-awesome/doxygen-awesome-sidebar-only.css
+
+HAVE_DOT               = NO

@@ -7,8 +7,11 @@ consumer of it. So PIG may depend on lgpsf and lgpsf may not depend on PIG --
 and the same for any other private repository or absolute path on one machine.
 
 This is the mechanical form of that rule, because a policy nobody can run is a
-policy that erodes. It checks the SHIPPING directories only; `dev/` is
-maintainer-local scratch and is exempt by design.
+policy that erodes. It checks everything a reader can reach -- what ships in a
+wheel or tarball, plus the docs, developer notes and experiments that are
+public on the repo even when excluded from the sdist. The one exception is
+`archive/`, which is frozen history: editing it to satisfy a lint would falsify
+the record.
 
 Naming a private problem in prose is FINE and deliberate -- `docs/validation.md`
 explains what PIG is so those citations resolve. What is banned is a path: an
@@ -28,8 +31,9 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 # -- it is frozen third-party-to-us history, excluded from the sdist, and
 # editing it to satisfy a lint would falsify the record.
 SHIPPED = ["include", "bindings", "tests", "examples", "docs", "dev",
-           "experiments", "cmake", "CMakeLists.txt", "pyproject.toml",
-           "README.md"]
+           "experiments", "cmake", ".github", "CMakeLists.txt",
+           "pyproject.toml", "README.md", "CONTRIBUTING.md", "CHANGELOG.md",
+           "CITATION.cff"]
 
 # `ellipsoid_tree` is a PUBLIC library we explicitly depend on, so referencing
 # it is correct rather than a leak. Everything else outside the repo is not.

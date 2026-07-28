@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "lgpsf: Laguerre-Gaussian point-spread-function operator approximation"
+abstract: >-
+  A header-only C++17 library (with Python bindings) that compresses a large,
+  dense, matrix-free operator into a sparse one from its action on random
+  vectors. Each row is fitted as a Laguerre-Gaussian expansion on its own
+  ellipsoid by variable projection, plus a discrete spike correction, and the
+  result is deployable as a sparse matrix, a matvec, or a continuum kernel. The
+  probe count does not grow under mesh refinement. Motivated by Gauss-Newton
+  Hessians in PDE-constrained inverse problems, where applying the operator is
+  expensive and its entries are not available.
+type: software
+authors:
+  - family-names: Alger
+    given-names: Nick
+    email: nalger225@gmail.com
+version: 0.1.0
+date-released: "2026-07-28"
+license: MIT
+repository-code: "https://github.com/NickAlger/lgpsf"
+keywords:
+  - point spread function
+  - operator approximation
+  - variable projection
+  - inverse problems
+  - matrix-free
