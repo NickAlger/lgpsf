@@ -4,9 +4,7 @@
 
 /// @file
 /// @brief A trust-region Levenberg-Marquardt loop, reproducing MINPACK's
-/// semantics. The one numeric the Python prototype delegates (to
-/// scipy/MINPACK via `least_squares(method="lm")`) and therefore the only
-/// piece of this library with no reference implementation to port.
+/// semantics.
 ///
 /// Generic in the residual and Jacobian: it knows nothing about VarPro, the
 /// LG basis, or ellipsoids, so it can be -- and is -- tested on problems whose
@@ -116,11 +114,18 @@ struct TrustRegionStep
     double scaled_norm = 0.0;     ///< ||D p||
 };
 
-/// Exactly solve min ||J p + f|| subject to ||scale .* p|| <= bound.
+/// Exactly solve the trust-region subproblem
+/// min ||J p + f|| subject to ||scale .* p|| <= bound.
 ///
-/// `parameter_guess` warm-starts the root-find from the previous step's
-/// Levenberg parameter, as MINPACK does; it only affects how fast the search
-/// converges, never where.
+/// @param jacobian        J, (m, n).
+/// @param f               The residual at the current point, (m,).
+/// @param scale           Per-parameter scaling D, (n,), all positive.
+/// @param bound           Trust-region radius, positive.
+/// @param parameter_guess Warm start for the Levenberg parameter, taken from
+///                        the previous step as MINPACK does. Affects only how
+///                        fast the root-find converges, never where.
+/// @return                The step, the Levenberg parameter that produced it,
+///                        and ||D p||.
 inline TrustRegionStep solve_trust_region(
     const Eigen::MatrixXd& jacobian, const Eigen::VectorXd& f,
     const Eigen::VectorXd& scale, double bound, double parameter_guess )
@@ -256,12 +261,19 @@ inline std::string lm_message( LMStatus status )
 
 } // end namespace detail
 
-/// Minimize 0.5 ||residual(x)||^2 over x, starting from `start`.
+/// Minimize 0.5 ||residual(x)||^2 over x, unconstrained.
 ///
-/// `residual(x)` returns an (m,) vector and `jacobian(x)` the (m, n) matrix of
-/// its partial derivatives. No bounds. A non-finite residual at a trial point
-/// is not an error: it scores worse than any finite cost, so the step is
-/// rejected and the trust region contracts.
+/// @param residual Callable: x -> (m,) residual vector.
+/// @param jacobian Callable: x -> (m, n) matrix of partial derivatives.
+/// @param start    Initial parameters, (n,).
+/// @param options  Tolerances, evaluation cap and scaling mode.
+/// @return         The best point found, its cost, the stopping status and
+///                 the evaluation counts.
+///
+/// A non-finite residual at a trial point is not an error: it scores worse
+/// than any finite cost, so the step is rejected and the trust region
+/// contracts. That is what lets a caller signal "no model exists here"
+/// without unwinding the search.
 template <typename ResidualFn, typename JacobianFn>
 LevenbergMarquardtResult levenberg_marquardt(
     ResidualFn&& residual, JacobianFn&& jacobian,

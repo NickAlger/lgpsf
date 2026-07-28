@@ -80,6 +80,11 @@ inline Eigen::VectorXd theta_hat_from_cholesky(
 /// happens to be dense instead. Eigenvalues are floored at 1e-4 of the largest,
 /// which caps the aspect ratio against degenerate windows (near-collinear, or
 /// clipped by a boundary).
+///
+/// @param x       (K, N) window points.
+/// @param m2_diag (K,) their masses.
+/// @return        (N, N) the window's mass-weighted covariance.
+/// @throws std::invalid_argument on shape mismatch.
 inline Eigen::MatrixXd window_shape( const Eigen::Ref<const Eigen::MatrixXd>& x,
                                      const Eigen::Ref<const Eigen::VectorXd>& m2_diag )
 {
@@ -244,6 +249,11 @@ inline Eigen::MatrixXd oriented_sigma( double a, double b, double angle_degrees 
 /// Note the layout flip at the tree boundary: `ellipsoid_tree` indexes points
 /// as COLUMNS of a (dim, n) matrix, the opposite of this library's
 /// coordinate-major convention, so the batch is transposed on the way in.
+///
+/// @param x   (K, N) window points.
+/// @param mu0 (N,) the target's centre.
+/// @return    The nearest-neighbour distance at mu0 -- the ladder's bottom.
+/// @throws std::invalid_argument on shape mismatch or an empty batch.
 inline double local_spacing( const Eigen::Ref<const Eigen::MatrixXd>& x,
                              const Eigen::Ref<const Eigen::VectorXd>& mu0 )
 {
@@ -295,6 +305,13 @@ inline double window_radius( const Eigen::Ref<const Eigen::MatrixXd>& x,
 ///
 /// Too-small and too-large initial ellipsoids both fail, and differently; a log
 /// ladder brackets every case observed so far.
+///
+/// @param local     The smallest scale, typically local_spacing().
+/// @param radius    The largest, typically window_radius().
+/// @param num_rungs How many scales, >= 1.
+/// @return          (num_rungs,) log-spaced from @p local to @p radius.
+/// @throws std::invalid_argument if @p num_rungs < 1 or the scales are not
+///         positive and ordered.
 inline Eigen::VectorXd ladder_scales( double local, double radius, int num_rungs )
 {
     if ( num_rungs < 1 )
@@ -350,7 +367,8 @@ namespace detail {
 
 inline std::string rung_label( const char* family, double radius )
 {
-    // "%.3g", matching the prototype's labels so diagnostics read the same.
+    // "%.3g": short enough to read in a diagnostics table, precise enough to
+    // tell neighbouring rungs apart.
     char buffer[64];
     std::snprintf(buffer, sizeof(buffer), "%s r=%.3g", family, radius);
     return std::string(buffer);

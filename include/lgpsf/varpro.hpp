@@ -116,6 +116,10 @@ namespace detail {
 /// One overload, not two: a vector binds here as a single-column matrix, and a
 /// separate `Ref<const VectorXd>` version would be ambiguous with this one for
 /// every vector argument.
+///
+/// @param Q Orthonormal columns to project out of; may have zero columns.
+/// @param V What to project, one column each.
+/// @return  V with its Q-component removed, same shape as @p V.
 inline Eigen::MatrixXd project_out( const Eigen::MatrixXd& Q,
                                     const Eigen::Ref<const Eigen::MatrixXd>& V )
 {
@@ -131,6 +135,9 @@ inline Eigen::MatrixXd project_out( const Eigen::MatrixXd& Q,
 /// Via SVD with a rank cutoff rather than a plain QR, so exactly dependent
 /// columns -- a caller passing the same extra function twice, say -- collapse
 /// instead of contaminating the basis.
+///
+/// @param B The matrix whose range is wanted, (k, num_cols).
+/// @return  (k, rank) with orthonormal columns; (k, 0) when @p B has none.
 inline Eigen::MatrixXd orthonormal_range( const Eigen::Ref<const Eigen::MatrixXd>& B )
 {
     if ( B.cols() == 0 )
@@ -172,8 +179,9 @@ struct InnerSolve
 /// How much of the factorization the caller will actually use.
 ///
 /// The distinction is worth a parameter because it is worth a lot of time: at
-/// PIG scale with 21 modes the SVD was 61% of the whole fit, and `RangeOnly`
-/// is served by a QR that measures 6-9x faster at these sizes.
+/// field scale with 21 modes the SVD was 61% of the whole fit, and `RangeOnly`
+/// is served by a QR that measures 6-9x faster at these sizes. See
+/// experiments/inner-solve-profile.md.
 enum class InnerFactors
 {
     /// `c`, `residual`, `U` and `col_scale`. What the reduced residual and the
@@ -200,6 +208,15 @@ enum class InnerFactors
 /// genuinely differ, since a pivoted QR returns a basic solution where the SVD
 /// returns the minimum-norm one, and the minimum-norm one is what a rank cutoff
 /// is for.
+///
+/// @param A_tilde The design matrix, extra block already projected out.
+/// @param y_tilde The data, likewise projected.
+/// @param ridge   Tikhonov damping on the coefficients; 0 disables it.
+/// @param factors `RangeOnly` when only the projector and coefficients are
+///                needed (the fast path); `Full` when the singular values and
+///                right vectors are, as Golub-Pereyra requires.
+/// @return        The coefficients, the residual, the range basis, and -- for
+///                `Full` -- the singular values and right singular vectors.
 inline InnerSolve inner_solve( const Eigen::MatrixXd& A_tilde,
                                const Eigen::VectorXd& y_tilde, double ridge,
                                InnerFactors factors = InnerFactors::Full )
@@ -536,9 +553,16 @@ private:
 ///               it is the caller's job.
 /// @param e_hat  (K, num_extra) whitened theta-independent basis, e.g. the
 ///               diagonal spike. Pass a (K, 0) matrix for none.
+/// @param options   tolerances, the coefficient ridge, and which Jacobian
+///               variant to use.
 /// @param callback  optional; receives (theta_hat, c, residual) at the start
 ///               point and at each accepted step. Monitoring only -- it cannot
 ///               stop the fit.
+/// @return       the fitted parameters and coefficients, the residual, the
+///               cost, and whether the loop converged.
+/// @throws std::invalid_argument if the shapes disagree, or if
+///         `JacobianVariant::GolubPereyra` is requested of a basis whose
+///         evaluation offers no `jac()`.
 ///
 /// Deliberately out of scope, being a caller's decision rather than VarPro's:
 /// whether to prefer this fit over some baseline (that needs held-out data
@@ -619,8 +643,7 @@ VarProResult fit_varpro(
     };
     // The Jacobian is evaluated exactly once per outer iteration -- at the
     // start point and after each accepted step -- so the callback traces the
-    // iteration path directly, with none of the de-duplication the prototype
-    // needs against the extra evaluations scipy inserts around MINPACK's.
+    // iteration path directly, with no de-duplication needed.
     //
     // One call still has to be added at the end, though: the loop can satisfy
     // its convergence test IMMEDIATELY after accepting a step, and then it

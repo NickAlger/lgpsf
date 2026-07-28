@@ -5,11 +5,12 @@
 /// @file
 /// @brief Mode-growth policies: the extensible ladder axis of the probe fit.
 ///
-/// See dev/archive/mode-policy-plan.md for the design and the PIG slice-38 evidence
-/// behind it. The short version: the best growth ORDER is budget- and
-/// row-dependent -- complete shells win at k = 20, an ell-capped radial wedge
-/// ties them at a sixth of the cost at k = 100 -- so the ladder is a pluggable
-/// POLICY rather than a decree.
+/// The best growth ORDER is budget- and problem-dependent: at field scale
+/// complete shells win at k = 20, while an ell-capped radial wedge ties them
+/// at a sixth of the cost at k = 100. So the ladder is a pluggable POLICY
+/// rather than a decree, and `fit_operator` requires you to pick one. See
+/// docs/defaults.md for how to choose, and docs/validation.md for the
+/// evidence.
 ///
 /// **Division of labour.** A policy PROPOSES mode sets, one at a time. The
 /// engine keeps every structural guard and all selection semantics: the
@@ -27,9 +28,11 @@
 /// be unique; oversized proposals are recorded as skipped and the policy is
 /// polled again; a hard proposal cap guards non-terminating policies.
 ///
-/// `MarginGreedy` is deliberately NOT ported: it is parked pending the
-/// novelty-floor refinement (see the plan's addendum), and the Python
-/// prototype remains the working reference for that follow-up.
+/// An adaptive policy that grows the frontier from measured margin profits was
+/// prototyped and PARKED: gate-free it matched the best fixed ladder at k = 20
+/// but trailed the wedge roughly twofold at k >= 40, and it needs a novelty
+/// floor before it can be trusted. The built-ins below are all
+/// feedback-blind.
 
 #include <algorithm>
 #include <cstdio>
@@ -87,8 +90,8 @@ struct ModeSearchContext
     /// list, against the current winner's residual at its fitted parameters --
     /// a projection, not a refit. Empty before any successful fit.
     ///
-    /// No policy shipped here consumes it; it exists so that an adaptive
-    /// policy (MarginGreedy, when unparked) needs no change on the engine
+    /// No policy shipped here consumes it; it exists so an adaptive policy can
+    /// be added without any change on the engine
     /// side. The engine supplies it after every successful level, at the cost
     /// of one linear solve and one range basis -- nothing beside the fits.
     ///
@@ -210,7 +213,10 @@ public:
         const ModeSearchContext& ctx ) const = 0;
 };
 
-/// A single explicit mode set -- the `modes` argument expressed as a policy.
+/// A single explicit mode set -- no ladder at all.
+///
+/// @param modes The one set to fit.
+/// @param label How it appears in the candidate table.
 class FixedSet : public SequencePolicy
 {
 public:
@@ -229,8 +235,12 @@ private:
     std::string label_;
 };
 
-/// Complete oscillator shells up to each listed level, ascending -- the
-/// classic mode-levels ladder.
+/// Complete oscillator shells up to each listed level, ascending.
+///
+/// Complete, and therefore the safest choice, but a shell grows fast: every
+/// mode with 2p + ell <= L, angular orders included.
+///
+/// @param levels The levels to climb, ascending.
 class ShellLadder : public SequencePolicy
 {
 public:
@@ -256,6 +266,10 @@ private:
 };
 
 /// A caller-supplied nested list of mode sets.
+///
+/// @param sets The rungs, in order. Each must contain the one before it --
+///             the engine enforces that, since patience and warm starts both
+///             assume a growing set.
 class ExplicitLadder : public SequencePolicy
 {
 public:
@@ -282,15 +296,20 @@ private:
     std::vector<std::vector<Mode>> sets_;
 };
 
-/// Level-ordered ell-capped wedges {2p + ell <= L, ell <= ell_max}, L
-/// ascending -- the strongest fixed policy at k >= 40 in the PIG slice-38
-/// study, and the recommended starting point for rows that are roughly
-/// elliptical. There is no default policy: `fit_operator` requires one,
-/// because the best growth order depends on the operator (a strongly angular
-/// kernel is served badly by a small `ell_max`).
+/// Level-ordered ell-capped wedges {2p + ell <= L, ell <= ell_max}, L ascending.
+///
+/// The strongest fixed policy at k >= 40 in the field-scale study, and the
+/// recommended starting point for rows that are roughly elliptical. There is
+/// no default policy -- `fit_operator` requires one -- because the best growth
+/// order depends on the operator: a strongly angular kernel is served badly by
+/// a small `ell_max`. See docs/defaults.md.
 ///
 /// Consecutive equal sets are deduplicated: past the cap, raising L adds only
 /// modes with ell > ell_max, so the wedge stops growing while L keeps going.
+///
+/// @param max_level Highest oscillator level to climb to.
+/// @param ell_max   Angular cap. Small favours radial depth; raise it when the
+///                  target has angular structure.
 class WedgeLadder : public SequencePolicy
 {
 public:
@@ -324,10 +343,14 @@ private:
 /// the ell = 1 groups, then ell = 2, and so on.
 ///
 /// The tight-budget hypothesis -- spend on radial depth before angular
-/// structure. Note that at k = 20 on PIG complete shells beat it; it is kept
+/// structure. Note that at k = 20 complete shells beat it at field scale; it is kept
 /// because the ordering question is exactly what this axis exists to explore.
 /// Each rung admits `groups_per_rung` harmonic groups, the first rung being
 /// the seed group alone.
+///
+/// @param max_level      Highest oscillator level to reach.
+/// @param ell_max        Angular cap.
+/// @param groups_per_rung How many harmonic groups each rung adds.
 class RadialFirstLadder : public SequencePolicy
 {
 public:

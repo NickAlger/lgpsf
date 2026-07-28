@@ -347,6 +347,15 @@ struct ProbeFitResult
 /// Public because it scores ANY model -- fitted here or supplied a priori --
 /// at zero additional nonlinear fits, which makes a field-wide quality map
 /// affordable before fitting anything.
+///
+/// @param z_hat     (K, k) whitened probe fields.
+/// @param y_hat     (k,) whitened responses.
+/// @param basis     The basis functor to evaluate at @p theta_hat.
+/// @param theta_hat The parameters to score. NOT fitted here.
+/// @param e_hat     (K, num_extra) whitened extra basis; (K, 0) for none.
+/// @param split     The folds. Must partition the probes.
+/// @return          Relative whitened residual over all held-out equations;
+///                  infinity if the model cannot be evaluated there.
 template <typename Basis>
 double linear_cv_score( const Eigen::Ref<const Eigen::MatrixXd>& z_hat,
                         const Eigen::Ref<const Eigen::VectorXd>& y_hat,
@@ -426,7 +435,12 @@ inline Eigen::VectorXd axes_of( const Eigen::Ref<const Eigen::VectorXd>& theta_h
 
 } // end namespace detail
 
-/// Fit a target from raw probe data. See the file comment for the architecture.
+/// Fit one target from raw probe data.
+///
+/// Runs the ordered candidate stream -- initial ellipsoids x scales x mode-set
+/// rungs -- scoring each on held-out probes, and returns the best along with
+/// the whole search. See the file comment for the architecture, and
+/// docs/defaults.md for what the policy knobs do.
 ///
 /// @param x        (K, N) batch coordinates, selected by the caller.
 /// @param m2_diag  (K,) lumped masses on the batch.
@@ -445,6 +459,12 @@ inline Eigen::VectorXd axes_of( const Eigen::Ref<const Eigen::VectorXd>& theta_h
 ///                 rescales ONLY the returned coefficients -- the parameters,
 ///                 scores and whole selection are invariant -- but callers
 ///                 with M1 != M2 must pass it to get correctly scaled ones.
+/// @return         The winning model, its held-out score, why the ladder
+///                 stopped, and every candidate that was tried.
+/// @throws std::invalid_argument if the shapes disagree, if
+///         `config.mode_policy` is unset (it is required -- no order is
+///         defensible as a silent default), or if `spike_index` is out of
+///         range.
 inline ProbeFitResult fit_from_probes(
     const Eigen::Ref<const Eigen::MatrixXd>& x,
     const Eigen::Ref<const Eigen::VectorXd>& m2_diag,

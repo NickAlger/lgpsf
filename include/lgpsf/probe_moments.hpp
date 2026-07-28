@@ -32,7 +32,10 @@ namespace lgpsf {
 /// entry is O(||target|| / sqrt(k)) -- see raw_moments' thresholds, which
 /// exist to deal with exactly that floor.
 ///
-/// @param z (K, k) raw probe fields on the batch. @param y (k,) raw responses.
+/// @param z (K, k) raw probe fields on the batch.
+/// @param y (k,) raw responses.
+/// @return  (K,) the unbiased estimate of the raw target on the batch.
+/// @throws std::invalid_argument if the shapes disagree or there are no probes.
 inline Eigen::VectorXd backproject( const Eigen::Ref<const Eigen::MatrixXd>& z,
                                     const Eigen::Ref<const Eigen::VectorXd>& y )
 {
@@ -79,6 +82,12 @@ struct RawMoments
 ///   rel_threshold alone is safer.
 ///
 /// Set both thresholds to zero for exact (measured) targets.
+///
+/// @param x     (K, N) batch points.
+/// @param r_raw (K,) the raw target on the batch.
+/// @return      The mass-free centre and covariance of |r_raw|.
+/// @throws std::invalid_argument on shape mismatch, or if the thresholds
+///         suppress every weight -- a silent NaN would otherwise reach the fit.
 inline RawMoments raw_moments( const Eigen::Ref<const Eigen::MatrixXd>& x,
                                const Eigen::Ref<const Eigen::VectorXd>& r_raw,
                                int spike_index = -1,
