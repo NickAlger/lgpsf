@@ -18,9 +18,10 @@ Run:
     python examples/operator_fit_frog.py --quick    # small, no figures
     python examples/operator_fit_frog.py --hero     # only the README figure
 
-The full run fits at seven probe budgets on a 40 x 40 grid and takes several
-minutes; `--quick` is the smoke test and `--hero` regenerates docs/hero.png
-from a single fit.
+The full run fits at six probe budgets on a 24 x 24 grid, which
+experiments/mesh-scalability.md shows is already in the mesh-resolved regime.
+Pass `--grid 40` for a finer version; `--quick` is the smoke test and `--hero`
+regenerates docs/hero.png.
 
 Needs the `lgpsf` bindings importable (build with `-DLGPSF_BUILD_PYTHON=ON`)
 and scipy for the sparse assembly. matplotlib is optional -- without it the
@@ -65,7 +66,10 @@ def relative_frobenius(approx, H):
 # `max_level = 8` above leaves 45 modes reachable, so at the top of this range
 # the ladder is not the binding constraint -- the probe budget is, which is what
 # the curve is meant to show.
-CONVERGENCE_K = [10, 14, 20, 30, 45, 70, 110]
+CONVERGENCE_K = [10, 14, 20, 30, 45, 70]
+DEFAULT_GRID = 24                # resolved regime already; see
+                                 # experiments/mesh-scalability.md
+HERO_GRID = 40                   # the README figure wants finer pixels
 IMPULSE_K = [10, 20, 45]
 HERO_K_LOW = 10                  # affords one mode, so the fit is a Gaussian
 HERO_K_HIGH = 45                 # affords enough modes to resolve the shape
@@ -178,15 +182,18 @@ def main():
                         help="small grid, two budgets, no figures")
     parser.add_argument("--hero", action="store_true",
                         help="only the README figure: one fit, one image")
-    parser.add_argument("--grid", type=int, default=40)
+    parser.add_argument("--grid", type=int, default=None)
     parser.add_argument("--outdir", default=None,
                         help="where to write figures; overrides the defaults "
                              "(examples/ for the sweep figures, docs/ for the "
                              "README hero)")
     args = parser.parse_args()
 
-    grid = 20 if args.quick else args.grid
-    budgets = [10, 45] if args.quick else CONVERGENCE_K
+    if args.quick:
+        grid, budgets = 20, [10, 45]
+    else:
+        grid = args.grid or (HERO_GRID if args.hero else DEFAULT_GRID)
+        budgets = CONVERGENCE_K
 
     if args.hero:
         # Regenerating the README image should not cost the whole sweep --

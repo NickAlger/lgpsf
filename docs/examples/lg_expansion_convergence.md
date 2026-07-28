@@ -69,7 +69,7 @@ N = 3   (grid 81^3)
 
 same ~1% accuracy costs 11 modes at N=1, 66 modes at N=2, 286 modes at N=3
 
-wrote /tmp/claude-1000/tmpxgtr2dzz/lg_expansion_convergence.png
+wrote examples/lg_expansion_convergence.png
 ```
 
 ## Program

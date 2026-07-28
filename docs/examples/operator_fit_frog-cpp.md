@@ -48,7 +48,7 @@ building the frog operator on a 24 x 24 grid (576 dofs) ...
    45           0.1320        14.8        572
   110           0.0297        27.8        576
 
-wrote /tmp/claude-1000/tmpgd3by2kl/operator_fit_frog_cxx_*.png
+wrote examples/operator_fit_frog_cxx_*.png
 ```
 
 ## Program

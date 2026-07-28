@@ -43,7 +43,7 @@ modes_up_to_level(2, 0) -> 1 modes
 modes_up_to_level(2, 1) -> 3 modes
 modes_up_to_level(2, 2) -> 6 modes
 
-wrote /tmp/claude-1000/tmpv76cy5ce/lg_modes.png
+wrote examples/lg_modes.png
 ```
 
 ## Program

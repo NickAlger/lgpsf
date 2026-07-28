@@ -42,9 +42,9 @@ IMG = REPO / "docs" / "img"
 # examples fit, and has no output of its own.
 SKIP = {"frog_kernel"}
 
-# Examples whose full run is long enough to be worth avoiding here. The value
-# is the argument list that produces a representative shorter run.
-ABBREVIATED = {"operator_fit_frog": ["--grid", "24"]}
+# Every example is documented at its own defaults. If one ever gets slow
+# enough to need abbreviating here, that is a signal its default is wrong.
+ABBREVIATED = {}
 
 
 def page_name(path):
@@ -115,7 +115,10 @@ def run(command, scratch, env=None):
         sys.exit(f"example failed: {' '.join(map(str, command))}\n"
                  f"{result.stdout}\n{result.stderr}")
     figures = sorted(p for p in Path(scratch).iterdir() if p.suffix == ".png")
-    return result.stdout, figures
+    # The scratch directory is a fresh temporary path on every run, so leaving
+    # it in the captured output would rewrite these pages each time they are
+    # regenerated, for no reason. Show where the example writes by default.
+    return result.stdout.replace(str(scratch), "examples"), figures
 
 
 def build_page(name, title, intro, program, language, stdout, figures, note):
