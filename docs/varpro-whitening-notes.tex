@@ -9,7 +9,7 @@
 
 \title{Noise-whitened VarPro fitting: combining smooth and discrete\\
        basis functions without mass matrices in the fit}
-\author{N.~Alger, Claude \quad (notes; session 2026-07-24)}
+\author{N.~Alger}
 \date{}
 
 \begin{document}
@@ -40,7 +40,7 @@ no new derivative math required.
 
 \section{Setup}
 
-Recall the discretization picture (session 2026-07-23): $X$ is the discrete
+Recall the discretization picture: $X$ is the discrete
 source/column function space with inner product $\langle u,v\rangle_X =
 u^\top \Mtwo v$; $Y$ is the discrete target/row space with $\langle
 u,v\rangle_Y = u^\top \Mone v$; $X'$, $Y'$ are their duals, with $\Mtwo:
@@ -51,7 +51,9 @@ products; the kernel $\Phi: X'\to Y$ and the assembled operator $H = \Mone
 Each Laguerre--Gaussian smooth feature $\phi_i(\cdot;\theta)$, sampled at
 mesh nodes, is an element of $X$ -- and, because the continuum family
 $\{\psi_i\}$ is exactly $L^2(\mathbb{R}^N)$-orthonormal (verified numerically
-in \texttt{lg\_harmonics\_table.hpp} and \texttt{lg\_functions.hpp}), the
+in \texttt{test\_lg\_functions.cpp} by tensor-product Gauss--Hermite
+quadrature, which pins the generated harmonic table, the Laguerre recurrence
+and the normalization at once), the
 sampled $\phi_i$ are nearly $\Mtwo$-orthonormal: $\phi_i^\top \Mtwo \phi_{i'}
 \approx \delta_{ii'}$, up to mesh resolution. A user-supplied ``extra''
 basis function $e_d$ (a one-hot vector for the diagonal spike; more general
@@ -75,9 +77,9 @@ $\theta$. The column mass $m_j$ on the smooth term is a quadrature weight --
 $\phi_i$ approximates a continuum kernel evaluated at a mesh quadrature
 point, and $m_j$ discretizes the integral. The extra term carries no
 quadrature weight because it is not a continuum-kernel evaluation at all: it
-is a direct, discrete correction to specific matrix entries. (Session
-2026-07-23 verified this asymmetry reproduces the established $m_\rho
-s_\rho\,\delta_{\rho j}$ spike convention exactly.)
+is a direct, discrete correction to specific matrix entries. This asymmetry
+is what reproduces the $m_\rho s_\rho\,\delta_{\rho j}$ spike convention
+exactly.
 
 Probing: draw i.i.d.\ standard normal $z_\ell$ ($\ell = 1,\dots,k$,
 restricted to the batch -- a restriction of an i.i.d.\ vector is still
@@ -94,8 +96,8 @@ g_\ell^{(i)} := (\Mtwo \phi_i)\cdot z_\ell, \quad h_\ell^{(d)} := e_d \cdot z_\e
 $e_d$ (in $X'$) are different kinds of object; comparing or orthogonalizing
 them requires first mapping one into the other's space via the Riesz map,
 and then using \emph{that} space's natural inner product. Using the raw
-Euclidean inner product throughout (as an early draft of this design did)
-happens to reproduce the correct answer for a single one-hot $e_d$ -- every
+Euclidean inner product throughout happens to reproduce the correct answer
+for a single one-hot $e_d$ -- every
 diagonal-respecting inner product agrees on a coordinate-axis-aligned vector
 -- but is not correct in general (e.g.\ a ring-neighbor indicator combining
 several points), and more importantly requires the fitting code to reach
@@ -134,12 +136,12 @@ factor to \emph{both} terms of \eqref{eq:row-model} (there is one row mass,
 shared), so $\what e_d$ needs the same $\sqrt{m_\rho}$ prefactor as $\what
 \phi_i$ even though it does not involve $\Mtwo$ (which enters with the
 opposite sign of exponent, $-1/2$ vs.\ $+1/2$, reflecting that $e_d$ lives in
-$X'$ where $\phi_i$ lives in $X$). An earlier pass at this derivation
-omitted the $\sqrt{m_\rho}$ on $\what e_d$; this was caught by checking
-\eqref{eq:whitened-model} term by term against \eqref{eq:probe-eq} before
-implementing it, and confirmed numerically (\texttt{test\_whitening.cpp}) by
-constructing an explicit $H$ from \eqref{eq:row-model} and checking that the
-whitened quantities reproduce $y_\ell(\rho)$ to machine precision.
+$X'$ where $\phi_i$ lives in $X$). This factor is easy to drop, and dropping
+it is invisible to every check that does not touch $\Mone$ or the extra basis
+-- finite differences and adjoint consistency on the feature layer both pass
+without it. \texttt{test\_whitening.cpp} guards it directly, by constructing an
+explicit $H$ from \eqref{eq:row-model} and checking that the whitened
+quantities reproduce $y_\ell(\rho)$ to machine precision.
 
 \section{Consequences}
 
@@ -153,8 +155,8 @@ product is needed to see this -- it falls out of using the plain dot product
 on already-whitened vectors.
 
 \paragraph{Plain-Euclidean orthogonalization is now correct by construction.}
-The session-2026-07-23 analysis found that projecting a smooth feature
-against an extra basis correctly requires the $\Mtwo^{-1}$-weighted inner
+Projecting a smooth feature against an extra basis correctly requires the
+$\Mtwo^{-1}$-weighted inner
 product on $X'$: $\what\phi_p^\flat \mapsto \what\phi_p^\flat -
 e_i\,(e_i^\top \Mtwo^{-1} e_i)^{-1}(e_i^\top \Mtwo^{-1} \what\phi_p^\flat)$,
 $\what\phi_p^\flat := \Mtwo\phi_p$. Checking this against the whitened
@@ -179,11 +181,9 @@ linear operators (diagonal matrices). Consequently:
   operator applied to the incoming cotangent \emph{before} it is fed into
   the existing VJP chain.
 \end{itemize}
-This is the same ``compose with a fixed linear map'' pattern used already
-for Stage~1/Stage~2 composition in \texttt{ellipsoid\_transform.hpp} and for
-the extra-basis projection in the 2026-07-23 design discussion. No new
-derivative formulas are needed anywhere; \texttt{lg\_functions.hpp} and
-\texttt{ellipsoid\_transform.hpp} are unchanged.
+This is the same ``compose with a fixed linear map'' pattern that
+\texttt{ellipsoid\_transform.hpp} already uses to chain its two stages. No new
+derivative formulas are needed anywhere.
 
 \section{Resulting architecture}
 
@@ -198,13 +198,33 @@ derivative formulas are needed anywhere; \texttt{lg\_functions.hpp} and
   probe/data/extra-basis arrays, and (b) whitened wrappers around the
   feature layer's eval/JVP/VJP, applying
   $\sqrt{m_\rho}\,\Mtwo^{\pm 1/2}$ once.
-\item \textbf{Generic VarPro core} (not yet built): takes whitened probes,
-  whitened data, and the whitened-basis eval/JVP/VJP as callables. Performs
-  the actual per-row fit (orthogonalize the smooth basis against the extra
-  basis, solve the inner linear least squares, form the reduced residual,
-  provide its $\theta$-Jacobian to the outer Levenberg--Marquardt loop) in
-  ordinary Euclidean terms throughout. Never imports or references a mass
-  matrix.
+\item \textbf{Generic VarPro core} (\texttt{varpro.hpp}): takes whitened
+  probes, whitened data, and a basis functor $\theta \mapsto$ an evaluation
+  offering values and a VJP. Performs the per-row fit in ordinary Euclidean
+  terms throughout and never references a mass matrix. Concretely it projects
+  the extra block out once by Frisch--Waugh--Lovell rather than at every trial
+  point, solves the inner least-squares problem, forms the reduced residual,
+  and hands its $\theta$-Jacobian to a trust-region Levenberg--Marquardt loop
+  (\texttt{detail/levenberg\_marquardt.hpp}).
 \end{itemize}
+
+The prediction that this layering would hold has since been tested by building
+on top of it. Two things are worth recording because they confirm it.
+
+First, the fitting core is genuinely generic: \texttt{varpro.hpp} is templated
+on the basis functor and contains nothing specific to Laguerre--Gaussians,
+ellipsoids or point-spread functions. It is usable for any separable
+least-squares problem.
+
+Second, the whitening layer stayed exactly one file. Every mass matrix in the
+library still appears only in \texttt{whitening.hpp}, and everything above it
+--- the candidate search, the mode ladder, the cross-validation scoring, the
+whole-operator layer --- works in whitened coordinates without ever needing
+$\Mone$ or $\Mtwo$. The one place a mass reaches higher is a scalar: the
+operator layer passes each row's own $m_\rho$ down as \texttt{target\_mass}, so
+the returned coefficients come back in physical units. Because the whitened
+design matrix is column-equilibrated inside the inner solve, that scalar
+rescales only $(c, s)$ --- the fitted $\theta$, the scores and the entire
+selection are invariant to it.
 
 \end{document}
