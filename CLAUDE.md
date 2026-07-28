@@ -256,14 +256,18 @@ existing JVP/VJP composes with it for free -- no new derivative math.
     novelty-floor/conditioning refinement, see the plan doc's
     addendum). `modes_up_to_level` gained `ell_max` (wedges).
     PIG evidence: best growth order is budget-dependent (shells win at
-    k=20, wedge ties shells at 1/6 cost at k=100); WedgeLadder(10, 2)
-    is the OPERATOR-LAYER DEFAULT when no mode source is given.
+    k=20, wedge ties shells at 1/6 cost at k=100). **In C++ there is NO
+    default policy** -- `fit_operator` throws if `config.row.mode_policy`
+    is unset, because no single order is defensible silently.
+    WedgeLadder(10, 2) is the RECOMMENDED starting point for roughly
+    elliptical rows; on the angular frog kernel in examples/ it loses at
+    every budget. (The prototype defaulted to it; the C++ does not.)
 10. **`operator_fit.py`** -- the whole-operator layer over (9), per
     `dev/archive/operator-api-plan.md`: `fit_operator(x_cols, m1_diag,
     m2_diag, V, HV, sigma, mu0=, modes=, x_rows=, rows=, windows=,
     config=OperatorFitConfig(tau_window=10, spike=True,
-    row=ProbeFitConfig(...)))` -> `OperatorFit`. With NO mode source
-    given, defaults to `mode_policy=WedgeLadder(10, 2)`. The fitted object is
+    row=ProbeFitConfig(...)))` -> `OperatorFit`. `row.mode_policy` is
+    REQUIRED (see 9b). The fitted object is
     the parametric two-component sum `H~ = M1 Phi~ M2 + M1 S` (smooth
     semi-discrete continuum kernel, rectangular by nature + sparse
     dof-tied spike, square by nature), NEVER a matrix. Geometry queries
@@ -454,7 +458,8 @@ Examples: `examples/plot_lg_modes.py` (2D mode grid),
   scale; operator-level experiments pin mu meanwhile.
 - MarginGreedy adaptive mode policy: PARKED with evidence and queued
   refinements (novelty floor first) -- see `dev/archive/mode-policy-plan.md`'s
-  addendum. `WedgeLadder(10, 2)` is the operator-layer default.
+  addendum. `WedgeLadder(10, 2)` is the recommended starting point; there
+  is no default policy in C++ (`fit_operator` throws without one).
 - Level-2 cross-row amortization (neighbor warm starts /
   smoothed-theta seeds as candidate injection) and field-level QC maps
   over status/stop_reason/spike-measure -- build on `fit_operator`.

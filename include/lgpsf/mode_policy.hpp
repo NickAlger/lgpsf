@@ -284,7 +284,10 @@ private:
 
 /// Level-ordered ell-capped wedges {2p + ell <= L, ell <= ell_max}, L
 /// ascending -- the strongest fixed policy at k >= 40 in the PIG slice-38
-/// study, and the operator layer's default.
+/// study, and the recommended starting point for rows that are roughly
+/// elliptical. There is no default policy: `fit_operator` requires one,
+/// because the best growth order depends on the operator (a strongly angular
+/// kernel is served badly by a small `ell_max`).
 ///
 /// Consecutive equal sets are deduplicated: past the cap, raising L adds only
 /// modes with ell > ell_max, so the wedge stops growing while L keeps going.

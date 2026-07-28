@@ -3,7 +3,7 @@
 > **ARCHIVED (2026-07-27).** Implemented, then ported to `mode_policy.hpp`.
 > Two things below are out of date: the C++ has **one** mode mechanism
 > (`mode_policy`) with none of the legacy `mode_levels`/`mode_sets` fields,
-> and `WedgeLadder(10, 2)` is now the operator-layer default rather than
+> and `WedgeLadder(10, 2)` is the recommended starting point rather than
 > "suggested". The benchmark the original header called "still owed" is the
 > **addendum at the end of this file** — it ran, and it is why MarginGreedy is
 > parked.
