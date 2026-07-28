@@ -174,6 +174,8 @@ struct LGOperator
 /// Defined by `mode_set_id >= 0` rather than by the fit status, which lives in
 /// the diagnostics: an operator has to know its own modeled rows without being
 /// told how the fit went. The two agree exactly -- a test pins it.
+/// @param fit The operator.
+/// @return    Indices of rows carrying a shipped model, ascending.
 inline std::vector<int> model_rows( const LGOperator& fit )
 {
     std::vector<int> rows;
@@ -293,6 +295,14 @@ inline Eigen::VectorXd deployed_smooth(
 ///
 /// `x_query` is (Q, N); the result is (Q, rows.size()), one column per
 /// requested row. Throws for a row with no shipped model.
+/// @param fit            The operator.
+/// @param rows           Which rows to evaluate.
+/// @param x_query        Query points, (Q, N). Need not be mesh nodes.
+/// @param truncation_tau Additionally zero beyond this many standard
+///                       deviations of the fitted kernel; infinity adds
+///                       nothing beyond the window restriction.
+/// @return               (Q, rows.size()), one column per requested row.
+/// @throws std::invalid_argument if a requested row carries no model.
 inline Eigen::MatrixXd eval_kernel(
     const LGOperator& fit, const std::vector<int>& rows,
     const Eigen::Ref<const Eigen::MatrixXd>& x_query,
@@ -328,6 +338,11 @@ inline Eigen::MatrixXd eval_kernel(
 /// requires saying so. Beyond the fit window this is an extension of the
 /// fitted form into a region the fit's objective never evaluated, so it
 /// carries no evidence and can be arbitrarily large; see `eval_kernel`.
+/// @param fit     The operator.
+/// @param rows    Which rows to evaluate.
+/// @param x_query Query points, (Q, N).
+/// @return        (Q, rows.size()), with NO window restriction.
+/// @throws std::invalid_argument if a requested row carries no model.
 inline Eigen::MatrixXd eval_kernel_unrestricted(
     const LGOperator& fit, const std::vector<int>& rows,
     const Eigen::Ref<const Eigen::MatrixXd>& x_query )
@@ -347,6 +362,13 @@ inline Eigen::MatrixXd eval_kernel_unrestricted(
 /// and zero outside it, plus `m1[rho] s[rho]` when `j == rho` (the spike dof,
 /// square context only). `rows` and `cols` are equal-length index arrays;
 /// the result holds their values. Rows with no model give zero.
+/// @param fit            The operator.
+/// @param rows           Row indices.
+/// @param cols           Column indices, same length as @p rows.
+/// @param truncation_tau Optional extra tau truncation.
+/// @return               (n,) the requested entries, paired elementwise.
+/// @throws std::invalid_argument if the index lists differ in length or an
+///         index is out of range.
 inline Eigen::VectorXd eval_entries(
     const LGOperator& fit, const std::vector<int>& rows,
     const std::vector<int>& cols,
@@ -399,6 +421,13 @@ inline Eigen::VectorXd eval_entries(
 /// Each row's kernel is evaluated on its FIT WINDOW only, which is both the
 /// deployed-support invariant and the fast path -- O(sum of window sizes)
 /// rather than O(R K). `v` is (K_all, q); rows with no model give zero rows.
+/// @param fit            The operator.
+/// @param v              Vectors to apply it to, (num_vectors, K).
+/// @param truncation_tau Optional extra tau truncation.
+/// @param num_threads    0 lets the implementation choose. Results are
+///                       bit-identical for any value.
+/// @return               (num_vectors, R).
+/// @throws std::invalid_argument on a column-count mismatch.
 inline Eigen::MatrixXd matvec(
     const LGOperator& fit, const Eigen::Ref<const Eigen::MatrixXd>& v,
     double truncation_tau = std::numeric_limits<double>::infinity(),
@@ -450,6 +479,8 @@ struct EllipsoidField
 };
 
 /// [smooth] The fitted (mu, Sigma) field -- what `ellipsoid_tree` consumes.
+/// @param fit The operator.
+/// @return    {mu (R, N), sigma R of (N, N)}; unmodeled rows carry NaN.
 inline EllipsoidField ellipsoid_field( const LGOperator& fit )
 {
     EllipsoidField field;
@@ -491,6 +522,17 @@ enum class Symmetrize
 /// The support pattern for every row comes from ONE dual-tree descent of the
 /// column-point tree against the fitted-ellipsoid tree, the same machinery
 /// `fit_operator` uses to derive the windows themselves.
+/// @param fit         The operator.
+/// @param tau         Support radius in standard deviations of the fitted
+///                    kernel. Smaller is sparser and less accurate. No default
+///                    -- this is a deployment decision.
+/// @param symmetrize  `Average` gives (A + A^T)/2. Only correct when the
+///                    operator really is symmetric, and only legal in the
+///                    square dof context.
+/// @param num_threads 0 lets the implementation choose.
+/// @return            The assembled matrix, (R, K).
+/// @throws std::invalid_argument if @p tau is not positive, or if averaging is
+///         asked of a rectangular operator.
 inline Eigen::SparseMatrix<double> assemble_sparse(
     const LGOperator& fit, double tau, Symmetrize symmetrize = Symmetrize::None,
     int num_threads = 0 )
@@ -599,6 +641,11 @@ inline Eigen::SparseMatrix<double> assemble_sparse(
 /// [both] Per-row relative residual against held-out probes -- the scorecard.
 ///
 /// `||H~[rho] V_qc - HV_qc[rho]|| / ||HV_qc[rho]||`, NaN for rows with no model.
+/// @param fit         The operator.
+/// @param V_qc        Held-out probes, (num_probes, K).
+/// @param HV_qc       Their true responses, (num_probes, R).
+/// @param num_threads 0 lets the implementation choose.
+/// @return            (R,) per-row relative residual; NaN where no model.
 inline Eigen::VectorXd qc_map( const LGOperator& fit,
                                const Eigen::Ref<const Eigen::MatrixXd>& V_qc,
                                const Eigen::Ref<const Eigen::MatrixXd>& HV_qc,
@@ -760,7 +807,17 @@ struct OperatorRow
 /// dense id table, padding `c` to the widest row, accumulating the window
 /// offsets, and marking unmodeled rows with NaN.
 ///
-/// `rows` has one entry per operator row; an unset entry means no model there.
+/// @param x_cols  Column points, (K, N).
+/// @param m1_diag Row masses, (R,).
+/// @param m2_diag Column masses, (K,).
+/// @param spike   Whether the operator carries a diagonal spike component.
+/// @param rows    One entry per operator row; an unset entry means no model
+///                there. Must have exactly R entries.
+/// @param x_rows  Row points, (R, N), when they differ from the columns.
+///                Unset means the square dof context.
+/// @return        The assembled operator.
+/// @throws std::invalid_argument if the counts disagree or a row's window
+///         indexes a column that does not exist.
 inline LGOperator build_operator(
     const Eigen::Ref<const Eigen::MatrixXd>& x_cols,
     const Eigen::Ref<const Eigen::VectorXd>& m1_diag,
@@ -875,6 +932,10 @@ inline LGOperator build_operator(
 }
 
 /// The expansion carried by row rho, as a standalone object.
+/// @param fit The operator.
+/// @param rho Which row.
+/// @return    That row's model, decoupled from the operator.
+/// @throws std::invalid_argument if the row carries no model.
 inline LGExpansion row_expansion( const LGOperator& fit, int rho )
 {
     LGExpansion out;
@@ -896,6 +957,10 @@ inline LGExpansion row_expansion( const LGOperator& fit, int rho )
 /// getting either wrong is silent. The column geometry, masses and spike flag
 /// must agree across the parts, since they describe the space being mapped
 /// from rather than the rows being mapped to.
+/// @param parts Operators over disjoint row ranges, in order. Column geometry,
+///              masses and the spike flag must agree across all of them.
+/// @return      One operator whose rows are the parts' rows concatenated.
+/// @throws std::invalid_argument if the parts disagree on the column context.
 inline LGOperator concatenate_rows( const std::vector<LGOperator>& parts )
 {
     if ( parts.empty() )
@@ -999,6 +1064,8 @@ inline LGOperator concatenate_rows( const std::vector<LGOperator>& parts )
 /// [spike] The Dirac mass field `m_rho * s_rho` -- the mesh-independent
 /// content of the S component. A map of it is a resolution diagnostic: where
 /// it is large, the mesh is starving.
+/// @param fit The operator.
+/// @return    (R,) the mass-weighted spike content; NaN where no model.
 inline Eigen::VectorXd spike_measure( const LGOperator& fit )
 {
     return fit.m1_diag.cwiseProduct(fit.s);

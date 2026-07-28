@@ -2,17 +2,16 @@
 //
 // Checks on the hand-rolled Levenberg-Marquardt loop.
 //
-// This is the one piece of lgpsf with no reference implementation to port --
-// the Python prototype delegates it to scipy/MINPACK -- so it is tested in
-// isolation, on problems whose answers are known independently of anything
-// else in this repository: a linear least-squares problem whose minimizer is
+// Tested in isolation, on problems whose answers are known independently of
+// anything else in this repository: a linear least-squares problem whose
+// minimizer is
 // computable in closed form, and two classical nonlinear least-squares test
 // problems with published solutions. The trust-region subproblem solver, being
 // the part that is not a transcription of MINPACK, is additionally checked
 // directly against the equations it claims to solve.
 //
-// All self-contained -- nothing is compared against a stored reference or
-// against the Python prototype.
+// All self-contained: nothing here is compared against a stored reference, so
+// the suite cannot drift out of step with the code it tests.
 
 #include <algorithm>
 #include <cmath>

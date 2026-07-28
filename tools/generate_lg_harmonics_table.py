@@ -140,7 +140,7 @@ def build_shell(N, ell):
     earlier one). Measured over the whole generated table: 91.5% of the
     dense coefficients are exactly zero, and the smallest surviving
     |coefficient| is 0.225 -- there is no continuum of small values near
-    the cut, because there is no cut. See dev/design-notes.md.
+    the cut, because there is no cut.
     """
     monos = multi_indices(N, ell)
     D = len(monos)
@@ -296,7 +296,7 @@ def write_table_header(table, path):
 /// terms only: 91.5% of the dense coefficients are exactly zero for structural
 /// reasons (exponent parity classes and the Gram-Schmidt staircase), and the
 /// generator drops them on an exact-rational `!= 0` test, never a numerical
-/// tolerance. See dev/design-notes.md.
+/// tolerance.
 ///
 /// Two parallel blobs, walked in lockstep: one double per term, and `dim`
 /// int8 exponents per term. Shell s = (N - 1) * (MAX_DEGREE + 1) + ell; rows

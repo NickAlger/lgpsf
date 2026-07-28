@@ -5,8 +5,8 @@
 // against the one-at-a-time reference, and the derivative pair against finite
 // differences and adjoint consistency.
 //
-// All self-contained -- nothing is compared against a stored reference or
-// against the Python prototype.
+// All self-contained: nothing here is compared against a stored reference, so
+// the suite cannot drift out of step with the code it tests.
 
 #include <cmath>
 #include <random>

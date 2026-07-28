@@ -4,8 +4,8 @@
 // against its own definition, and the parameter-derivative chain against
 // finite differences AND adjoint consistency.
 //
-// All self-contained -- nothing is compared against a stored reference or
-// against the Python prototype.
+// All self-contained: nothing here is compared against a stored reference, so
+// the suite cannot drift out of step with the code it tests.
 
 #include <algorithm>
 #include <cmath>

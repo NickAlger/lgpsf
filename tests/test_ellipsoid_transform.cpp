@@ -6,8 +6,8 @@
 // Jacobian sweeps against each other, and the encoding conversions as exact
 // round-trips.
 //
-// All self-contained -- nothing is compared against a stored reference or
-// against the Python prototype.
+// All self-contained: nothing here is compared against a stored reference, so
+// the suite cannot drift out of step with the code it tests.
 
 #include <algorithm>
 #include <cmath>

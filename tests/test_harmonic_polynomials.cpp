@@ -3,7 +3,7 @@
 // Self-contained checks on the harmonic polynomials and their generated
 // table. Every assertion is intrinsic: a property the objects must have as
 // mathematics, checkable from this header alone. Nothing is compared against
-// a stored reference or against the Python prototype, so these survive
+// a stored reference, so these survive
 // further C++-side development.
 
 #include <cmath>

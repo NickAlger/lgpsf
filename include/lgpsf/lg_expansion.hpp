@@ -70,6 +70,11 @@ struct LGExpansion
 /// No masses, no extra basis, and no truncation -- an expansion has no window,
 /// that being an operator-layer concept. See `lg_operator.hpp` for what
 /// deployment does with it, and why it truncates.
+///
+/// @param expansion The model.
+/// @param x_query   Points to evaluate at, (Q, N).
+/// @return          (Q,) the smooth component. The spike is excluded: it is a
+///                  discrete dof correction with no meaning off the mesh.
 inline Eigen::VectorXd eval_expansion(
     const LGExpansion& expansion, const Eigen::Ref<const Eigen::MatrixXd>& x_query )
 {
@@ -79,9 +84,13 @@ inline Eigen::VectorXd eval_expansion(
            * expansion.c;
 }
 
-/// Structural problems with an expansion, one message each; empty means it is
-/// self-consistent. Shape only -- whether it approximates anything is not a
-/// question this can answer.
+/// Structural problems with an expansion, one message each.
+///
+/// Shape only -- whether it approximates anything is not a question this can
+/// answer.
+///
+/// @param expansion The model to check.
+/// @return          One message per problem; empty means self-consistent.
 inline std::vector<std::string> validate( const LGExpansion& expansion )
 {
     std::vector<std::string> problems;

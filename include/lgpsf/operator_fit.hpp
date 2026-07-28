@@ -101,18 +101,20 @@
 /// tree against a tree of every row's query ellipsoid -- rather than a query
 /// per row, the same way the deployed sparsity pattern is derived.
 ///
-/// **History, because it matters for reading the evidence.** The design
-/// intent was always the ellipsoid (`8e64243`: "in the intended pipeline it IS
-/// a conservatively inflated ellipsoid, whose aspect and orientation survive
-/// the inflation"). The Python prototype's operator layer nevertheless shipped
-/// a ball, and every PIG field-scale experiment that validated the method ran
-/// with the ball -- and with `window_shape_rungs` switched off, which is the
-/// right thing to do when the window is a sphere and that family can recover
-/// nothing from it. So: **the ball is known to perform well and the ellipsoid
-/// is not yet measured at field scale.** The C++ side restores the intended
-/// default and reaches the ball by setting `window_aspect_cap = 1`, so the
-/// comparison -- and everything between the two -- can be run cheaply once the
-/// port is finished. Until then, treat neither endpoint as settled.
+/// **Which shape to use.** Measured at field scale, neither dominates. With a
+/// small mode set the two are indistinguishable in accuracy (0.0442 against
+/// 0.0443) and the ellipsoid is ~20% faster on 18% fewer window points; with a
+/// large one the ball is 2% better (0.0147 against 0.0150) and the time
+/// advantage is gone, because mode count rather than window size then
+/// dominates the cost. So the cheap-window argument for the ellipsoid weakens
+/// exactly where the modes get expensive.
+///
+/// The default is the caller's ellipsoid untouched. Set `window_aspect_cap =
+/// 1` for a ball, or anything between to cap the ratio. One caveat if you
+/// choose the ball: turn `window_shape_rungs` off with it, since that
+/// initialization family can recover nothing from a sphere.
+///
+/// Intermediate caps remain untried, and this was one operator.
 
 #include <algorithm>
 #include <cmath>
@@ -315,6 +317,12 @@ struct RowOutcome
 ///                `eval_kernel` has to answer at points that are not mesh
 ///                columns. `init_dictionary.hpp`'s `ellipsoid_from_points`
 ///                converts a hand-picked index set into an admissible one.
+/// @return        `{model, diagnostics}` -- the operator, and per-row
+///                provenance that nothing in evaluation reads.
+/// @throws std::invalid_argument if the shapes disagree, if
+///         `config.row.mode_policy` is unset (required -- no growth order is
+///         defensible as a silent default), or if `config.tau_window` or
+///         `config.window_aspect_cap` is not positive.
 inline OperatorFit fit_operator(
     const Eigen::Ref<const Eigen::MatrixXd>& x_cols,
     const Eigen::Ref<const Eigen::VectorXd>& m1_diag,
@@ -393,12 +401,12 @@ inline OperatorFit fit_operator(
     const MuMode ladder_mode =
         ( config.row.mu == MuPolicy::Free ) ? MuMode::Fitted : MuMode::Pinned;
 
-    // Each counting rule counts the parameters ACTUALLY BEING FIT. The
-    // baseline is a linear fit in the pinned encoding, so it counts N(N+1)/2;
-    // the search counts its own stream encoding, which is N(N+3)/2 when the
-    // center is fitted. (The Python prototype used the free count for both --
-    // an unintended slip that went uncaught because it is conservative,
-    // skipping more levels rather than fewer.)
+    // Each counting rule counts the parameters ACTUALLY BEING FIT, and the two
+    // differ. The baseline is a linear fit in the pinned encoding, so it counts
+    // N(N+1)/2; the search counts its own stream encoding, which is N(N+3)/2
+    // when the center is fitted. Using the larger count for both is safe but
+    // wrong: it skips levels the baseline could afford, which makes the
+    // a-priori model look worse than it is and the guard fire less often.
     const int baseline_params = theta_hat_size(dim, MuMode::Pinned);
     const int search_params = theta_hat_size(dim, ladder_mode);
 

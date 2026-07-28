@@ -8,20 +8,17 @@
 ///
 /// **Point batches are `(N, K)` here: coordinates down, points across.**
 ///
-/// Two reasons, neither of them deference to the frozen prototype. First, it
-/// costs nothing: a C-contiguous numpy `(N, K)` array and a column-major Eigen
-/// `(K, N)` matrix ARE THE SAME BYTES, so `map_points` builds an `Eigen::Map`
-/// straight onto the caller's buffer with no copy. At field scale that matters
-/// -- a full-Antarctica probe block is tens of gigabytes, and a marshalling
-/// copy of it is not a rounding error. Second, the live research scripts that
-/// consume this library already speak `(N, K)`, so porting them is a change of
-/// import rather than a rewrite.
+/// It costs nothing: a C-contiguous numpy `(N, K)` array and a column-major
+/// Eigen `(K, N)` matrix ARE THE SAME BYTES, so `map_points` builds an
+/// `Eigen::Map` straight onto the caller's buffer with no copy. At field scale
+/// that matters -- a probe block for a continental mesh is tens of gigabytes,
+/// and a marshalling copy of it is not a rounding error.
 ///
 /// Note this DIFFERS from `ellipsoid_tree`'s Python bindings, which take points
 /// as ROWS, `(m, d)`, and transpose into their own storage. Someone using both
 /// libraries meets opposite conventions; that is a deliberate trade of
-/// cross-library uniformity for zero-copy plus prototype compatibility, and it
-/// is why every point-taking function below says its shape in its docstring.
+/// cross-library uniformity for zero copies, and it is why every point-taking
+/// function below states its shape in its docstring.
 
 #include <cstdint>
 #include <cstring>

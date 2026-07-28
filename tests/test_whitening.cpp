@@ -9,11 +9,12 @@
 // whitened regression (eq. 7) to machine precision. That second one is the
 // only check here that involves M1 or the extra basis at all, so it is the
 // only one that can see a pure scaling error in either -- exactly the class of
-// bug (a missing sqrt(m_rho) on the extra whitening) that the derivation
-// turned up in the prototype.
+// bug (a missing sqrt(m_rho) on the extra whitening) that neither finite
+// differences nor adjoint consistency on the feature layer can detect, since
+// neither ever touches M1 or the extra basis.
 //
-// All self-contained -- nothing is compared against a stored reference or
-// against the Python prototype.
+// All self-contained: nothing here is compared against a stored reference, so
+// the suite cannot drift out of step with the code it tests.
 
 #include <algorithm>
 #include <cmath>

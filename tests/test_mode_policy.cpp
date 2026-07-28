@@ -4,8 +4,8 @@
 // (nestedness, statelessness, position from history alone, termination), the
 // combinatorics each ladder claims, and the baseline-replay contract.
 //
-// All self-contained -- nothing is compared against a stored reference or
-// against the Python prototype.
+// All self-contained: nothing here is compared against a stored reference, so
+// the suite cannot drift out of step with the code it tests.
 
 #include <algorithm>
 #include <optional>
