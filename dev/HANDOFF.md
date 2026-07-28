@@ -117,10 +117,12 @@ was not true before slice 5.
 - A fresh configure needs `-DFETCHCONTENT_SOURCE_DIR_ELLIPSOID_TREE=<path to
   the local checkout>`, or CMake silently downloads the pinned v0.2.0 tarball
   instead of using it.
-- **NEVER build with a bare `-j`.** `-j3` normal, `-j2` for sanitizers. This
-  machine has been OOM-crashed by large parallel builds and a PreToolUse hook
-  enforces the limit; if a build is blocked, lower `-j` rather than routing
-  around it.
+- **NEVER build with a bare `-j`.** On THIS machine (13 GB, 8 cores) use `-j2`
+  normally and `-j1` for sanitizers. `-j3` is permitted by the hook but is
+  measurably too much: the heaviest translation unit peaks at 2.8 GB, so three
+  at once plus a desktop session pushes the machine into swap and locks it up
+  for the duration. That happened on 2026-07-28. The hook's cap predates the
+  measurement; treat it as a ceiling, not a target.
 - Timing work wants `-march=native`; the test suite is not built with it.
   That difference is not cosmetic — see
   [`../docs/reproducibility.md`](../docs/reproducibility.md).

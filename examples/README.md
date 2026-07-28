@@ -61,7 +61,8 @@ unoptimized, because every row fit is dense linear algebra through Eigen
 expression templates:
 
     cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
-    cmake --build build-release --target operator_fit_frog -j3
+    cmake --build build-release --target operator_fit_frog -j2
     ./build-release/examples/operator_fit_frog
 
-Never build with a bare `-j` — every translation unit pulls in Eigen.
+Choose the job count by FREE memory, not cores: the heaviest translation
+unit peaks near 3 GB. See docs/installation.md.

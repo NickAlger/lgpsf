@@ -59,7 +59,7 @@ operator layer without the fitter, or the basis without either:
 
 ```
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j3
+cmake --build build -j2      # see the memory note below
 ctest --test-dir build
 ```
 
@@ -82,20 +82,32 @@ Measured here on a Release build with GCC:
 | `test_operator_fit.cpp` | **ASan+UBSan** | **7.9 GB** |
 
 So building with one job per core is actively dangerous. On a 16-core machine
-that is up to ~48 GB of compiler for an ordinary build, and the usual outcome
-is the OOM killer taking the build — or the rest of your session — with it.
+that is up to ~48 GB of compiler for an ordinary build.
 
-A safe rule is **`-j` ≈ RAM in GB ÷ 3**, capped at the core count.
+**Budget against FREE memory, not total, and leave room for whatever else you
+are running.** A workstation with an editor and a browser open has several
+gigabytes already spoken for, and the compiler will take what is left. A
+workable rule is
 
-**Sanitizer builds need their own budget: ~8 GB per job.** Two concurrent jobs
-already exceed a 16 GB machine, so use `-j1` there unless you have room to
-spare. This is not hypothetical — it is how the development machine for this
-library was repeatedly OOM-crashed.
+    jobs = (available GB - 4) / 3
+
+capped at the core count. On a 13 GB machine with a desktop session that comes
+out at 1 or 2 — not the 4 a naive total-memory rule would suggest.
+
+**The failure mode arrives before the OOM killer does.** Long before anything
+is killed, the machine starts swapping and the desktop becomes unresponsive
+while the build grinds on. If your machine locks up mid-build, that is this,
+and the fix is fewer jobs.
+
+**Sanitizer builds need their own budget: ~8 GB per job.** Use one job unless
+you have a lot of room. Continuous integration can be more aggressive than a
+workstation, because the runner is dedicated and idle — this repository's CI
+uses 3 jobs for ordinary builds and 1 for sanitizers.
 
 Building specific targets rather than everything also helps:
 
 ```sh
-cmake --build build --target lgpsf_tests -j3
+cmake --build build --target lgpsf_tests -j2
 ```
 
 ### ⚠️ Build with optimization
@@ -109,6 +121,6 @@ example look hung. The same whole-operator example run takes 79 seconds at
 
 ```
 cmake -S . -B build-py -DLGPSF_BUILD_PYTHON=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build-py --target lgpsf_python -j3
+cmake --build build-py --target lgpsf_python -j2
 PYTHONPATH=build-py/bindings python -c "import lgpsf; print(lgpsf.__version__)"
 ```

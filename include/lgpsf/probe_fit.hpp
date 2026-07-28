@@ -256,8 +256,29 @@ struct ProbeFitConfig
     /// mode list is `FixedSet` and a level ladder is `ShellLadder`.
     std::shared_ptr<const ModePolicy> mode_policy;
 
-    int num_rungs = 6;              ///< Log-spaced circle scales.
+    int num_rungs = 6;              ///< Log-spaced scales in the initial-guess ladder.
     bool window_shape_rungs = true; ///< Also ladder scaled copies of the window's shape.
+
+    /// Add the CIRCLE rungs only when the a-priori ellipsoid is at least this
+    /// anisotropic -- the ratio of its largest 1-sigma axis to its smallest.
+    ///
+    /// Circle rungs are the fallback for a prior that misleads: a round
+    /// starting guess reaches basins an anisotropic one cannot, which is what
+    /// makes the search robust when `sigma0` has the wrong shape or
+    /// orientation. When the prior is already nearly round they duplicate what
+    /// `sigma0` and the window rungs cover, and cost `num_rungs` extra fits at
+    /// every level of the mode ladder.
+    ///
+    /// An aspect ratio is always >= 1, so **1.0 means always add them**, which
+    /// is the conservative behavior. Raising it trades robustness against a
+    /// bad prior for roughly half the candidate fits. Ignored when no `sigma0`
+    /// is supplied: there is then no prior to judge, and the circles are the
+    /// only shape hypothesis besides the window's.
+    ///
+    /// NOT to be confused with `OperatorFitConfig::window_aspect_cap`, which
+    /// shapes the WINDOW -- the region a row is fitted on -- and has nothing
+    /// to do with initial guesses.
+    double circle_rungs_above_aspect = 1.0;
 
     /// Absolute early-exit certificate: stop once an admissible candidate
     /// scores at or below this. Unset disables it.
@@ -552,8 +573,28 @@ inline ProbeFitResult fit_from_probes(
             window_rungs(radii, window_shape(x, m2_diag));
         inits.insert(inits.end(), shaped.begin(), shaped.end());
     }
-    const std::vector<InitCandidate> circles = circle_rungs(radii, dim);
-    inits.insert(inits.end(), circles.begin(), circles.end());
+    // Circle rungs rescue a misleading prior. With no prior there is nothing
+    // to judge and they are indispensable; with a nearly-round one they
+    // duplicate what sigma0 and the window rungs already cover.
+    bool want_circles = true;
+    if ( sigma0 && config.circle_rungs_above_aspect > 1.0 )
+    {
+        const Eigen::VectorXd values =
+            Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd>(
+                *sigma0, Eigen::EigenvaluesOnly).eigenvalues();
+        const double smallest = values.minCoeff();
+        // A degenerate prior counts as infinitely anisotropic, so the circles
+        // stay: that is exactly the case they exist for.
+        const double aspect = ( smallest > 0.0 )
+                                  ? std::sqrt(values.maxCoeff() / smallest)
+                                  : std::numeric_limits<double>::infinity();
+        want_circles = aspect >= config.circle_rungs_above_aspect;
+    }
+    if ( want_circles )
+    {
+        const std::vector<InitCandidate> circles = circle_rungs(radii, dim);
+        inits.insert(inits.end(), circles.begin(), circles.end());
+    }
 
     const std::vector<Eigen::VectorXd> jitter =
         config.jitter.empty()

@@ -629,6 +629,12 @@ PYBIND11_MODULE(lgpsf, m)
                        "a level ladder is ShellLadder.")
         .def_readwrite("num_rungs", &ProbeFitConfig::num_rungs)
         .def_readwrite("window_shape_rungs", &ProbeFitConfig::window_shape_rungs)
+        .def_readwrite("circle_rungs_above_aspect",
+                       &ProbeFitConfig::circle_rungs_above_aspect,
+                       "Add circle rungs only when the a-priori ellipsoid is at "
+                       "least this anisotropic. 1.0 always adds them. Not "
+                       "OperatorFitConfig.window_aspect_cap, which shapes the "
+                       "window instead.")
         .def_readwrite("target_score", &ProbeFitConfig::target_score,
                        "Absolute early-exit certificate; None disables it.")
         .def_readwrite("mode_patience", &ProbeFitConfig::mode_patience)

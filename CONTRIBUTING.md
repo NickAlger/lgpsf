@@ -14,19 +14,20 @@ or [`experiments/`](experiments/).
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j3
+cmake --build build -j2      # see the memory note below
 ctest --test-dir build --output-on-failure
 ```
 
 Two things that will otherwise cost you an afternoon — or your session:
 
-- **Choose `-j` by RAM, not by cores.** Eigen template instantiation dominates
-  compiler memory: the heaviest translation unit peaks at **2.8 GB** in a
-  Release build and **7.9 GB** under ASan+UBSan. One job per core on a
-  many-core machine can exhaust RAM and trigger the OOM killer — that is how
-  this library's development machine was repeatedly crashed. Budget
-  `RAM_in_GB / 3` normally and `-j1` for sanitizers. Prefer building a specific
-  target over everything.
+- **Choose the job count by FREE memory, not by cores.** Eigen template
+  instantiation dominates compiler memory: the heaviest translation unit peaks
+  at **2.8 GB** in a Release build and **7.9 GB** under ASan+UBSan. Budget
+  `(available GB - 4) / 3`, leaving room for whatever else you are running,
+  and a single job for sanitizers. On a 13 GB workstation with an editor open
+  that means 2. The failure mode arrives before the OOM killer: the machine
+  starts swapping and the desktop locks up while the build carries on. Prefer
+  building a specific target over everything.
 - **Build with optimization.** A Debug build is not marginally slower but ~33×
   slower — enough to make an example look hung. If something seems stalled,
   check `CMAKE_BUILD_TYPE` first.
@@ -51,7 +52,7 @@ ctest --test-dir build-asan --output-on-failure
 
 ```sh
 cmake -S . -B build-py -DLGPSF_BUILD_PYTHON=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build-py --target lgpsf_python -j3
+cmake --build build-py --target lgpsf_python -j2
 PYTHONPATH=build-py/bindings python3 -m pytest bindings/tests
 ```
 

@@ -70,8 +70,11 @@ See [docs/installation.md](docs/installation.md).
 > **~8 GB** under sanitizers. One job per core on a many-core machine can
 > therefore exhaust RAM and invoke the OOM killer.
 >
-> Budget `-j` ≈ `RAM_in_GB / 3`, and `-j1` for sanitizer builds unless you have
-> room to spare. See [docs/installation.md](docs/installation.md).
+> Budget against FREE memory rather than total — roughly
+> `(available GB - 4) / 3` jobs, and a single job for sanitizer builds. The
+> failure mode arrives before the OOM killer: the machine swaps and the desktop
+> locks up while the build carries on. See
+> [docs/installation.md](docs/installation.md).
 
 ## Documentation
 

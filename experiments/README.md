@@ -21,7 +21,7 @@ tests and some run for minutes:
 
     cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release \
           -DLGPSF_BUILD_EXPERIMENTS=ON
-    cmake --build build-release --target mesh_scalability -j3
+    cmake --build build-release --target mesh_scalability -j2
 
 Build with optimization or the numbers are meaningless — an unoptimized build
 of this code is ~33× slower, not marginally slower. Timing runs additionally
