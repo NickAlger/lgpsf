@@ -64,6 +64,13 @@ if(LGPSF_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
+# Studies about the library (experiments/). Off by default: they are
+# measurements rather than tests, and some run for minutes.
+option(LGPSF_BUILD_EXPERIMENTS "Build the experiments in experiments/" OFF)
+if(LGPSF_BUILD_EXPERIMENTS)
+    add_subdirectory(experiments)
+endif()
+
 option(LGPSF_BUILD_PYTHON "Build the lgpsf Python bindings (pybind11 via FetchContent)" OFF)
 if(LGPSF_BUILD_PYTHON)
     add_subdirectory(bindings)

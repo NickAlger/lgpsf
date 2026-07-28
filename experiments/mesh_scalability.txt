@@ -1,0 +1,27 @@
+Mesh scalability of the LG-PSF fit (rotating frog kernel)
+shells to level 6, tau_window 3, no spike, alpha = 1e-04 * trace(H^T H)/n
+
+ grid   dofs        k=10        k=20        k=30        k=45        k=70        k=110
+   12    144     0.2908     0.1898     0.0906     0.0554     0.0157     0.0148
+   16    256     0.4776     0.4006     0.1800     0.1174     0.0254     0.0178
+   24    576     0.6395     0.5253     0.2266     0.1320     0.0366     0.0297
+   32   1024     0.6295     0.5297     0.2206     0.1369     0.0352     0.0302
+   48   2304     0.6749     0.5465     0.2183     0.1431     0.0368     0.0301
+
+
+Probe budget to reach a fixed accuracy
+ grid   dofs    k @ 10%     k @ 5%     k @ 2%
+   12    144       28.7       47.0       65.2
+   16    256       47.6       58.9       96.7
+   24    576       50.4       63.9      > max
+   32   1024       50.8       63.5      > max
+   48   2304       51.6       64.3      > max
+
+
+Compression and CG at the 5% budget (alpha = 1e-04 relative)
+ grid   dofs     k   fit(H) % fit(H^T H) %  H^T H err  CG plain   CG prec  speedup
+   12    144    48       10.9         30.6     0.0206       842        35    24.1x
+   16    256    59       11.8         34.6     0.0240      1823        95    19.2x
+   24    576    64       11.5         35.3     0.0253      3113        81    38.4x
+   32   1024    64       11.5         35.7     0.0248      4196        68    61.7x
+   48   2304    65       11.5         36.5     0.0229      6161       123    50.1x

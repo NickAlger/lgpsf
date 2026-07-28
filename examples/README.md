@@ -36,7 +36,8 @@ optional** — the numbers always print; figures are skipped without it.
 | [`operator_diagnostics.py`](operator_diagnostics.py) | Reading a fit with no truth available: statuses, the baseline guard, `qc_map`, `spike_measure`, `ellipsoid_field`. |
 | [`operator_without_fitting.py`](operator_without_fitting.py) | `LGOperator` is a data structure. Build one from a physics model, merge pieces with `concatenate_rows`, never touch the fitter. |
 | [`rectangular_operator.py`](rectangular_operator.py) | Rows and columns on different meshes. Square is the special case. |
-| [`preconditioner.cpp`](preconditioner.cpp) | **What a fit is for.** Solve `(H^T H + alpha I) x = H^T b` with the fit as a preconditioner: 17-31x fewer CG iterations across four decades of alpha, from one batch of probes. |
+| [`preconditioner.py`](preconditioner.py) | **What a fit is for.** Solve `(H^T H + alpha I) x = H^T b` with the fit as a preconditioner: 19-34x fewer CG iterations across four decades of alpha, from one batch of probes. Uses scipy's CG and sparse factorization. |
+| [`preconditioner.cpp`](preconditioner.cpp) | The same study in C++, with CG written out so the one line the preconditioner enters on is visible. |
 
 ## Underneath
 
