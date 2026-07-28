@@ -5,6 +5,8 @@ its action on random vectors.
 
 Header-only C++17, with Python bindings.
 
+![What lgpsf does: a fitted ellipsoid field, a true point-spread function, and the fit recovered from 45 matvecs](docs/hero.png)
+
 ## What it is for
 
 Some operators can be applied but not inspected. The Gauss-Newton Hessian of a
