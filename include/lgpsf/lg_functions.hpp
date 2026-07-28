@@ -21,7 +21,9 @@
 /// is the production entry point; the one-at-a-time functions are the
 /// readable reference it is pinned against.
 ///
-/// Point batches are (K, N): points as rows. See dev/design-notes.md.
+/// Point batches are (K, N) throughout: points as ROWS, coordinates across.
+/// (The Python bindings take (N, K); the two describe the same bytes. See
+/// docs/api-guide.md.)
 
 #include <algorithm>
 #include <cmath>
@@ -69,8 +71,13 @@ struct Mode
 ///     L_0^alpha = 1,  L_1^alpha = 1 + alpha - x,
 ///     (k+1) L_{k+1}^alpha = (2k+1+alpha-x) L_k^alpha - (k+alpha) L_{k-1}^alpha.
 ///
-/// No special-function library: Eigen has none, and the recurrence is the
-/// reference form the Python prototype uses too.
+/// Written out rather than called from a special-function library, because
+/// C++ has none to call.
+///
+/// @param p     Polynomial order, >= 0.
+/// @param alpha Order parameter; may be a half-integer.
+/// @param x     Points to evaluate at.
+/// @return      L_p^alpha(x), same length as @p x.
 inline Eigen::VectorXd genlaguerre( int p, double alpha,
                                     const Eigen::Ref<const Eigen::VectorXd>& x )
 {
@@ -99,6 +106,11 @@ inline Eigen::VectorXd genlaguerre( int p, double alpha,
 /// L^2(R^N) given a surface-orthonormal Y_{ell,m}:
 /// C = sqrt(2 p! / Gamma(p + alpha + 1)), alpha = ell + N/2 - 1. alpha is an
 /// integer or a half-integer, so the gamma is elementary.
+///
+/// @param p    Radial order.
+/// @param ell  Angular degree.
+/// @param dim  Spatial dimension N.
+/// @return     The scalar constant C_{p,ell,N}.
 inline double lg_norm( int p, int ell, int dim )
 {
     const double alpha = ell + dim / 2.0 - 1.0;
@@ -110,8 +122,12 @@ inline double lg_norm( int p, int ell, int dim )
 /// ladders. `ell_max >= 0` caps the angular order (an ell-capped WEDGE: deep
 /// radial, shallow angular); a negative value means no cap.
 ///
-/// Throws if the requested angular orders exceed the generated harmonic
-/// table, rather than silently returning a truncated mode set.
+/// @param dim       Spatial dimension N, 1 to 4.
+/// @param max_level Highest oscillator level 2p + ell to include.
+/// @param ell_max   Cap on angular order; negative means no cap.
+/// @return          The modes, in ascending level order.
+/// @throws std::invalid_argument if the requested orders exceed the generated
+///         harmonic table, rather than silently returning a truncated set.
 inline std::vector<Mode> modes_up_to_level( int dim, int max_level,
                                             int ell_max = -1 )
 {
@@ -175,11 +191,15 @@ public:
         }
     }
 
+    /// Spatial dimension N.
     int dim() const { return dim_; }
+    /// Number of points K in the batch.
     Eigen::Index num_points() const { return u_.rows(); }
+    /// The mode set, in the order the columns of values() follow.
     const std::vector<Mode>& modes() const { return modes_; }
 
-    /// psi_i at every point: (K, num_modes), column per mode, in mode order.
+    /// @return psi_i at every point: (K, num_modes), one column per mode, in
+    ///         mode order. Cached; repeated calls are free.
     const Eigen::MatrixXd& values()
     {
         if ( have_values_ )
@@ -205,9 +225,13 @@ public:
         return values_;
     }
 
-    /// Per-mode spatial gradients, uncontracted: num_modes matrices of shape
-    /// (K, N). Needed by the exact Golub-Pereyra VarPro variant and by the
-    /// theta-Jacobian; prefer vjp() when the result is only contracted.
+    /// Per-mode spatial gradients, UNCONTRACTED.
+    ///
+    /// @return num_modes matrices of shape (K, N), in mode order. Cached.
+    ///
+    /// Needed by the exact Golub-Pereyra VarPro variant and by the
+    /// theta-Jacobian; prefer vjp() when the result is only contracted, since
+    /// this materializes the whole tensor.
     const std::vector<Eigen::MatrixXd>& grad()
     {
         if ( have_gradients_ )
@@ -240,8 +264,10 @@ public:
         return gradients_;
     }
 
-    /// grad_u sum_i w_i psi_i, shape (K, N), for a per-point weight matrix w
-    /// of shape (K, num_modes).
+    /// Vector-Jacobian product: the gradient of a weighted sum of modes.
+    ///
+    /// @param w Per-point weights, (K, num_modes).
+    /// @return  grad_u sum_i w_i psi_i, shape (K, N).
     ///
     /// Regrouped by SHELL rather than accumulating per mode. Substituting the
     /// product rule and collecting terms:
@@ -257,7 +283,7 @@ public:
     ///
     /// NOT bit-identical to contracting grad() -- the regrouping reassociates
     /// the sum. Accuracy is a wash, not an improvement; the justification is
-    /// operation count and memory. See dev/design-notes.md.
+    /// operation count and memory.
     Eigen::MatrixXd vjp( const Eigen::Ref<const Eigen::MatrixXd>& w )
     {
         if ( modes_.empty() )
@@ -406,22 +432,37 @@ private:
     bool have_gradients_ = false;
 };
 
-/// Values of a whole mode set: (K, num_modes). Convenience wrapper; use
-/// LGBasisAt directly when values and a derivative are both needed.
+/// Values of a whole mode set.
+///
+/// Convenience wrapper; construct an LGBasisAt directly when values and a
+/// derivative are both needed at the same points, so they share the work.
+///
+/// @param modes The mode set.
+/// @param u     Points, (K, N).
+/// @return      (K, num_modes), one column per mode, in @p modes order.
 inline Eigen::MatrixXd eval_lg_basis( const std::vector<Mode>& modes,
                                       const Eigen::Ref<const Eigen::MatrixXd>& u )
 {
     return LGBasisAt(modes, u).values();
 }
 
-/// Per-mode gradients of a whole mode set: num_modes matrices of (K, N).
+/// Per-mode spatial gradients of a whole mode set.
+///
+/// @param modes The mode set.
+/// @param u     Points, (K, N).
+/// @return      num_modes matrices of shape (K, N), in @p modes order.
 inline std::vector<Eigen::MatrixXd> grad_lg_basis(
     const std::vector<Mode>& modes, const Eigen::Ref<const Eigen::MatrixXd>& u )
 {
     return LGBasisAt(modes, u).grad();
 }
 
-/// grad_u sum_i w_i psi_i: (K, N), for w of shape (K, num_modes).
+/// Vector-Jacobian product: the gradient of a weighted sum of modes.
+///
+/// @param modes The mode set.
+/// @param u     Points, (K, N).
+/// @param w     Per-point weights, (K, num_modes).
+/// @return      grad_u sum_i w_i psi_i, shape (K, N).
 inline Eigen::MatrixXd vjp_lg_basis( const std::vector<Mode>& modes,
                                      const Eigen::Ref<const Eigen::MatrixXd>& u,
                                      const Eigen::Ref<const Eigen::MatrixXd>& w )
@@ -429,23 +470,37 @@ inline Eigen::MatrixXd vjp_lg_basis( const std::vector<Mode>& modes,
     return LGBasisAt(modes, u).vjp(w);
 }
 
-/// One mode at every point: (K,). The readable reference the batched path is
-/// pinned against.
+/// One mode at every point.
+///
+/// The readable reference the batched path is pinned against; prefer
+/// eval_lg_basis() for more than one mode.
+///
+/// @param p,ell,m The mode.
+/// @param u       Points, (K, N).
+/// @return        psi_{p,ell,m} at each point, (K,).
 inline Eigen::VectorXd eval_lg_nd( int p, int ell, int m,
                                    const Eigen::Ref<const Eigen::MatrixXd>& u )
 {
     return LGBasisAt({Mode{p, ell, m}}, u).values().col(0);
 }
 
-/// Spatial gradient of one mode at every point: (K, N).
+/// Spatial gradient of one mode at every point.
+///
+/// @param p,ell,m The mode.
+/// @param u       Points, (K, N).
+/// @return        grad psi_{p,ell,m} at each point, (K, N).
 inline Eigen::MatrixXd grad_eval_lg_nd( int p, int ell, int m,
                                         const Eigen::Ref<const Eigen::MatrixXd>& u )
 {
     return LGBasisAt({Mode{p, ell, m}}, u).grad()[0];
 }
 
-/// p! / (p+a)!, as the exact product of reciprocals: every partial product
-/// stays in [0, 1], and it is an integer loop rather than a gamma call.
+/// p! / (p+a)!, as a product of reciprocals so every partial product stays in
+/// [0, 1] -- an integer loop rather than a ratio of two overflowing gammas.
+///
+/// @param p Base.
+/// @param a Non-negative offset.
+/// @return  p! / (p+a)!.
 inline double factorial_ratio( int p, int a )
 {
     double ratio = 1.0;
@@ -463,6 +518,11 @@ inline double factorial_ratio( int p, int a )
 /// Kept as the independent definition of the N = 2 convention -- the
 /// N-dimensional path indexes the same space by (ell >= 0, m) with no
 /// canonical cos/sin labelling, and the two are cross-checked in the tests.
+///
+/// @param p      Radial order.
+/// @param ell    Signed angular order; the sign picks the branch.
+/// @param u1,u2  The two coordinates, equal length.
+/// @return       The mode at each point, same length as @p u1.
 inline Eigen::VectorXd eval_lg( int p, int ell,
                                 const Eigen::Ref<const Eigen::VectorXd>& u1,
                                 const Eigen::Ref<const Eigen::VectorXd>& u2 )

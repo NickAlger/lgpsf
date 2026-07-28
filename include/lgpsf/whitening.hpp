@@ -90,15 +90,18 @@ inline Eigen::MatrixXd scale_rows( const Eigen::Ref<const Eigen::MatrixXd>& a,
 
 } // end namespace detail
 
-/// z_hat = M2^(1/2) z, for probe fields z of shape (K, num_probes).
+/// Whiten probe fields: z_hat = M2^(1/2) z.
+///
+/// @param z       Probe fields, (K, num_probes).
+/// @param m2_diag Column masses, (K,), every entry positive.
+/// @return        The whitened probes, same shape.
+/// @throws std::invalid_argument if any mass is non-positive.
 inline Eigen::MatrixXd whiten_probes( const Eigen::Ref<const Eigen::MatrixXd>& z,
                                       const Eigen::Ref<const Eigen::VectorXd>& m2_diag )
 {
     // Checked here rather than left to `sqrt`: a non-positive column mass
     // otherwise yields a NaN design matrix that survives all the way to a
-    // cost, where it reads as a bad fit instead of a bad input. Both siblings
-    // validate (`whiten_data` directly, `whiten_extra` through
-    // `whitening_scale`); this one used to be the exception.
+    // cost, where it reads as a bad fit instead of a bad input.
     if ( (m2_diag.array() <= 0.0).any() )
     {
         throw std::invalid_argument(
@@ -107,7 +110,12 @@ inline Eigen::MatrixXd whiten_probes( const Eigen::Ref<const Eigen::MatrixXd>& z
     return detail::scale_rows(z, m2_diag.cwiseSqrt());
 }
 
-/// y_hat = y / sqrt(target_mass), for the target's raw probe responses (k,).
+/// Whiten the target's responses: y_hat = y / sqrt(target_mass).
+///
+/// @param y           Raw probe responses, (num_probes,).
+/// @param target_mass The target row's own mass, a positive scalar.
+/// @return            The whitened data, same length.
+/// @throws std::invalid_argument if @p target_mass is non-positive.
 inline Eigen::VectorXd whiten_data( const Eigen::Ref<const Eigen::VectorXd>& y,
                                     double target_mass )
 {
@@ -120,10 +128,17 @@ inline Eigen::VectorXd whiten_data( const Eigen::Ref<const Eigen::VectorXd>& y,
     return y / std::sqrt(target_mass);
 }
 
-/// E_hat = sqrt(target_mass) M2^(-1/2) E, for an extra basis of shape
-/// (K, num_extra). The INVERSE power of M2, unlike the smooth basis: the extra
-/// functions are discrete corrections, not quadrature objects, so they carry
-/// no column mass of their own.
+/// Whiten an extra (spike) basis: E_hat = sqrt(target_mass) M2^(-1/2) E.
+///
+/// Note the INVERSE power of M2, unlike the smooth basis. Extra functions are
+/// discrete corrections rather than quadrature objects, so they carry no
+/// column mass of their own.
+///
+/// @param E           The extra basis, (K, num_extra).
+/// @param target_mass The target row's own mass, positive.
+/// @param m2_diag     Column masses, (K,), every entry positive.
+/// @return            The whitened basis, same shape.
+/// @throws std::invalid_argument if any mass is non-positive.
 inline Eigen::MatrixXd whiten_extra( const Eigen::Ref<const Eigen::MatrixXd>& E,
                                      double target_mass,
                                      const Eigen::Ref<const Eigen::VectorXd>& m2_diag )

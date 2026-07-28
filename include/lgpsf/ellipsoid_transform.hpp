@@ -55,10 +55,10 @@
 /// there, an mu0-shift and mode reduction here -- but the role is the same.
 ///
 /// Point batches are (K, N): coordinate-major, so `u.col(d)` is coordinate d
-/// across the whole batch, contiguous under Eigen's column-major default. Same
-/// bytes as the Python prototype's (N, K) row-major arrays; see
-/// dev/design-notes.md. The parameter vectors are NEVER batched, so the loops
-/// over N and P here stay plain scalar loops by design.
+/// across the whole batch, contiguous under Eigen's column-major default. (The
+/// Python bindings take (N, K), which is the same bytes; see
+/// docs/api-guide.md.) Parameter vectors are NEVER batched, so the loops over
+/// N and P here stay plain scalar loops by design.
 
 #include <cmath>
 #include <stdexcept>
@@ -82,13 +82,20 @@ enum class MuMode
 
 /// Number of parameters in the public encoding `theta`: N (mu) + N (the
 /// log-diagonal of L) + N(N-1)/2 (L's strictly-lower entries).
+///
+/// @param dim Spatial dimension N.
+/// @return    N(N+3)/2.
 inline int theta_size( int dim )
 {
     return 2 * dim + dim * (dim - 1) / 2;
 }
 
-/// Number of parameters in the internal encoding `theta_hat`: the same, minus
-/// the N center parameters when mu is pinned.
+/// Number of parameters in the internal encoding `theta_hat`: the same as
+/// theta_size(), minus the N center parameters when mu is pinned.
+///
+/// @param dim  Spatial dimension N.
+/// @param mode Whether the center is fitted or pinned.
+/// @return     The parameter count the fitting core searches over.
 inline int theta_hat_size( int dim, MuMode mode )
 {
     return ( mode == MuMode::Fitted ) ? theta_size(dim)
@@ -133,10 +140,20 @@ struct EllipsoidFrame
     int dim() const { return static_cast<int>(mu.size()); }
 };
 
-/// Build a frame from an explicit center and Cholesky factor, inverting L by
-/// forward substitution (exact for the triangular structure, unlike a general
-/// LU). Validates eagerly: L must be square, lower-triangular, and have a
-/// finite positive diagonal.
+/// Build a frame from an explicit centre and Cholesky factor.
+///
+/// L is inverted by forward substitution, exact for the triangular structure
+/// unlike a general LU.
+///
+/// @param mu Centre, (N,).
+/// @param L  Lower-triangular Cholesky factor of the covariance, (N, N), with
+///           a finite positive diagonal. Sigma = L L^T.
+/// @return   The frame, with L_inv precomputed.
+/// @throws std::invalid_argument if L is not square, not lower-triangular, or
+///         mismatched with @p mu.
+/// @throws InfeasibleParameters if L's diagonal is non-finite or non-positive
+///         -- what an extreme trial step produces, which the fitting core
+///         scores rather than treats as a failure.
 inline EllipsoidFrame make_frame( Eigen::VectorXd mu, Eigen::MatrixXd L )
 {
     const Eigen::Index n = mu.size();
@@ -220,8 +237,14 @@ inline void check_size( const char* what, Eigen::Index got, int want )
 
 } // end namespace detail
 
-/// Decode the public encoding. Needs nothing but the vector: N is recovered
-/// from its length and the center is carried explicitly.
+/// Decode the public encoding.
+///
+/// Needs nothing but the vector: N is recovered from its length and the center
+/// is carried explicitly. That is what makes a fitted operator self-describing.
+///
+/// @param theta Public encoding, length N(N+3)/2.
+/// @return      The centre and Cholesky factor it describes.
+/// @throws std::invalid_argument if the length matches no dimension.
 inline EllipsoidFrame unpack_theta( const Eigen::Ref<const Eigen::VectorXd>& theta )
 {
     const int dim = dim_from_theta_size(static_cast<int>(theta.size()));
@@ -251,8 +274,15 @@ inline EllipsoidFrame unpack_theta_hat(
                                                   dim));
 }
 
-/// theta_hat -> theta. The two describe the same ellipsoid; only the center's
-/// representation differs.
+/// Internal encoding -> public encoding.
+///
+/// The two describe the same ellipsoid; only the centre's representation
+/// differs.
+///
+/// @param theta_hat Internal encoding.
+/// @param mu0       The reference centre it is relative to.
+/// @param mode      Which internal encoding @p theta_hat is in.
+/// @return          The equivalent public encoding.
 inline Eigen::VectorXd to_theta( const Eigen::Ref<const Eigen::VectorXd>& theta_hat,
                                  const Eigen::Ref<const Eigen::VectorXd>& mu0,
                                  MuMode mode )
@@ -274,9 +304,14 @@ inline Eigen::VectorXd to_theta( const Eigen::Ref<const Eigen::VectorXd>& theta_
     return theta;
 }
 
-/// theta -> theta_hat, relative to mu0.
+/// Public encoding -> internal encoding, relative to @p mu0.
 ///
-/// In Pinned mode the center block is dropped rather than checked against mu0:
+/// @param theta Public encoding.
+/// @param mu0   The reference centre to encode against.
+/// @param mode  Which internal encoding to produce.
+/// @return      The equivalent internal encoding.
+///
+/// In Pinned mode the centre block is dropped rather than checked against mu0:
 /// mu is carried by mu0 there, and re-pinning at a DIFFERENT center is a
 /// legitimate operation (that is what freeze_mu does).
 inline Eigen::VectorXd to_theta_hat( const Eigen::Ref<const Eigen::VectorXd>& theta,
@@ -296,9 +331,15 @@ inline Eigen::VectorXd to_theta_hat( const Eigen::Ref<const Eigen::VectorXd>& th
     return theta_hat;
 }
 
-/// Pinned theta_hat -> fitted theta_hat about the SAME center: the fitted
-/// encoding is literally the pinned one with a zero displacement prepended, so
-/// this is what warm-starts a released-mu stage from a pinned stage's result.
+/// Pinned internal encoding -> fitted internal encoding, same ellipsoid.
+///
+/// The fitted encoding is literally the pinned one with a zero displacement
+/// prepended, so this is what warm-starts a released-mu stage from a pinned
+/// stage's result.
+///
+/// @param theta_hat_pinned A pinned internal encoding.
+/// @param dim              Spatial dimension N.
+/// @return                 The fitted internal encoding of the same ellipsoid.
 inline Eigen::VectorXd release_mu(
     const Eigen::Ref<const Eigen::VectorXd>& theta_hat_pinned, int dim )
 {
@@ -310,8 +351,13 @@ inline Eigen::VectorXd release_mu(
     return released;
 }
 
-/// theta -> (pinned theta_hat, its reference center): re-pin at the center
-/// theta already describes. Inverse of release_mu composed with to_theta.
+/// Public encoding -> (pinned internal encoding, its reference centre).
+///
+/// Re-pins at the centre @p theta already describes; the inverse of release_mu
+/// composed with to_theta.
+///
+/// @param theta Public encoding.
+/// @return      {pinned internal encoding, the centre it is pinned at}.
 inline std::pair<Eigen::VectorXd, Eigen::VectorXd> freeze_mu(
     const Eigen::Ref<const Eigen::VectorXd>& theta )
 {
@@ -350,7 +396,15 @@ struct PullbackCotangent
     }
 };
 
-/// u = L^{-1}(x - mu), for x of shape (K, N). Returns (K, N).
+/// Map physical points into the ellipsoid's normalized coordinates.
+///
+/// This is the PULLBACK, u = L^{-1}(x - mu), not a forward map: it takes a
+/// point where your data lives and returns where it sits relative to the
+/// ellipsoid, so the fitted 1-sigma ellipse becomes the unit sphere.
+///
+/// @param frame The decoded ellipsoid.
+/// @param x     Physical points, (K, N).
+/// @return      Normalized coordinates u, (K, N).
 inline Eigen::MatrixXd pullback( const EllipsoidFrame& frame,
                                  const Eigen::Ref<const Eigen::MatrixXd>& x )
 {

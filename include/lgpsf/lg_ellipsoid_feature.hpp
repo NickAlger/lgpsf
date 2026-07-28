@@ -156,8 +156,17 @@ private:
     bool have_jacobian_ = false;
 };
 
-/// phi_i(x) = psi_i(T(x)) for each mode: (K, num_modes). Convenience wrapper;
-/// use FeatureAt directly when values and a derivative are both needed.
+/// The features phi_i(x) = psi_i(T(x)) at every point.
+///
+/// Convenience wrapper; construct a FeatureAt directly when values and a
+/// derivative are both needed at the same parameters, so they share the work.
+///
+/// @param theta_hat Ellipsoid parameters, internal encoding.
+/// @param x         Physical points, (K, N).
+/// @param modes     The mode set.
+/// @param mu0       Reference centre @p theta_hat is relative to, (N,).
+/// @param mu_mode   Which internal encoding @p theta_hat is in.
+/// @return          (K, num_modes), one column per mode.
 inline Eigen::MatrixXd eval_feature(
     const Eigen::Ref<const Eigen::VectorXd>& theta_hat,
     const Eigen::Ref<const Eigen::MatrixXd>& x, const std::vector<Mode>& modes,
@@ -166,7 +175,15 @@ inline Eigen::MatrixXd eval_feature(
     return FeatureAt(theta_hat, x, modes, mu0, mu_mode).values();
 }
 
-/// Directional parameter derivative of eval_feature: (K, num_modes).
+/// Directional derivative of the features with respect to the parameters.
+///
+/// @param theta_hat Ellipsoid parameters, internal encoding.
+/// @param dtheta_hat The direction to differentiate along.
+/// @param x         Physical points, (K, N).
+/// @param modes     The mode set.
+/// @param mu0       Reference centre @p theta_hat is relative to, (N,).
+/// @param mu_mode   Which internal encoding @p theta_hat is in.
+/// @return          (K, num_modes).
 inline Eigen::MatrixXd jvp_feature(
     const Eigen::Ref<const Eigen::VectorXd>& theta_hat,
     const Eigen::Ref<const Eigen::VectorXd>& dtheta_hat,
@@ -176,7 +193,15 @@ inline Eigen::MatrixXd jvp_feature(
     return FeatureAt(theta_hat, x, modes, mu0, mu_mode).jvp(dtheta_hat);
 }
 
-/// The full parameter Jacobian of eval_feature: num_params of (K, num_modes).
+/// The full parameter Jacobian of the features.
+///
+/// @param theta_hat Ellipsoid parameters, internal encoding.
+/// @param x         Physical points, (K, N).
+/// @param modes     The mode set.
+/// @param mu0       Reference centre @p theta_hat is relative to, (N,).
+/// @param mu_mode   Which internal encoding @p theta_hat is in.
+/// @return          num_params matrices of (K, num_modes), indexed BY
+///                  PARAMETER -- which is how Golub-Pereyra slices it.
 inline std::vector<Eigen::MatrixXd> jac_feature(
     const Eigen::Ref<const Eigen::VectorXd>& theta_hat,
     const Eigen::Ref<const Eigen::MatrixXd>& x, const std::vector<Mode>& modes,
@@ -185,8 +210,15 @@ inline std::vector<Eigen::MatrixXd> jac_feature(
     return FeatureAt(theta_hat, x, modes, mu0, mu_mode).jac();
 }
 
-/// <w, d(eval_feature)/d(theta_hat)> per point, for w of shape
-/// (K, num_modes). Returns (K, num_params).
+/// Vector-Jacobian product of the features against a per-point cotangent.
+///
+/// @param theta_hat Ellipsoid parameters, internal encoding.
+/// @param x         Physical points, (K, N).
+/// @param w         Cotangent, (K, num_modes).
+/// @param modes     The mode set.
+/// @param mu0       Reference centre @p theta_hat is relative to, (N,).
+/// @param mu_mode   Which internal encoding @p theta_hat is in.
+/// @return          (K, num_params).
 inline Eigen::MatrixXd vjp_feature(
     const Eigen::Ref<const Eigen::VectorXd>& theta_hat,
     const Eigen::Ref<const Eigen::MatrixXd>& x,

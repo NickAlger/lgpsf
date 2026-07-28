@@ -21,8 +21,8 @@
 ///
 /// Point batches are (K, N): points as ROWS, dimensions as COLUMNS, so
 /// `u.col(k)` is one coordinate across the whole batch, contiguous under
-/// Eigen's column-major default. This is the transpose of the Python
-/// prototype's (N, K), deliberately -- see dev/design-notes.md.
+/// Eigen's column-major default. (The Python bindings take (N, K), which is
+/// the same bytes; see docs/api-guide.md.)
 
 #include <cstddef>
 #include <stdexcept>
@@ -88,8 +88,13 @@ inline int harmonic_shell_index( int dim, int degree )
 /// the number of valid m values.
 ///
 /// Zero only for N == 1, ell >= 2: there is no harmonic function of one
-/// variable of degree >= 2. Throws if (N, ell) lies outside the generated
-/// table, which is a caller error rather than an empty answer.
+/// variable of degree >= 2.
+///
+/// @param dim    Spatial dimension N, 1 to max_dimension().
+/// @param degree Harmonic degree ell, 0 to max_degree().
+/// @return       The number of valid m values for that (N, ell).
+/// @throws std::invalid_argument if (N, ell) is outside the generated table
+///         -- a caller error, not an empty answer.
 inline int num_harmonics( int dim, int degree )
 {
     const int s = detail::harmonic_shell_index(dim, degree);
@@ -97,6 +102,14 @@ inline int num_harmonics( int dim, int degree )
 }
 
 /// The stored terms of Y_{ell,m} on R^N.
+///
+/// @param dim    Spatial dimension N.
+/// @param degree Harmonic degree ell.
+/// @param m      Which harmonic of that degree, 0 to num_harmonics()-1.
+/// @return       Its nonzero terms; zero coefficients are absent by
+///               construction, not by threshold.
+/// @throws std::invalid_argument if (N, ell) is outside the table or @p m is
+///         out of range.
 inline HarmonicPolynomial harmonic_terms( int dim, int degree, int m )
 {
     const int s = detail::harmonic_shell_index(dim, degree);
@@ -134,9 +147,7 @@ namespace detail {
 /// by a vector of ones).
 ///
 /// Built by repeated multiplication rather than std::pow -- faster, and no
-/// less accurate for these small integer exponents. This is the deliberate
-/// break from the Python prototype's bit-identity, which is why
-/// cross-language tests are tolerance-based.
+/// less accurate for these small integer exponents.
 inline std::vector<Eigen::MatrixXd> power_tables(
     const Eigen::Ref<const Eigen::MatrixXd>& u, int max_exponent )
 {
@@ -254,15 +265,25 @@ inline HarmonicBasis harmonic_basis(
     return out;
 }
 
-/// Y_{ell,m}(u) at points u of shape (K, N). Returns a (K,) vector.
+/// One harmonic polynomial at every point.
+///
+/// @param degree Harmonic degree ell.
+/// @param m      Which harmonic of that degree.
+/// @param u      Points, (K, N).
+/// @return       Y_{ell,m}(u), shape (K,).
 inline Eigen::VectorXd eval_harmonic(
     int degree, int m, const Eigen::Ref<const Eigen::MatrixXd>& u )
 {
     return harmonic_basis({Shell{degree, m}}, u).values.col(0);
 }
 
-/// Y_{ell,m}(u) together with its spatial gradient. Returns (values (K,),
-/// gradient (K, N)); both come from one pass over the term list.
+/// One harmonic polynomial and its spatial gradient, from a single pass over
+/// the term list.
+///
+/// @param degree Harmonic degree ell.
+/// @param m      Which harmonic of that degree.
+/// @param u      Points, (K, N).
+/// @return       {values (K,), gradient (K, N)}.
 inline std::pair<Eigen::VectorXd, Eigen::MatrixXd> grad_harmonic(
     int degree, int m, const Eigen::Ref<const Eigen::MatrixXd>& u )
 {
