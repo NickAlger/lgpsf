@@ -5,7 +5,7 @@ its action on random vectors.
 
 Header-only C++17, with Python bindings.
 
-![What lgpsf does: a fitted ellipsoid field, a true point-spread function, and the fit recovered from 45 matvecs](docs/hero.png)
+![What lgpsf does: the fitted ellipsoid field across the domain, one true point-spread function, and the fits recovered from 10 and 45 matvecs with their 1- and 3-sigma ellipses](docs/hero.png)
 
 ## What it is for
 
