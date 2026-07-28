@@ -129,6 +129,20 @@ was not true before slice 5.
 - matplotlib is not in the primary conda env and cannot be installed from the
   sandbox. `examples/operator_fit_frog.py` degrades gracefully without it.
 
+## In flight: less conservative fitting defaults
+
+Read [`fitting-defaults-plan.md`](fitting-defaults-plan.md) first — it is
+written to survive a lost conversation and carries the state, the two
+remaining experiments, and the gotchas.
+
+One-line summary: the initial-guess ladder turns out not to limit accuracy on
+the frog kernel, because a bad prior binds through the WINDOW rather than the
+initialization. `circle_rungs_above_aspect` has landed as a no-op at 1.0;
+`num_rungs` 6 -> 3 and that gate 1 -> 3 are recommended but unapplied, pending
+rough-beta PIG. The LM tolerance is ALREADY user-settable
+(`config.row.varpro.ftol`) — that task is choosing a default, not adding an
+option.
+
 ## Parked
 
 - **Released-mu re-arming.** Needs a basin-scale `||mu - mu0||` bound before
