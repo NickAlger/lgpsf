@@ -7,7 +7,10 @@ target_link_libraries(hello_world PRIVATE lgpsf::lgpsf)
 add_executable(operator_fit_frog operator_fit_frog.cpp)
 target_link_libraries(operator_fit_frog PRIVATE lgpsf::lgpsf)
 
-foreach(_example hello_world operator_fit_frog)
+add_executable(fit_one_psf fit_one_psf.cpp)
+target_link_libraries(fit_one_psf PRIVATE lgpsf::lgpsf)
+
+foreach(_example hello_world operator_fit_frog fit_one_psf)
     target_compile_options(${_example} PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra>)
 endforeach()

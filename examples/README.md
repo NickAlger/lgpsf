@@ -21,6 +21,7 @@ optional** — the numbers always print; figures are skipped without it.
 | | |
 |---|---|
 | [`fit_one_psf.py`](fit_one_psf.py) | `fit_from_probes`: recover one point-spread function from probe inner products. **The data model to understand first** — you never hand the fitter function values. |
+| [`fit_one_psf.cpp`](fit_one_psf.cpp) | The same in C++, where points are `(K, N)` — rows, not columns — the policy is a `shared_ptr`, and optional inputs are `std::optional`. |
 | [`counting_rule.py`](counting_rule.py) | Why `k >= 2(m + P)`, and what going past it looks like: in-sample cost collapses to 1e-21 while the held-out score gets *worse*. |
 | [`reading_a_row_fit.py`](reading_a_row_fit.py) | The candidate table — what the search tried, what it kept, why it stopped. The first place to look when a row disappoints. |
 | [`mode_policies.py`](mode_policies.py) | Shells vs wedges vs radial-first, head to head. No order wins everywhere, which is why it is a policy. |
