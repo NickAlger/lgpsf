@@ -101,8 +101,13 @@ def frog_covariance(x, sigma0_diag=SIGMA0_DIAG):
     return R.T @ np.diag(np.asarray(sigma0_diag)) @ R
 
 
-def build_problem(grid=40, seed=0):
-    """The grid, the masses, the dense truth, and the prior ellipsoid field."""
+def build_problem(grid=40, seed=0, sigma0_diag=SIGMA0_DIAG):
+    """The grid, the masses, the dense truth, and the prior ellipsoid field.
+
+    `sigma0_diag` sets the kernel's anisotropy -- the variances along its
+    unrotated axes. The default is 2:1; experiments vary it to ask what the
+    fitter's initial-guess ladder is actually buying.
+    """
     axis = (np.arange(grid) + 0.5) / grid        # cell centers, off the boundary
     mesh = np.meshgrid(axis, axis, indexing="ij")
     x = np.vstack([mesh[0].ravel(), mesh[1].ravel()])       # (2, K)
@@ -117,10 +122,11 @@ def build_problem(grid=40, seed=0):
 
     kernel = np.empty((count, count))
     for i in range(count):
-        kernel[i] = frog_row(x[:, i], x)
+        kernel[i] = frog_row(x[:, i], x, sigma0_diag)
     H = mass[:, None] * kernel * mass[None, :]
 
-    sigma = np.stack([frog_covariance(x[:, i]) for i in range(count)])
+    sigma = np.stack([frog_covariance(x[:, i], sigma0_diag)
+                      for i in range(count)])
     return dict(x=x, mass=mass, H=H, sigma=sigma, count=count, spacing=spacing,
                 seed=seed)
 
