@@ -10,33 +10,46 @@ narrative and open items only; when a thread closes, its record moves to
 
 | | state |
 |---|---|
-| C++ core, M0–M4 | complete — 145 cases / 105,699 assertions |
+| C++ core | complete — 145 cases / 105,699 assertions |
 | QR-first inner solve | landed — 2.1× on a whole-field fit, every number unchanged to four digits |
 | Field-scale validation | smooth and rough basal friction both reproduced; the recorded 0.0147 matched exactly |
-| Python bindings, M5 | all layers bound — 49 pytest cases |
-| Public integration gate | `examples/operator_fit_frog.py`, end to end, no private data |
-| Direction of dependence | enforced by `tools/check_dependencies.py` |
-| Repo cleanup | **in progress** — see below |
+| Python bindings | complete — 49 pytest cases |
+| Examples | 15, covering every exported name; the frog example is the public gate |
+| User documentation | written — README, installation, quickstart, api-guide, defaults |
+| Direction of dependence | enforced by `tools/check_dependencies.py` over docs, dev and experiments too |
+| Repo cleanup | 5 of 6 slices done — see below |
+| **Not done** | **CI, cibuildwheel, M6 release infra** |
 
-## In flight: the cleanup
+## The cleanup: done
 
-Six slices, agreed 2026-07-27. Done: (1) the Python prototype archived and
-its table generator rescued into `tools/`; (2) `dev/` purged and
-redistributed; (3) `docs/` split by audience. Plus an agreed detour: the
-example set, now 15 examples covering every exported name, and the mesh
-scalability study in `experiments/`. Remaining:
+Six slices, agreed 2026-07-27, five complete.
 
-4. **Write the user docs.** A real `README.md` — today it is two lines, and
-   `pyproject.toml` names it as the PyPI long description. Then installation,
-   a quickstart from the frog example, an API tour of the three layers, and a
-   defaults page gathering what is currently scattered across four
-   non-adjacent `design-notes` entries.
-5. **Doxygen sweep**, in three sub-slices by layer. ~60–70 lines of genuine
-   archaeology across the headers, concentrated in five files, plus missing
-   parameter/shape/unit documentation on public entities.
-6. **Release infra.** Doxyfile, CONTRIBUTING, CHANGELOG, CITATION, CI.
+1. **Prototype archived.** `archive/python-prototype/`, out of the sdist, out
+   of `pytest` collection, out of `check_dependencies`' shipping list. Its
+   harmonic-table generator was rescued into `tools/` first, since it emits a
+   live header; the regenerated header is byte-identical.
+2. **`dev/` purged and redistributed.** 651 MB to 100 KB. The PIG replay
+   harness moved to the research repo, where its imports already lived;
+   library benchmarks moved to `experiments/`; `dev/` is now TRACKED, and in
+   the dependency check.
+3. **`docs/` split by audience.** User-facing pages stay; the plans and the
+   design log moved here, with `architecture.md` salvaged out of the port plan.
+4. **User docs written.** README (was two lines, and is the PyPI description),
+   installation, quickstart, api-guide, defaults.
+5. **Doxygen sweep**, three phases. 192 @param / 61 @return / 25 @throws, from
+   20/0/0. No reference to the prototype, to `dev/`, or to a slice number
+   remains in `include/`, `bindings/` or `tests/`.
 
-## What M5 still owes
+Plus an agreed detour: the example set, now 15 examples covering every exported
+name, and the mesh-scalability study in `experiments/`.
+
+### 6. Release infra -- the only slice left
+
+Doxyfile, CONTRIBUTING, CHANGELOG, CITATION, and the CI workflow. The headers
+are now in a state where Doxygen will produce something worth publishing, which
+was not true before slice 5.
+
+## Slice 6 in detail: what release still owes
 
 1. **CI.** Nothing runs automatically. Should wire the C++ suite (g++/clang,
    sanitizers at `-j2`), the binding pytest, the frog example as the

@@ -106,419 +106,89 @@ whitened bases is exactly the correct (dual-space-respecting) projection,
 and that the whitening operator being fixed/symmetric means every
 existing JVP/VJP composes with it for free -- no new derivative math.
 
-## Code architecture (bottom-up)
 
-> NOTE (cleanup in progress): the entries below are still written against
-> the archived prototype's `.py` module names. The C++ headers mirror them
-> one-to-one (`lg_functions.py` -> `include/lgpsf/lg_functions.hpp`, and so
-> on), so the layering is accurate even where the filenames are not. This
-> section is being rewritten against `include/lgpsf/`; until then, read the
-> names as layers rather than as paths.
+## Code architecture
 
-1. **`lg_functions.py`** -- pure LG basis math, no ellipsoid/theta.
-   `genlaguerre` (3-term recurrence, no scipy -- ports directly to C++,
-   which has no special-function library). `lg_norm` (the combining
-   constant). `eval_lg` (2D-only reference, matches the original
-   research note's cos/sin convention exactly).
-   `eval_lg_nd`/`grad_eval_lg_nd` (general $N$), each a direct statement
-   of $\psi = C\,Y_{\ell,m}(u)\,L_p^\alpha(r^2)e^{-r^2/2}$ and its
-   product rule over (1b)'s harmonic polynomials -- this module knows
-   nothing of the harmonic table. **`eval_lg_basis`/`grad_lg_basis` are
-   the PRODUCTION entry points**: the mode index factorizes (angular
-   independent of $p$, radial independent of $m$, Gaussian independent
-   of both), so a mode SET is the natural unit -- $r^2$ and the Gaussian
-   once, each harmonic once per distinct $(\ell,m)$, each radial profile
-   once per distinct $(p,\ell)$ from one Laguerre recurrence per $\ell$
-   (which also yields the derivatives, since
-   $\alpha(\ell)+1 = \alpha(\ell+1)$). Bit-identical to the
-   one-at-a-time path, which is retained as the readable reference and
-   the exactness oracle. Gradients come back per-mode and UNCONTRACTED
-   -- the exact Golub-Pereyra VarPro variant needs that tensor.
-   `vjp_lg_basis(modes, u, w)` gives $\nabla_u\sum_i w_i\psi_i$ by
-   regrouping the sum per SHELL (one $(N,K)$ op per shell, not per mode;
-   the $(n_{modes},N,K)$ tensor is never built) -- the only path that is
-   tolerance-certified rather than bit-identical.
-   `modes_up_to_level` (raises rather than truncating past the generated
-   table).
-1b. **`harmonic_polynomials.py`** -- the harmonic polynomials
-   $Y_{\ell,m}$ on $\mathbb{R}^N$: `eval_harmonic`, `grad_harmonic`
-   (returns `(Y, dY)` from one pass), `harmonic_terms`,
-   `num_harmonics`, `max_degree`/`max_dimension`. **The only place the
-   generated table's storage format appears** -- the same confinement
-   discipline `whitening.py` applies to the mass matrices, so a change
-   to how the polynomials are represented or evaluated (term ordering,
-   precomputed power tables, a reduced-precision path) is scoped to one
-   file with its own intrinsic test suite.
-2. **`generate_lg_harmonics_table.py`** -> **`lg_harmonics_table.py`** --
-   offline generator (exact rational: monomial harmonic projection +
-   Gram-Schmidt via Gaussian moments) for the $N$-D harmonic-polynomial
-   table, committed as literal data (~278KB), not computed at runtime.
-   Each polynomial is stored as its NONZERO terms only: 91.5% of the
-   dense coefficients are exactly zero for structural reasons (exponent
-   parity classes; Gram-Schmidt staircase), the drop test is an exact
-   `Fraction != 0` and never a tolerance, and the change was certified
-   bit-for-bit value-preserving. See `dev/design-notes.md`.
-3. **`ellipsoid_transform.py`** -- the pullback $T(\theta,x)$ and its
-   JVP/VJP, built as two composable stages (theta -> (mu, L), then the
-   pullback geometry itself) so different theta encodings (`mu0=None` =
-   fit mu, `mu0=<array>` = fixed mu) never touch the geometry code.
-   Triangular solves via explicit `L^{-1}` + `einsum` (theta is never
-   batched, so this is negligible cost and avoids a substitution loop).
-4. **`lg_ellipsoid_feature.py`** -- composes (1) and (3):
-   $\phi_i(x;\theta) := \psi_i(T(\theta,x))$ and its JVP/VJP/Jacobian,
-   for a list of modes at once. Thin: one `eval_T` plus one
-   `eval_lg_basis`/`grad_lg_basis` call, then the contraction that
-   distinguishes the four functions (against `du`, against the theta
-   Jacobian, against a cotangent). All mode-level sharing lives in (1);
-   all theta knowledge lives here. Mass-free.
-5. **`whitening.py`** -- **the only place $M_1$/$M_2$ appear anywhere in
-   this codebase.** `whiten_probes`/`whiten_data`/`whiten_extra` for
-   user-supplied raw arrays, plus whitened wrappers around (4)'s
-   eval/JVP/VJP/Jacobian.
-6. **`varpro.py`** -- the generic, mass-free VarPro fitting core,
-   **implemented**: `fit_varpro(z_hat, y_hat, basis, theta_init,
-   e_hat=None, options)` -> `VarProResult`, where `basis(theta)` returns
-   a per-theta evaluation object (`values()`, `vjp(w_hat)`, optionally
-   `jac()`) held in the same one-entry cache as the inner solve -- ONE
-   callable, not an eval/vjp/jac triple, because the values and the
-   derivative are needed at the same theta with the linear solve in
-   between (the Kaufman cotangent is built from the values), so they
-   cannot be fused but can share one evaluation. Golub-Pereyra is a
-   capability of the evaluation (`jac()` present), not an optional
-   argument.
-   Internally: Frisch-Waugh-Lovell preprocessing of the theta-independent
-   extra block (project it out once, back-solve its coefficients `s` at
-   the end); an SVD-based inner solve (`_inner_solve` -- the "projection"
-   in variable projection: equilibrated, ridge on the coefficients only,
-   rank-truncated); `_ReducedProblem` with the reduced residual and two
-   Jacobian variants -- Kaufman (default; built in ONE batched
-   reverse-mode `basis_vjp` call with cotangent $w[i,j]=c_i$, the
-   $(n_{modes},P,K)$ tensor never materializes) and exact Golub-Pereyra
-   (needs `basis_jac`; used for strict FD testing and as a fallback);
-   outer LM loop via `scipy.optimize.least_squares(method="lm")` (the one
-   delegated piece -- the C++ port will need a hand-rolled LM, to be
-   validated against this). Both variants share the exact gradient; see
-   `_ReducedProblem`'s docstring for the Kaufman<->GP<->Schur-complement
-   relationships.
+**[`dev/architecture.md`](dev/architecture.md) is the map**: the layering
+invariant, a per-header summary, and the house rules. It is written against
+`include/lgpsf/` and kept current; do not re-derive the structure from
+elsewhere.
 
-7. **`init_dictionary.py`** -- initial-ellipsoid hypothesis generation
-   as a standalone library (geometry + policy, no probes, no fitting):
-   `theta_from_L`, `window_shape` (mass-weighted covariance of the
-   batch geometry -- measures the window REGION, not mesh density),
-   `oriented_sigma`, `local_spacing`/`window_radius`, `ladder_scales`,
-   `mid_out` ordering, `circle_rungs`/`window_rungs`.
-8. **`probe_moments.py`** -- zero-matvec estimators from probe data:
-   `backproject` (unbiased raw-target estimate for iid-normal probes)
-   + `raw_moments` ((mu, Sigma) from raw values, which already carry
-   the lumped-mass quadrature weight so NO mass vector is needed; spike
-   excluded via `spike_index`; `rel_threshold`/`noise_mad` noise
-   thresholds). Future home of the parked conservative-field estimator
-   (`dev/probe-moment-ellipsoids.md`).
-9. **`probe_fit.py`** -- the general-purpose top layer: fit a target
-   function known only through inner products with random probe fields
-   (an operator row is the motivating example, not the definition).
-   `fit_from_probes(x, m2_diag, z, y, mu0, modes, spike_index=,
-   sigma0=, config=ProbeFitConfig(...))` -> `ProbeFitResult`. Whitens
-   internally (masses *routed* here, mass math stays in
-   `whitening.py`). One ORDERED CANDIDATE STREAM over the
-   data-adjudicated axes -- init family x scale (from
-   `init_dictionary`, `sigma0` first, rungs middle-out), nested
-   mode-set ladder (`config.mode_levels`, counting-rule
-   `k >= 2(m+extra+P)` admissibility, jittered warm starts across
-   levels), fixed vs released mu -- under ONE selection rule:
-   window-containment admissibility, then linear-stage K-fold CV score
-   (`linear_cv_score`, public -- can score a priori models with zero
-   fits; never in-sample cost), then a simplicity tie-break (fewer
-   modes, then pinned mu, within `tie_delta`). Early stopping is
-   one-sided adaptive effort: `target_score` exits when a candidate is
-   certifiably good, `mode_patience` stops the mode ladder; hard
-   targets fail the certificates and buy the full grid. Structural
-   facts (window, probes, masses, `spike_index`) are caller-declared,
-   never adjudicated; numerics stay in `VarProOptions`. THE MODE AXIS
-   IS A POLICY (`mode_policy.py`, entry 9b): the stream polls
-   `ModePolicy.propose()` for nested mode sets and supplies adaptive
-   feedback (an exact margin-profit scorer built from the current
-   winner's residual); `mode_levels`/`mode_sets`/`modes` resolve to
-   ShellLadder/ExplicitLadder/FixedSet, so legacy callers are
-   fingerprint-identical. `target_mass=`
-   overrides the default target-mass inference (`m2_diag[spike_index]`,
-   exact only square-equal-mass) -- rescales only the returned `(c, s)`;
-   theta/scores/selection are invariant.
-9b. **`mode_policy.py`** -- the mode-growth policy axis
-    (dev/archive/mode-policy-plan.md): stateless policies proposing nested
-    mode sets from `ctx.history`; engine keeps every guard. Built-ins:
-    `FixedSet`, `ShellLadder`, `ExplicitLadder`,
-    `WedgeLadder(max_level, ell_max)` (level-ordered ell-capped --
-    strongest fixed policy at k >= 40 on PIG), `RadialFirstLadder`,
-    and `MarginGreedy` (adaptive downward-closed frontier; PARKED
-    per the PIG benchmark -- gate-free it ties the best fixed policy
-    at k=20 but trails the wedge ~2x at k>=40; needs the
-    novelty-floor/conditioning refinement, see the plan doc's
-    addendum). `modes_up_to_level` gained `ell_max` (wedges).
-    PIG evidence: best growth order is budget-dependent (shells win at
-    k=20, wedge ties shells at 1/6 cost at k=100). **In C++ there is NO
-    default policy** -- `fit_operator` throws if `config.row.mode_policy`
-    is unset, because no single order is defensible silently.
-    WedgeLadder(10, 2) is the RECOMMENDED starting point for roughly
-    elliptical rows; on the angular frog kernel in examples/ it loses at
-    every budget. (The prototype defaulted to it; the C++ does not.)
-10. **`operator_fit.py`** -- the whole-operator layer over (9), per
-    `dev/archive/operator-api-plan.md`: `fit_operator(x_cols, m1_diag,
-    m2_diag, V, HV, sigma, mu0=, modes=, x_rows=, rows=, windows=,
-    config=OperatorFitConfig(tau_window=10, spike=True,
-    row=ProbeFitConfig(...)))` -> `OperatorFit`. `row.mode_policy` is
-    REQUIRED (see 9b). The fitted object is
-    the parametric two-component sum `H~ = M1 Phi~ M2 + M1 S` (smooth
-    semi-discrete continuum kernel, rectangular by nature + sparse
-    dof-tied spike, square by nature), NEVER a matrix. Geometry queries
-    go through the `ellipsoid_tree` library (pip: `ellipsoid-tree`;
-    the C++ port links it anyway), confined to this layer like scipy --
-    indexing, never reference math. **DO NOT GATE DEAD ROWS** -- `gate`
-    defaults to unset (attempt everything) and that is the recommended
-    setting even when rows are known dead: a zero-response row costs ONE
-    candidate (zero coefficients, CV score exactly 0, baseline ties,
-    ships a model predicting exactly zero -- cannot fail, cannot NaN).
-    Measured on all 6557 PIG rows: ungated 159.9 s vs gated 162.4 s, and
-    every live row's prediction BIT-IDENTICAL either way. The gate is for
-    rows the CALLER does not want modeled, not for rows expected to be
-    hard. Per row: gate -> window (BallTree
-    ball query; radius `tau_window * `largest 1-sigma axis of the
-    user's best-guess `sigma[rho]`) ->
-    `fit_from_probes(sigma0=sigma[rho], target_mass=m1[rho])` ->
-    always-on BASELINE GUARD (linear LG fit at `sigma[rho]` pinned at
-    `mu0[rho]`, CV-scored on the same folds; the searched fit ships
-    only if strictly better -- never worse than the a-priori status
-    quo, by construction) -> status `fit | gated_out |
-    fallback_baseline | failed`. Output = padded flat arrays (theta
-    ALWAYS stored free-mu-encoded, mu, L, c + `mode_set_id` decoder, s
-    (additive convention), score, baseline_score, stop_reason,
-    released, status, failures, and the per-row FIT WINDOWS as
-    CSR-style `window_indptr`/`window_indices`). DEPLOYED SUPPORT ==
-    FIT WINDOW: every dof-context helper restricts row rho to its
-    window (the slice-38 invariant -- windowed CV is blind to
-    out-of-window model energy and LG modes extrapolate violently, so
-    fitted object == deployed object by construction).
-    Component-typed helpers: `eval_kernel` (the RAW smooth component,
-    arbitrary points, unrestricted), `eval_entries`/`matvec`/
-    `to_linear_operator`/`assemble_sparse(tau, symmetrize=)` (the
-    deployed operator; symmetry is an assembly policy; tau-support
-    pattern for ALL rows from one `collision_pairs` points-tree x
-    ellipsoid-tree dual descent, intersected with the windows),
-    `ellipsoid_field` (the (mu, Sigma) stack `EllipsoidTree` consumes
-    directly), `qc_map`, `spike_measure`.
+The one-line version, each level depending only downward:
 
-Tests mirror this file-by-file (`test_harmonic_polynomials.py`, whose
-checks are all intrinsic -- term-list well-formedness, the parity and
-staircase structure, `num_harmonics` against the closed-form
-$\dim\mathcal{H}_\ell$, $\Delta Y = 0$, homogeneity, and orthonormality
-on $S^{N-1}$ by exact Gaussian moments; `test_lg_functions.py`, whose
-keystone is $\int\psi_i\psi_j = \delta_{ij}$ over $\mathbb{R}^N$ by
-tensor-product Gauss-Hermite -- exact to roundoff, so it pins the
-table, the Laguerre recurrence, the normalization and the
-$\alpha$ bookkeeping at once;
-`test_ellipsoid_transform.py`, `test_lg_ellipsoid_feature.py`,
-`test_whitening.py`, `test_varpro.py` -- the latter's end-to-end check
-recovers a known $(\theta^*, c^*, s^*)$ from perturbed initialization --
-`test_probe_fit.py`, whose synthetic targets exercise the raw-data
-contract end to end, including nonuniform masses and the
-backprojection-rescues-bad-center workflow; `test_mode_policy.py`,
-whose fingerprint tests pin the legacy-config equivalence and whose
-MarginGreedy tests pin true-support recovery, the noise-gate stop, and
-the counting budget; and `test_operator_fit.py`, whose synthetic
-operator has $M_1 \ne M_2$ throughout so exact coefficient recovery
-also pins the target-mass routing).
-Examples: `examples/plot_lg_modes.py` (2D mode grid),
-`examples/lg_expansion_convergence.py` ($N=1,2,3$ convergence study).
+```
+lg_functions / harmonic_polynomials        pure basis math
+  -> ellipsoid_transform                   the pullback T(theta, x)
+  -> lg_ellipsoid_feature                  their composition
+  -> whitening                             the ONLY layer touching masses
+  -> varpro (+ detail/levenberg_marquardt) the fitting core
+  -> init_dictionary, probe_moments, mode_policy
+  -> probe_fit                             one target
+  -> lg_expansion -> lg_operator           the data structures and their operations
+  -> operator_fit                          one producer of them
+```
 
-## Conventions (see `dev/design-notes.md` for the full reasoning on each)
+`lg_operator.hpp` depends on none of the fitting stack, and a test asserts it:
+an operator can be built from a physics model, merged, validated, applied and
+assembled without `operator_fit.hpp` being included at all.
 
-- **Point-batched arrays are real numpy arrays, never tuples.** Shape
-  `(N, *batch_shape)` -- non-batch axes first, batch axes last, matching
-  numpy's row-major-contiguous default (Eigen's column-major default
-  means the *transpose* convention, `(K, N)`, is the right one there --
-  don't carry the numpy convention over to the C++ port unchanged).
-- **Vectorize the point batch only.** Loops over monomial count, spatial
-  dimension $N$, theta's parameter count $P$, Laguerre recurrence depth
-  are fine and often preferred (keeps memory at `O(batch)` not
-  `O(axis * batch)`); don't reach for `einsum`/broadcast tricks over those
-  other axes by default.
-- **`mu0=None` vs `mu0=<array>`** is the fit-mu/fixed-mu switch, threaded
-  through `ellipsoid_transform.py` and everything built on top of it.
-- **No scipy in the core reference math** (`genlaguerre`, the harmonic
-  table generator) -- these need to port to C++/Eigen, which has no
-  special-function library, so the Python reference is written as
-  explicit recurrences/formulas that translate directly. Ordinary linear
-  algebra (matrix inverse, etc.) is fine via plain numpy, since Eigen has
-  native equivalents there -- the scipy avoidance is specifically about
-  special functions, not linear algebra in general.
-- **Every JVP/VJP pair gets two kinds of test**: finite differences
-  *and* adjoint-consistency (`sum(w * jvp(...)) == sum(vjp(...) * v)` for
-  random `w`, `v`). The second has caught real sign/transpose bugs that
-  the first alone missed -- don't skip it for new derivative code.
+## Conventions
 
-## Current status / what's not built yet
+- **Points are `(K, N)` in C++** -- points as ROWS -- and `(N, K)` at the
+  Python boundary. These are the same bytes, which is what makes the binding
+  zero-copy. Per-row records are `(R, ...)`, row first. Both differ from
+  `ellipsoid_tree`'s Python convention. See `docs/api-guide.md`.
+- **Vectorize the point batch only.** Loops over mode count, spatial dimension
+  $N$, parameter count $P$ and recurrence depth are fine and often preferred:
+  they keep memory at `O(batch)` rather than `O(axis * batch)`.
+- **`MuMode` is the fit-mu/pin-mu switch**, threaded through
+  `ellipsoid_transform.hpp` and everything above it. `mu0` is always required,
+  so `N = mu0.size()` and there is no separate dimension parameter.
+- **No special-function library in the core math.** `genlaguerre` and the
+  harmonic table are explicit recurrences and generated literals, because C++
+  has nothing to call. Ordinary linear algebra through Eigen is fine.
+- **Every JVP/VJP pair gets two kinds of test**: finite differences *and*
+  adjoint consistency (`sum(w * jvp(v)) == sum(vjp(w) * v)` for random `w`,
+  `v`). The second has caught real sign and transpose bugs the first missed --
+  do not skip it for new derivative code.
+- **Bit-identity is the acceptance criterion** for any change meant to be a
+  pure restructuring. It has caught a 1-ULP regression that `allclose` would
+  have passed.
 
-- **The C++ port: M0-M4 COMPLETE, M5 next** -- `dev/archive/cpp-port-plan.md`
-  (deps, threading, header-only, bindings, milestones M0-M6, the
-  hand-rolled LM contract, and the COMPILE MEMORY SAFETY rules: this
-  machine has been OOM-crashed by large `-j` builds -- **read that
-  section before building any C++**). Shipped in M0:
-  `include/lgpsf/detail/lg_harmonics_table.hpp` (generated offline by
-  `tools/generate_lg_harmonics_table.py`; committed, and never built),
-  `include/lgpsf/harmonic_polynomials.hpp`,
-  `include/lgpsf/lg_functions.hpp` (`Mode`, `genlaguerre`, `lg_norm`,
-  `modes_up_to_level`, `LGBasisAt` with values/grad/vjp, the
-  one-at-a-time reference functions, and the 2D `eval_lg` convention
-  oracle), plus `tests/pch.hpp`, `tests/test_helpers.hpp` and the two
-  intrinsic test files. Build with
-  `cmake --build build --target lgpsf_tests -j3` (NEVER a bare `-j`).
-  Shipped in M1: `ellipsoid_transform.hpp` (`EllipsoidFrame`,
-  `MuMode`, the two encodings, both stages and their JVP/VJP),
-  `lg_ellipsoid_feature.hpp` (`FeatureAt`), `whitening.hpp`
-  (`WhitenedBasis` -> `WhitenedBasisAt`, the masses layer). Suite:
-  49 cases / 98,496 assertions. **THE PARAMETER VECTOR HAS TWO
-  ENCODINGS in C++** (`dev/design-notes.md`): public `theta` is
-  absolute `[mu, log-diag, strict-lower]`, always `N(N+3)/2` long, and
-  `unpack_theta(theta)` needs nothing else -- that is what keeps
-  `fit_operator(mu0=None)` meaningful. Internal `theta_hat` is what the
-  fitting core sees: the center as a DISPLACEMENT from `mu0` when
-  fitted, absent when pinned. `mu0` is required everywhere (so `N =
-  mu0.size()`; there is no `N` parameter and no optional `mu0`), and
-  the fit/pin switch is `enum class MuMode`.
-  Shipped in M2: `detail/levenberg_marquardt.hpp` (generic, tested on
-  problems with published answers -- NOT through VarPro), `varpro.hpp`
-  (`fit_varpro`, templated on the basis functor), and `exceptions.hpp`
-  (`InfeasibleParameters`: "no basis exists at this point in parameter
-  space", which the fitting core catches and scores as the worst finite
-  cost -- caller errors stay `std::invalid_argument`). Suite: 74 cases
-  / 98,652 assertions. The LM solves its trust-region subproblem by an
-  SVD hook step rather than MINPACK's `lmpar`; measured against scipy
-  it is marginally faster to converge with identical answers.
-  **THE INNER SOLVE IS QR-FIRST, unlike the prototype's**
-  (`detail::InnerFactors`): the ridge filter `sigma/(sigma^2+ridge)` IS
-  Tikhonov, so `RangeOnly` -- all the reduced residual and the default
-  Kaufman Jacobian need -- gets `c` from a pivoted QR plus a small
-  stacked ridge solve, and `U` from `Q` (the projector is
-  basis-independent, so the Jacobian is unchanged). The SVD still runs
-  for `Full` (Golub-Pereyra reads `sigma`/`V`) and whenever the QR
-  reports RANK DEFICIENCY, where the minimum-norm solution differs from
-  a basic one. Worth 2.1x on a whole-field k=100 fit with every field
-  number unchanged to four digits; see `dev/design-notes.md`.
-  Shipped in M3: `init_dictionary.hpp`, `probe_moments.hpp`,
-  `mode_policy.hpp` (virtual `ModePolicy` with `propose` **const**;
-  MarginGreedy stays parked Python-side) and `probe_fit.hpp`. Suite:
-  116 cases / 100,365 assertions. **TWO POLICY CHANGES from the
-  prototype, both deliberate.** (1) `MuPolicy::Pinned` is the DEFAULT --
-  the slice-38 evidence is that release ships on ~91% of rows while
-  buying nothing, so it stays available on request but is no longer
-  automatic until a basin-scale `||mu - mu0||` bound re-arms it.
-  (2) **RANDOMNESS IS HOISTED TO `operator_fit`**: the CV split and the
-  warm-start jitter arrive at `fit_from_probes` as DATA, so it and
-  everything beneath it are pure functions of their inputs -- checkable
-  as "no `<random>` below `operator_fit.hpp`". Folds default to
-  round-robin with no generator at all. See the plan's randomness
-  section for what that rests on (probe exchangeability) and when to
-  revisit it.
-  Shipped in M4: `operator_fit.hpp` -- `fit_operator` + `OperatorFit`
-  (`parallel_for` over rows, always-on baseline guard, CSR fit windows,
-  padded flat arrays) and the component-typed helpers. Suite: 130 cases
-  / 103,693 assertions. **THE WINDOW SHAPE IS ONE CONTINUOUS KNOB**,
-  `window_aspect_cap`: 1 gives an isotropic window (the ball the Python
-  prototype used and every PIG experiment validated), infinity (the
-  DEFAULT) gives the caller's ellipsoid untouched (the original design
-  intent), and values between cap the axis ratio. Which is better is
-  UNSETTLED and is what M5's PIG replay is for -- see
-  `dev/design-notes.md` for the archaeology. All rows' windows come
-  from ONE dual-tree descent, TRUNCATION TO THE FIT WINDOW IS THE
-  DEFAULT for every evaluation (`eval_kernel_unrestricted` is the named
-  opt-out; out-of-window model mass is *unpenalized* by the fit, not
-  merely unverified), and `fit_operator` returns `OperatorFit { model;
-  diagnostics; }`, and **the model half is `LGOperator`, defined in its
-  own `lg_operator.hpp` which depends on none of the fitting stack** --
-  so an operator can be built from a physics-based approximation
-  (`build_operator`, from per-row `LGExpansion`s), merged with
-  `concatenate_rows`, checked with `validate`, and applied or assembled
-  without the fitter ever being included. **`LGExpansion`**
-  (`lg_expansion.hpp`) is one target's model -- absolute theta, its mode
-  list, `c` and `s` -- and is both the per-row content of an `LGOperator`
-  and the model half of `CandidateFit`/`ProbeFitResult`. M5 bindings are
-  built (see below); what remains there is packaging. Also:
-  **the PIG slice-38 AND slice-39 replays are already discharged** ahead
-  of them, through a raw-binary bridge, so what the bindings still owe is
-  ergonomics and marshalling tests, not the numerical result.
-- A hand-rolled Levenberg-Marquardt loop (port milestone M2): the
-  prototype's outer loop delegates to scipy/MINPACK -- the one
-  delegated numeric; everything else in `varpro.py` is library-free.
-- Released-mu re-arming: `ProbeFitConfig`'s default
-  `mu="fixed_then_release"` is safe at single-row scale, but PIG
-  field-scale evidence (research-repo slice 38) showed release
-  shipping on ~91% of rows while buying nothing, guarded only by the
-  far-too-loose window-radius bound on the center. It needs a
-  basin-scale `||mu - mu0||` bound before being trusted at operator
-  scale; operator-level experiments pin mu meanwhile.
-- MarginGreedy adaptive mode policy: PARKED with evidence and queued
-  refinements (novelty floor first) -- see `dev/archive/mode-policy-plan.md`'s
-  addendum. `WedgeLadder(10, 2)` is the recommended starting point; there
-  is no default policy in C++ (`fit_operator` throws without one).
-- Level-2 cross-row amortization (neighbor warm starts /
-  smoothed-theta seeds as candidate injection) and field-level QC maps
-  over status/stop_reason/spike-measure -- build on `fit_operator`.
-- **M5 bindings: BUILT, packaging outstanding.** `bindings/` exists and
-  covers the whole API in two tiers -- the product (`fit_operator`,
-  `LGOperator` + helpers, `fit_from_probes`, `LGExpansion`, configs,
-  mode policies, enums) and the primitives (`lg_functions`,
-  `harmonic_polynomials`, `ellipsoid_transform`, `whitening`,
-  `varpro`), free-function forms only. 49 pytest cases. Build with
-  `-DLGPSF_BUILD_PYTHON=ON`. Still owed: a CI workflow, an exercised
-  cibuildwheel run, and a docs pass for the `dev/*` links that
-  `design-notes.md` and the port plan still dangle.
-  - **Point batches are `(N, K)` at the Python boundary** -- coordinates
-    down, points across -- because a C-contiguous numpy `(N, K)` and a
-    column-major Eigen `(K, N)` are the SAME BYTES, so nothing is
-    copied. Per-row records are row-first, `(R, ...)`, since
-    `fit.mu[rho]` is how anyone reads one. Note both differ from
-    `ellipsoid_tree`'s Python convention, which takes points as rows.
-  - Mode policies bind as built-ins only: `fit_operator` releases the
-    GIL and calls `propose` from worker threads, so a Python subclass
-    would have to re-acquire per call.
+## Current state
 
-(The library HAS been validated at field scale against real
-PDE-Hessian probe data -- PIG slices 38/39 in the separate
-maintainer-local research repo: it beats the prior psfladder reference
-at every probe budget, at both smooth and rough basal-friction states;
-the in-repo tests remain synthetic by design. **The C++ port reproduces
-that result at BOTH states**: smooth beta (slice 38), the whole
-6557-row operator at k=100 shells-L6, window-clipped and symmetrized,
-scores 0.0147 -- the recorded prototype figure to all four digits; and
-rough beta (slice 39), where 8 of 10 impulse-column forensics match to
-three decimals and the sigma-insensitivity finding holds. See
-`dev/design-notes.md`, and note that comparing any PIG number requires
-matching the deployment variant, of which slice38 has three. The one
-systematic divergence: the baseline guard's corrected counting rule
-lets the a-priori model ship more often, worth +16% at smooth beta
-k=40 and -7% at rough beta k=20 -- a lever on how often the PRIOR
-ships, so its sign follows the prior's quality.)
+The C++ library is complete and validated; the Python bindings cover the whole
+API. What remains is packaging.
+
+| | |
+|---|---|
+| C++ core | complete -- 145 cases / 105,699 assertions |
+| Python bindings | complete -- 49 pytest cases |
+| Examples | 15, covering every exported name |
+| Docs | user-facing set written; Doxygen not yet configured |
+| Field-scale validation | reproduced at both basal-friction states; see `docs/validation.md` |
+| **Outstanding** | **CI, an exercised cibuildwheel run, and M6 release infra** |
+
+Read [`dev/HANDOFF.md`](dev/HANDOFF.md) for open threads and what is parked.
+It is tracked, not gitignored.
+
+Two facts worth knowing before touching anything:
+
+- **Build with optimization.** A Debug build is ~33x slower, which is enough to
+  make an example look hung. If something seems stalled, check
+  `CMAKE_BUILD_TYPE` first.
+- **Never a bare `-j`.** `-j3` normal, `-j2` for sanitizers. This machine has
+  been OOM-crashed by large parallel builds and a hook enforces the cap.
 
 ## Where to look for more
 
-- `dev/design-notes.md` -- terse, running log of C++-port-relevant
-  decisions (layout, vectorization principle, etc.).
-- `docs/validation.md` -- **what PIG is**, what was measured, and which
-  library defaults came out of it. The public anchor that makes the PIG
-  citations scattered through the headers resolve. lgpsf is the
-  general-purpose library and the glaciology work is a DOWNSTREAM
-  consumer: PIG may depend on lgpsf, never the reverse, and
-  `tools/check_dependencies.py` enforces that over the shipping
-  directories (naming a private problem in prose is fine; a PATH into
-  one is not).
-- `docs/reproducibility.md` -- what is bit-exact and what is not.
-  Identical across threads, runs, callers and the QR/SVD inner solve;
-  NOT across builds with different compiler flags, where ~0.08% of rows
-  land on a different local minimum. Carries a table for reading a
-  failed comparison, which is the fastest way to tell this phenomenon
-  from an actual bug.
-- `docs/varpro-whitening-notes.tex`/`.pdf` -- the whitening derivation in
-  full, with the row-model and reconciliation-with-earlier-analysis
-  arguments spelled out.
-- `dev/HANDOFF.md` -- gitignored, maintainer-local session notes; not
-  visible if you're reading only what's checked into the repo.
+| | |
+|---|---|
+| `docs/` | For USING the library: installation, quickstart, API guide, defaults, validation, reproducibility. |
+| `dev/architecture.md` | The header map and the layering invariant. |
+| `dev/HANDOFF.md` | Open threads, parked work, machine-specific build notes. |
+| `dev/design-notes.md` | The running decision log, oldest first. Some early entries predate the C++ and are marked where superseded. |
+| `dev/archive/` | Closed threads: the executed port plan, the API plans, session records. |
+| `experiments/` | Measurements about the library -- where the time goes, and whether refining the mesh costs more probes (it does not). |
+| `examples/` | Fifteen examples, each teaching one thing. |
+| `archive/python-prototype/` | The frozen Python the method was developed in. History, not a reference. |
