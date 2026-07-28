@@ -119,6 +119,24 @@ constrained by the probe budget alone, since the cap does not bind below
 they are clean. The `k = 70` and `k = 110` columns are cap-limited and
 understate what those budgets can do.
 
+## Why the probe budget is the quantity that matters
+
+This study forms the dense `H`, which is the opposite of how the method is
+used — but only so that the error has something exact to be measured against.
+The frog kernel is known in closed form for that reason.
+
+The operators lgpsf is for are available MATRIX-FREE: applying them to a
+vector is possible, inspecting their entries is not, because an application
+runs an expensive computation rather than a memory read. In a PDE-constrained
+inverse problem, one application of the Gauss-Newton Hessian costs a
+linearized forward solve plus an adjoint solve. **That is why `k` is the cost
+model here and everything else is bookkeeping**, and it is what makes the flat
+`k` column above the result worth having: refining the mesh makes each
+application more expensive, but it does not make you buy more of them.
+
+If the dense matrix is available in memory, this whole apparatus is the wrong
+tool — thresholding small entries is simpler and exact.
+
 ## What this does not measure
 
 - One kernel, one dimension, one window setting. The frog kernel's rotation is
@@ -128,3 +146,6 @@ understate what those budgets can do.
 - The dense reference caps the study at grid 48. Whether the plateau persists
   another decade is untested here, though the field-scale validation runs at
   6557 dofs.
+- Nothing about the cost of an *application*. Every timing here is dominated by
+  the dense reference, which the real setting does not have. What transfers is
+  the probe COUNT, not the wall clock.

@@ -22,6 +22,28 @@ almost never known in advance -- it is swept, or chosen by discrepancy, or
 continued downward -- and the fit does not depend on it. One batch of probes
 buys the whole sweep.
 
+**This example is synthetic, and it is worth being plain about that.** It
+holds `H` as a dense matrix, which is the one thing the method exists to
+avoid. If you really do have the dense matrix in memory, you do not need any
+of this -- thresholding its small entries is simpler, exact, and cheaper. The
+frog kernel is here because it is known by FORMULA, so every number below can
+be checked against a ground truth that a real problem would never hand you.
+
+The setting the method is actually for is MATRIX-FREE: you can apply the
+operator to a vector, but you cannot look at its entries, because each
+application runs an expensive computation rather than a memory read. The
+motivating case is the Gauss-Newton Hessian of a PDE-constrained inverse
+problem, where one application costs a linearized forward solve plus an
+adjoint solve -- and the same shape appears whenever applying an operator
+hides a subproblem.
+
+There the probe count IS the cost, and everything else is bookkeeping. Notice
+what `fit_operator` consumes below: `V` and `HV`, and nothing else. That is
+exactly what a matrix-free operator can give you. The dense `H` in this file
+is used only to score the result. It is also why the mesh-scalability finding
+matters -- see `experiments/mesh-scalability.md`: the probe budget stays flat
+under refinement, so the expensive part does not grow with the mesh.
+
 Note what is being compressed. `H` is local, so its fit is sparse; but `H^T H`
 is DENSE, because two rows of `H` overlap whenever their supports do. The
 fitted `H^T H` is sparse anyway, and that sparse matrix is the preconditioner.

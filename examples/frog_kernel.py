@@ -6,6 +6,23 @@ operator, and restating it in each would bury what each one is actually
 teaching. `frog_kernel.hpp` is the same problem in C++, entry for entry, so
 the two language paths fit the same thing.
 
+**Why a formula, and not a real operator.** Every example here builds the
+dense matrix `H`, which is precisely what the method exists to avoid. That is
+deliberate: knowing the kernel in closed form is what lets these examples
+report an error against a ground truth, which no real application can do.
+
+lgpsf is for operators that are available MATRIX-FREE -- you can apply them to
+a vector, but you cannot inspect entries, because an application runs an
+expensive computation rather than a memory read. The Gauss-Newton Hessian of a
+PDE-constrained inverse problem is the motivating case: one application costs
+a linearized forward solve plus an adjoint solve. If you can afford to form
+the dense matrix, you can also afford simpler ways to sparsify it, and should
+use them.
+
+So read `H` here as a stand-in for something you could only probe. What the
+fitter is given is never the matrix -- it is `V` and `HV`, which is exactly
+what a matrix-free operator can supply.
+
 The kernel (eq. 7.4 of the localpsf paper) is a Gaussian whose covariance
 ROTATES with position, modulated by a cos-sin product. Two things make it a
 fair test. The rotation means a stationary convolution cannot represent it,

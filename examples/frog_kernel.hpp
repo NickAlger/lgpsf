@@ -6,6 +6,21 @@
 // example paths fit the same thing and can be compared directly. Not a lesson
 // in itself -- a target to fit.
 //
+// WHY A FORMULA, AND NOT A REAL OPERATOR. Every example builds the dense
+// matrix H, which is precisely what the method exists to avoid. That is
+// deliberate: knowing the kernel in closed form is what lets these examples
+// report an error against a ground truth, which no real application can do.
+//
+// lgpsf is for operators available MATRIX-FREE -- you can apply them to a
+// vector but cannot inspect entries, because an application runs an expensive
+// computation rather than a memory read. The Gauss-Newton Hessian of a
+// PDE-constrained inverse problem is the motivating case: one application
+// costs a linearized forward solve plus an adjoint solve. If you can afford to
+// form the dense matrix, you can also afford simpler ways to sparsify it.
+//
+// So read H here as a stand-in for something you could only probe. What the
+// fitter is given is never the matrix -- it is V and HV.
+//
 // The kernel is a Gaussian whose covariance ROTATES with position, modulated
 // by a cos-sin product. The rotation means a stationary convolution cannot
 // represent it, while a fitted per-row ellipsoid can; the modulation makes
