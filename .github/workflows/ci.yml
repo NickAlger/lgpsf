@@ -107,6 +107,18 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+  example-docs-current:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Source-only, deliberately. Re-running every example would take tens of
+      # minutes, and captured numbers legitimately differ across compiler flags
+      # (docs/reproducibility.md), so a byte-comparison of output would be
+      # flaky by construction. This catches the common drift: editing an
+      # example and forgetting to regenerate its page.
+      - name: Generated example pages carry current source
+        run: python3 docs/generate_examples.py --check
+
   direction-of-dependence:
     runs-on: ubuntu-latest
     steps:

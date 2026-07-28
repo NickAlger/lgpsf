@@ -28,5 +28,6 @@ For **using** lgpsf. Notes for people changing it are in [`../dev/`](../dev/).
 | | |
 |---|---|
 | [varpro-whitening-notes.pdf](varpro-whitening-notes.pdf) ([.tex](varpro-whitening-notes.tex)) | The mathematics: how the smooth and spike bases combine without the fitting code ever touching a mass matrix. |
-| [`../examples/`](../examples/) | Fifteen examples, each teaching one thing. Every exported name appears in at least one. |
+| [examples/](examples/) | **Every example as a page**: the program, its real output, and the figures it draws. Generated from the code, so it cannot drift. |
+| [`../examples/`](../examples/) | The example sources themselves, with a guide to what each teaches and the order to read them in. |
 | [`../experiments/`](../experiments/) | Measurements about the library — including whether refining the mesh costs more probes (it does not). |

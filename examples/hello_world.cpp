@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MIT
 //
-// Minimal smoke test for the VS Code build/debug setup: links against lgpsf
-// (and, transitively, ellipsoid_tree + Eigen), does a trivial point-in-ellipsoid
-// check, and prints the result. Set a breakpoint on the `inside` line below and
-// hit Debug in the CMake Tools status bar to verify the whole toolchain works.
+// Does the toolchain work?
+//
+// A minimal smoke test: links against lgpsf (and, transitively, ellipsoid_tree
+// and Eigen), does a trivial point-in-ellipsoid check, and prints the result.
+// If this builds and runs, your include paths and dependencies are correct.
+//
+// Set a breakpoint on the `inside` line below and hit Debug in the CMake Tools
+// status bar to verify a debugger session too.
 
 #include <iostream>
 

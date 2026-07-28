@@ -84,7 +84,8 @@ See [docs/installation.md](docs/installation.md).
   scale, and how it compares.
 - **[Reproducibility](docs/reproducibility.md)** — what is bit-exact and what
   is not.
-- **[Examples](examples/)** — fifteen of them, each teaching one thing.
+- **[Examples](docs/examples/)** — every example as a page: the program, its
+  real output, and the figures it draws.
 
 The mathematics is in
 [docs/varpro-whitening-notes.pdf](docs/varpro-whitening-notes.pdf).

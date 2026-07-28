@@ -103,3 +103,8 @@ build-py/
 
 # Claude Code scratch
 **/.cc-writes/
+
+# Example figures are regenerated into docs/img/ by docs/generate_examples.py,
+# which is where the committed copies live. Running an example locally drops
+# its own copy here; that one is scratch.
+examples/*.png
