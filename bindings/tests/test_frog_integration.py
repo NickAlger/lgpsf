@@ -19,8 +19,8 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "examples"))
 
 import lgpsf
-from operator_fit_frog import (build_problem, fit_at, frog_covariance,
-                               frog_row, relative_frobenius)
+from frog_kernel import build_problem, frog_covariance, frog_row
+from operator_fit_frog import fit_at, relative_frobenius
 
 pytest.importorskip("scipy")
 
@@ -81,7 +81,7 @@ def test_the_row_envelope_is_the_targets_own_covariance(problem):
 
     # row = bump(target) * (1 + A_MOD * modulation) * envelope, and the
     # modulation is a product of a cos and a sin, so the ratio lies in [0, 2].
-    from operator_fit_frog import A_MOD, _bump
+    from frog_kernel import A_MOD, _bump
     near = envelope > 1e-6 * envelope.max()
     ratio = row[near] / (envelope[near] * _bump(target))
     assert ratio.min() > -1e-9
@@ -107,7 +107,7 @@ def test_a_fitted_row_is_no_rougher_than_the_row_it_fits(problem):
 def test_the_prior_covariance_is_the_kernels_own_shape():
     # Sigma = R^T diag(sd) R must invert the Mahalanobis form the kernel uses,
     # or every window in the fit is the wrong shape.
-    from operator_fit_frog import SIGMA0_DIAG, _angle
+    from frog_kernel import SIGMA0_DIAG, _angle
     x = np.array([0.37, 0.62])
     sigma = frog_covariance(x)
     angle = _angle(x)
