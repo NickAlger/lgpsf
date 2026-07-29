@@ -28,6 +28,11 @@ to [Semantic Versioning](https://semver.org/).
     `oriented_ladder`, `theta_hat_from_sigma`. `oriented_ladder` makes the
     orientation-covering family reachable for the first time — it is not on by
     default, but the question is now answerable without a library change.
+  - **New example**: [`initial_guesses.py`](examples/initial_guesses.py), on a
+    deliberately multimodal row (8:1 anisotropy, signed modulation, released
+    center) where one good guess is never worse, wins on 3 of 4 rows by up to
+    2.1×, and costs under half the fits. `frog_row` gained an `a_mod`
+    parameter so the row can be made signed.
 
   `fit_operator` is **bit-identical** across this change: it passes the
   caller's `sigma` as the first guess, so the dictionary it assembles is

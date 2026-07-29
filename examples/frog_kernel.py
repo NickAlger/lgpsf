@@ -59,10 +59,11 @@ def _bump(x):
     return x[0] * (1.0 - x[0]) * x[1] * (1.0 - x[1])
 
 
-def frog_row(target, sources, sigma0_diag=SIGMA0_DIAG):
+def frog_row(target, sources, sigma0_diag=SIGMA0_DIAG, a_mod=A_MOD):
     """Row `target` of the kernel: its point-spread function, over all sources.
 
-    `target` is (2,), `sources` is (2, K); returns (K,).
+    `target` is (2,), `sources` is (2, K); returns (K,). `a_mod` past 1 makes
+    the row SIGNED, which is a harder fit; `initial_guesses.py` uses that.
 
     **The shape is anchored at the TARGET**, which is the transpose of how the
     frog kernel is usually written. That is deliberate and it matters: the
@@ -84,7 +85,7 @@ def frog_row(target, sources, sigma0_diag=SIGMA0_DIAG):
     gaussian = np.exp(-0.5 * maha2) / (2.0 * np.pi * np.sqrt(sd.prod()))
     modulation = (np.cos(p0 / (np.sqrt(sd[0]) / 2.0))
                   * np.sin(p1 / (np.sqrt(sd[1]) / 2.0)))
-    return _bump(target) * (1.0 + A_MOD * modulation) * gaussian
+    return _bump(target) * (1.0 + a_mod * modulation) * gaussian
 
 
 def frog_covariance(x, sigma0_diag=SIGMA0_DIAG):

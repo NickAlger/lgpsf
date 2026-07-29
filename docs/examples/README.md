@@ -10,6 +10,7 @@ See [`../../examples/README.md`](../../examples/README.md) for what each one tea
 - [Using a fitted operator: the four ways, and what truncation does](deploying_a_fit.md)
 - [What `theta` is, and the two encodings that catch people out](ellipsoid_theta.md)
 - [Fit ONE point-spread function from random probes](fit_one_psf.md)
+- [Telling the fitter where to start](initial_guesses.md)
 - [Why a SHORT Laguerre-Gaussian expansion is worth fitting](lg_expansion_convergence.md)
 - [What a Laguerre-Gaussian mode looks like](lg_modes.md)
 - [Choosing which modes to add, and in what order](mode_policies.md)

@@ -182,7 +182,7 @@ API. What remains is packaging.
 |---|---|
 | C++ core | complete -- 149 cases / 105,699 assertions |
 | Python bindings | complete -- 51 pytest cases |
-| Examples | 15, covering every exported name |
+| Examples | 16, covering every exported name |
 | Docs | user-facing set written; Doxygen not yet configured |
 | Field-scale validation | reproduced at both basal-friction states; see `docs/validation.md` |
 | **Outstanding** | **CI, an exercised cibuildwheel run, and M6 release infra** |
@@ -208,5 +208,5 @@ Two facts worth knowing before touching anything:
 | `dev/design-notes.md` | The running decision log, oldest first. Some early entries predate the C++ and are marked where superseded. |
 | `dev/archive/` | Closed threads: the executed port plan, the API plans, session records. |
 | `experiments/` | Measurements about the library -- where the time goes, whether refining the mesh costs more probes (it does not), and what the fitting defaults are worth. |
-| `examples/` | Fifteen examples, each teaching one thing. |
+| `examples/` | Sixteen examples, each teaching one thing. |
 | `archive/python-prototype/` | The frozen Python the method was developed in. History, not a reference. |

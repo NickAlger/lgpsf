@@ -14,7 +14,7 @@ narrative and open items only; when a thread closes, its record moves to
 | QR-first inner solve | landed — 2.1× on a whole-field fit, every number unchanged to four digits |
 | Field-scale validation | smooth and rough basal friction both reproduced; the recorded 0.0147 matched exactly |
 | Python bindings | complete — 51 pytest cases |
-| Examples | 15, covering every exported name; the frog example is the public gate |
+| Examples | 16, covering every exported name; the frog example is the public gate |
 | Fitting defaults | **changed 2026-07-28** — prior + 3 circles, `ftol` 1e-4. See below; fits are not bit-identical to 0.1.0 |
 | Initial-guess API | **changed 2026-07-29** — guesses are data, not flags. `dev/initial-guess-api-plan.md`; `fit_operator` bit-identical across it |
 | Anisotropy blind spot | **parked, and now measurable** — `experiments/anisotropy_hardening.py`. See below |
@@ -105,7 +105,7 @@ Six slices, agreed 2026-07-27, five complete.
    20/0/0. No reference to the prototype, to `dev/`, or to a slice number
    remains in `include/`, `bindings/` or `tests/`.
 
-Plus an agreed detour: the example set, now 15 examples covering every exported
+Plus an agreed detour: the example set, now 16 examples covering every exported
 name, and the mesh-scalability study in `experiments/`.
 
 ### 6. Release infra -- the only slice left
