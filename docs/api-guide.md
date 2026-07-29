@@ -25,7 +25,8 @@ makes the Python boundary zero-copy.
 **Per-row records are `(R, …)`** — row first, because `fit.mu[rho]` is how
 anyone reads one.
 
-So `mu0` goes *in* as `(N, R)` and `LGOperator.mu` comes *out* as `(R, N)`.
+So the point array `x` goes *in* as `(N, R)` and `LGOperator.mu` comes *out*
+as `(R, N)`.
 Similarly `eval_kernel` takes query points `(N, Q)` and returns `(len(rows), Q)`.
 
 > Both differ from `ellipsoid_tree`'s Python convention, which takes points as
@@ -67,6 +68,13 @@ operator ([`examples/rectangular_operator.py`](../examples/rectangular_operator.
 operator row is the motivating case, not the definition — if you can produce
 `y_i = <z_i, phi>` for random `z_i`, you can fit `phi`.
 
+It is a **multi-start**: you pass the starting ellipsoids as
+`guesses=[InitialGuess(sigma, mu=None, label="")]`, and the fit appends
+`config.num_rungs` circles of its own (`0` to suppress them). `circle_ladder`,
+`window_shape_ladder` and `oriented_ladder` build the common dictionaries. See
+[`examples/initial_guesses.py`](../examples/initial_guesses.py) and
+[defaults.md](defaults.md).
+
 It returns the winning model plus the **whole search**: every candidate with
 its label, cost, held-out score, fitted axes and iteration count. That table is
 the first place to look when a row disappoints
@@ -104,9 +112,11 @@ self-describing. The diagonal is stored as a logarithm so an unconstrained
 optimizer cannot produce an indefinite covariance.
 
 The **internal** encoding, `theta_hat`, is what the fitting core searches. It
-omits the center when pinned and stores it as a *displacement* from `mu0` when
-fitted, so it is shorter and meaningless without knowing `mu0` and the
-`MuMode`. Anything you read off a fitted operator is the public one.
+omits the center when pinned and stores it as a *displacement* from a reference
+center when fitted, so it is shorter and meaningless without knowing both that
+center and the `MuMode`. Candidates do not share one reference — a guess may
+carry its own `mu` — which is why everything a fit hands back, including
+`CandidateFit.theta_init`, is in the public encoding.
 
 See [`examples/ellipsoid_theta.py`](../examples/ellipsoid_theta.py).
 

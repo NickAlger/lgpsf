@@ -2,8 +2,9 @@
 //
 // Mirrors the glaciology validation configuration so the numbers mean
 // something for the replay: tau_window = 5, levels [0,1,2], mu pinned,
-// n_rungs = 4, window_shape_rungs off, and the BALL window (aspect cap 1),
-// which is what the prototype derives.
+// num_rungs = 4, no window-shape rungs (they were a config flag then; the
+// equivalent today is simply not passing `window_shape_ladder`), and the BALL
+// window (aspect cap 1), which is what the prototype derives.
 //
 // Also dumps the generated problem to raw binary so the Python prototype runs
 // on identical data.

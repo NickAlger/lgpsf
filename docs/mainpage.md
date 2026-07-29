@@ -12,7 +12,7 @@ see the main documentation:
 - [Quickstart](https://github.com/NickAlger/lgpsf/blob/main/docs/quickstart.md) — what you must supply, and how to check the fit worked
 - [API guide](https://github.com/NickAlger/lgpsf/blob/main/docs/api-guide.md) — the three layers and the array conventions
 - [Defaults](https://github.com/NickAlger/lgpsf/blob/main/docs/defaults.md) — every knob and the measurement behind it
-- [Examples](https://github.com/NickAlger/lgpsf/tree/main/examples) — fifteen, each teaching one thing
+- [Examples](https://github.com/NickAlger/lgpsf/tree/main/examples) — sixteen, each teaching one thing
 
 ## Where to start
 

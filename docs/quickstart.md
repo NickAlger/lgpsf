@@ -18,8 +18,8 @@ Everything else is bookkeeping.
 
 **`sigma` is not optional and is not fitted from nothing.** It is the a-priori
 ellipsoid field: your best guess at how wide each point-spread function is and
-which way it points. It sets the search window and the initial guess, and the
-fit refines it. Being wrong by a factor of two is fine; being wrong by a factor
+which way it points. It sets the search window and the first initial guess --
+the fit adds circles of its own -- and then refines it. Being wrong by a factor of two is fine; being wrong by a factor
 of ten is not. On a PDE problem this usually comes from a length scale you
 already know.
 

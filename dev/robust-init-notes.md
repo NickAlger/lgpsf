@@ -1,7 +1,7 @@
 # Robust initialization for the per-row VarPro fit
 
-**Status: PARKED (2026-07-24), re-measured 2026-07-28 — see the update at the
-top before reading on.** Design note capturing the initial-guess robustness
+**Status: PARKED (2026-07-24), re-measured 2026-07-28, family shipped
+opt-in 2026-07-29 — see the update at the top before reading on.** Design note capturing the initial-guess robustness
 experiments and the recipe they support. The evidence below is the PROTOTYPE's,
 reproducible at `archive/python-prototype/examples/varpro_frog_robust_init.py`
 with the sweep figures committed alongside; paths in the body are as they were
@@ -9,17 +9,20 @@ when this was written.
 
 ---
 
-## UPDATE 2026-07-28: the oriented family was never built, and at present it is
-## not needed
+## UPDATE: the oriented family now exists, opt-in, and is not needed by default
 
-**The gap.** The recipe below prescribes an oriented-ellipse family as the
-member that fixes the circles' orientation blind spot.
-`lgpsf::oriented_sigma(a, b, angle_degrees)` was ported to
-`include/lgpsf/init_dictionary.hpp` for it and is tested — its docstring calls
-orientation "the circle family's blind spot" — but **no rung family is built
-from it**. `probe_fit.hpp` assembles `sigma0` + window rungs + circle rungs +
-warm start, and nothing calls `oriented_sigma`. No note recorded that as a
-decision; it appears to be an omission.
+**The gap, and how it closed.** The recipe below prescribes an oriented-ellipse
+family as the member that fixes the circles' orientation blind spot.
+`lgpsf::oriented_sigma` had been ported for it and tested — its docstring calls
+orientation "the circle family's blind spot" — but for a long time **no rung
+family was built from it**, and no note recorded that as a decision.
+
+`oriented_ladder` now builds it (2026-07-29), and initial guesses are passed as
+data, so a caller reaches it directly. **It is not on by default**, and that is
+now a decision rather than an omission: measured at 8:1 the default circle
+ladder matched it under the pinned center policy, and only under a freed center
+did orientation coverage pull ahead. What stays open is not "build the family"
+but "should it ever be default", which is the research project below.
 
 **Re-measured against the live library** by `experiments/anisotropy_hardening.py`
 (write-up: `experiments/anisotropy-hardening.md`), on the same 8:1 frog:
@@ -36,15 +39,15 @@ decision; it appears to be an omission.
 - A circular start does **not** bias the fitted answer toward roundness: every
   successful start reports 7.7–12.5:1 against a true 8:1.
 
-**Therefore: still parked, and now with a trigger.** Build the oriented family
-if mu release is ever re-armed as a default, if a problem with genuinely
+**Therefore: still parked, and now with a trigger.** Revisit making the oriented
+family a default if mu release is ever re-armed, if a problem with genuinely
 anisotropic priors appears (every PIG row is below 1.7:1 by construction, so
 the field-scale validation cannot see this), or if N = 3 arrives — where
 orientation is SO(3) and the dictionary-size caveat at the end of this note
 bites hardest.
 
-Doing it properly means committing to a small research project, which is why it
-is parked rather than half-built.
+Deciding that properly means committing to a small research project, which is
+why it is parked. The family itself is available in the meantime.
 
 ---
 

@@ -16,11 +16,12 @@ narrative and open items only; when a thread closes, its record moves to
 | Python bindings | complete — 51 pytest cases |
 | Examples | 16, covering every exported name; the frog example is the public gate |
 | Fitting defaults | **changed 2026-07-28** — prior + 3 circles, `ftol` 1e-4. See below; fits are not bit-identical to 0.1.0 |
-| Initial-guess API | **changed 2026-07-29** — guesses are data, not flags. `dev/initial-guess-api-plan.md`; `fit_operator` bit-identical across it |
-| Anisotropy blind spot | **parked, and now measurable** — `experiments/anisotropy_hardening.py`. See below |
+| Initial-guess API | **changed 2026-07-29** — guesses are data, not flags. [`archive/initial-guess-api-plan.md`](archive/initial-guess-api-plan.md); `fit_operator` bit-identical across it |
+| Anisotropy blind spot | **parked, measurable, and now reachable** — `oriented_ladder` ships opt-in; `experiments/anisotropy_hardening.py`. See below |
 | User documentation | written — README, installation, quickstart, api-guide, defaults |
 | Direction of dependence | enforced by `tools/check_dependencies.py` over docs, dev and experiments too |
 | Repo cleanup | 5 of 6 slices done — see below |
+| Fitting speed | **~4.5× faster than 0.1.0** at unchanged accuracy — see below |
 | **Not done** | **CI, cibuildwheel, M6 release infra** |
 
 ## Fitting defaults changed, 2026-07-28
@@ -75,7 +76,8 @@ of choosing among dictionaries selected by flags. `sigma0`,
 `window_shape_rungs` and `circle_rungs_above_aspect` are gone;
 `num_rungs = 0` means "only my guesses"; `mu0` is `default_mu`; and
 `MuPolicy::Pinned` honours a guess's own `mu`. Plan and rationale in
-[`initial-guess-api-plan.md`](initial-guess-api-plan.md), migration table in the
+[`archive/initial-guess-api-plan.md`](archive/initial-guess-api-plan.md),
+migration table in the
 CHANGELOG.
 
 `fit_operator` is bit-identical across the change — it passes the caller's
@@ -84,6 +86,29 @@ the release path re-encodes against the candidate's own center (the old
 zero-displacement invariant breaks once centers differ), and
 `CandidateFit::theta_hat_init` became `theta_init` in the public absolute
 encoding, because a displacement against an unstated origin cannot be decoded.
+
+## How much faster, and at what cost
+
+Measured three ways, all agreeing, after the defaults change and the API change
+(the latter is bit-identical, so it contributes nothing):
+
+| | speedup |
+|---|---|
+| Rough-beta PIG, 6557 rows, five conditions | **4.3–4.8×** |
+| Frog row layer, 0.1.0's dictionary reconstructed exactly | **4.8×** |
+| Frog operator layer, rungs + tolerance only | 2.4× |
+
+The last is lower because `fit_operator` can no longer assemble the
+window-shape family, so it omits half of what 0.1.0 did. The row-layer figure
+is the like-for-like: the new API can rebuild 0.1.0's dictionary exactly as
+`guesses = [sigma] + window_shape_ladder(x, m2, mu0, 6)` with `num_rungs = 6`.
+
+**69.0 → 24.0 nonlinear fits per row.** Wall clock falls further than the fit
+count, so roughly a third of the gain is the looser `ftol` making each surviving
+fit cheaper.
+
+Held-out QC across the five field-scale conditions: 0.974×, 0.982×, 0.983×,
+0.997×, 1.003× — three of them better than 0.1.0.
 
 ## The cleanup: done
 

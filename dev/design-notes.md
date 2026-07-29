@@ -283,6 +283,14 @@ slice-37 refits in the research repo):**
   caller's conservative ellipsoid, which the circle family is blind to.
   Circles stay as shape-agnostic insurance (the window shape inherits
   the caller's prior errors; boundary-clipped windows lie).
+
+> **SUPERSEDED (2026-07-29)** by "Initial guesses are data, not flags" at the
+> end of this log. The two families and the `sigma0` rung are no longer
+> selected by config flags: the caller passes `InitialGuess` values and the fit
+> appends `num_rungs` circles. The window-shape family was measured on a real
+> Hessian, never helped, and is now the opt-in `window_shape_ladder`. The
+> reasoning above about what each family is blind to survives intact -- it is
+> why the circles are still the default and why `oriented_ladder` exists.
 - **Window-containment admissibility**: the conservative window bounds
   the true kernel by construction, so fits whose major semi-axis
   exceeds the window radius -- or released centers leaving the window
@@ -1594,3 +1602,58 @@ On the four rows themselves native happened to win 3-1 (mean qc 0.2188 vs
 
 So: a real effect, confined to rows that are hard for independent reasons, with
 no systematic direction and no measurable consequence for the operator.
+
+## Initial guesses are data, not flags (2026-07-29)
+
+**Decision:** `fit_from_probes` takes a collection of `InitialGuess{sigma, mu?,
+label}` instead of choosing among dictionaries selected by config flags.
+`sigma0`, `window_shape_rungs` and `circle_rungs_above_aspect` are gone;
+`num_rungs` gains `0` = "only my guesses"; `mu0` is `default_mu`. Plan and
+rationale: [`archive/initial-guess-api-plan.md`](archive/initial-guess-api-plan.md).
+
+**Why:** where to seed a nonlinear search is problem-specific, and the library
+had already taken this position once -- `mode_policy` is required rather than
+defaulted because "no single choice is defensible as a silent default".
+Initialization has exactly that character.
+
+It is also where a flag had already gone wrong. `circle_rungs_above_aspect = 3`
+read as an economy and was in fact an off switch removing the only safety net,
+on a knob whose failure the cross-validation score does not report -- median CV
+moved 1.0% while held-out error moved 106%. `guesses = []` cannot hide that way.
+
+**Three things worth keeping:**
+
+- **`MuPolicy::Pinned` means "the optimizer does not move mu from its initial
+  guess", not "mu is `default_mu`".** Each candidate is now fitted about its own
+  center. This needed no change to `ellipsoid_transform.hpp`: the reference mu
+  was already a parameter of `to_theta` and friends.
+- **The release path's zero-displacement invariant broke.** It assumed a pinned
+  candidate's center IS `mu0`; with per-candidate centers it must re-encode
+  against the candidate's own, or a released fit silently starts displaced and
+  still converges to something.
+- **`CandidateFit::theta_hat_init` became `theta_init`, in the public absolute
+  encoding.** Candidates no longer share an origin, so a displacement against an
+  unstated reference cannot be decoded -- and provenance in the public encoding
+  is more useful anyway.
+
+**What it cost:** nothing. `fit_operator` is bit-identical across the change,
+because it passes the caller's `sigma` as the first guess.
+
+## The frog understates what it cannot construct (2026-07-29)
+
+**Observation, recorded because it changed a shipped default.** The synthetic
+sweep concluded the circle rungs were worthless -- 1.00x error under every
+damaged prior it tested. A real Hessian said removing them doubles the held-out
+error. Two separate reasons, and both generalize:
+
+1. **It never removed the backup.** Its "circles never" variant left the
+   window-shape rungs in place, and those are multi-scale starts too. Remove
+   both and the frog does show a loss.
+2. **It cannot build the failure.** `damaged_priors` rotates the prior, or
+   scales it *and the window with it*, so it never produces a prior wrong in
+   SCALE while the window stays usable -- which is exactly what the circles
+   rescue, and exactly what the glaciology pointwise prior is.
+
+Even after fixing (1) the frog reports 1.14x where the real operator reports
+2x. **A synthetic problem is a good check on whether something is broken and a
+bad one on whether something is unnecessary.**

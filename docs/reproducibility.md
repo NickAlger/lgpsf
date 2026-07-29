@@ -111,7 +111,7 @@ within-build property, so any acceptance criterion phrased as "bit-for-bit" has
 to say against which build.
 
 **If you need the fit itself to be less basin-sensitive**, that is a different
-request and this document is not the answer to it: raise `num_rungs` so more
-initializations are tried, or lower `target_score` so the search does not exit
-early on a merely-adequate candidate. Neither is currently believed necessary --
+request and this document is not the answer to it: raise `num_rungs`, or pass
+extra `guesses`, so more initializations are tried; or lower `target_score` so
+the search does not exit early on a merely-adequate candidate. Neither is currently believed necessary --
 the affected rows cost nothing measurable.
