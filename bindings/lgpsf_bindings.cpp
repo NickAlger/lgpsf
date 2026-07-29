@@ -618,6 +618,64 @@ PYBIND11_MODULE(lgpsf, m)
           "sit on the enrichment saddle, so the perturbation matters; its "
           "distribution does not.");
 
+    py::class_<InitialGuess>(m, "InitialGuess",
+                             "A starting ellipsoid for the per-row search, in "
+                             "the public (mu, sigma) form.")
+        .def(py::init([]( const Eigen::MatrixXd& sigma,
+                          const std::optional<Eigen::VectorXd>& mu,
+                          const std::string& label ) {
+                 InitialGuess guess;
+                 guess.sigma = sigma;
+                 guess.mu = mu;
+                 guess.label = label;
+                 return guess;
+             }),
+             "sigma"_a, py::kw_only(), "mu"_a = std::nullopt, "label"_a = "",
+             "sigma is (N, N) SPD. mu is (N,); omit it to start at the fit's "
+             "default_mu. Under MuPolicy.Pinned mu is where the center STAYS.")
+        .def_readwrite("sigma", &InitialGuess::sigma)
+        .def_readwrite("mu", &InitialGuess::mu)
+        .def_readwrite("label", &InitialGuess::label)
+        .def("__repr__", []( const InitialGuess& g ) {
+            return "<InitialGuess " + (g.label.empty() ? std::string("(unlabelled)")
+                                                       : g.label)
+                   + (g.mu ? ", own mu" : ", at default_mu") + ">";
+        });
+
+    m.def("circle_ladder",
+          []( const PointsIn& x, const Eigen::VectorXd& default_mu,
+              int num_rungs ) {
+              return circle_ladder(Eigen::MatrixXd(map_points(x, "x")),
+                                   default_mu, num_rungs);
+          },
+          "x"_a, "default_mu"_a, "num_rungs"_a,
+          "Isotropic guesses at log-spaced scales -- the library's default "
+          "dictionary. x is (N, K).");
+
+    m.def("window_shape_ladder",
+          []( const PointsIn& x, const Eigen::VectorXd& m2_diag,
+              const Eigen::VectorXd& default_mu, int num_rungs ) {
+              return window_shape_ladder(Eigen::MatrixXd(map_points(x, "x")),
+                                         m2_diag, default_mu, num_rungs);
+          },
+          "x"_a, "m2_diag"_a, "default_mu"_a, "num_rungs"_a,
+          "Scaled copies of the batch's own empirical shape. Carries no shape "
+          "information your sigma did not already have when the batch is a "
+          "window derived from it.");
+
+    m.def("oriented_ladder",
+          []( const PointsIn& x, const Eigen::VectorXd& default_mu,
+              int num_rungs, const std::vector<double>& angles_degrees,
+              double aspect ) {
+              return oriented_ladder(Eigen::MatrixXd(map_points(x, "x")),
+                                     default_mu, num_rungs, angles_degrees,
+                                     aspect);
+          },
+          "x"_a, "default_mu"_a, "num_rungs"_a, "angles_degrees"_a, "aspect"_a,
+          "Anisotropic guesses over a grid of orientations -- the circle "
+          "family's blind spot. Two-dimensional only; not on by default "
+          "because it has not earned it (see experiments/).");
+
     py::class_<ProbeFitConfig>(m, "ProbeFitConfig",
                                "The row fit's policy and numerics. Structural "
                                "facts -- window, probes, masses, spike index -- "
@@ -627,14 +685,10 @@ PYBIND11_MODULE(lgpsf, m)
         .def_readwrite("mode_policy", &ProbeFitConfig::mode_policy,
                        "REQUIRED. One mechanism: an explicit list is FixedSet, "
                        "a level ladder is ShellLadder.")
-        .def_readwrite("num_rungs", &ProbeFitConfig::num_rungs)
-        .def_readwrite("window_shape_rungs", &ProbeFitConfig::window_shape_rungs)
-        .def_readwrite("circle_rungs_above_aspect",
-                       &ProbeFitConfig::circle_rungs_above_aspect,
-                       "Add circle rungs only when the a-priori ellipsoid is at "
-                       "least this anisotropic. 1.0 always adds them. Not "
-                       "OperatorFitConfig.window_aspect_cap, which shapes the "
-                       "window instead.")
+        .def_readwrite("num_rungs", &ProbeFitConfig::num_rungs,
+                       "How many default circle rungs to append after the "
+                       "caller's guesses. 0 means 'only my guesses', and is an "
+                       "error if none were passed.")
         .def_readwrite("target_score", &ProbeFitConfig::target_score,
                        "Absolute early-exit certificate; None disables it.")
         .def_readwrite("mode_patience", &ProbeFitConfig::mode_patience)
@@ -691,7 +745,10 @@ PYBIND11_MODULE(lgpsf, m)
         .def_readonly("label", &CandidateFit::label)
         .def_readonly("modes_label", &CandidateFit::modes_label)
         .def_readonly("released", &CandidateFit::released)
-        .def_readonly("theta_hat_init", &CandidateFit::theta_hat_init)
+        .def_readonly("theta_init", &CandidateFit::theta_init,
+                      "Where this candidate started, in the PUBLIC absolute\n"
+                      "encoding -- so theta_init[:N] is the center it was\n"
+                      "seeded at, and it pairs directly with model.theta.")
         .def_readonly("cost", &CandidateFit::cost,
                       "In-sample whitened cost -- a diagnostic, NEVER used for "
                       "selection.")
@@ -729,21 +786,24 @@ PYBIND11_MODULE(lgpsf, m)
     m.def("fit_from_probes",
           []( const PointsIn& x, const Eigen::VectorXd& m2_diag,
               const PointsIn& z, const Eigen::VectorXd& y,
-              const Eigen::VectorXd& mu0, int spike_index,
+              const Eigen::VectorXd& default_mu, int spike_index,
               const ProbeFitConfig& config,
-              const std::optional<Eigen::MatrixXd>& sigma0,
+              const std::vector<InitialGuess>& guesses,
               std::optional<double> target_mass ) {
               const Eigen::MatrixXd points(map_points(x, "x"));
               const Eigen::MatrixXd probes(map_batch(z, "z"));
               py::gil_scoped_release unlock;
-              return fit_from_probes(points, m2_diag, probes, y, mu0,
-                                     spike_index, config, sigma0, target_mass);
+              return fit_from_probes(points, m2_diag, probes, y, default_mu,
+                                     spike_index, config, guesses, target_mass);
           },
-          "x"_a, "m2_diag"_a, "z"_a, "y"_a, "mu0"_a, py::kw_only(),
+          "x"_a, "m2_diag"_a, "z"_a, "y"_a, "default_mu"_a, py::kw_only(),
           "spike_index"_a = -1, "config"_a = ProbeFitConfig(),
-          "sigma0"_a = std::nullopt, "target_mass"_a = std::nullopt,
+          "guesses"_a = std::vector<InitialGuess>(),
+          "target_mass"_a = std::nullopt,
           "Fit a target known only through inner products with probe fields. "
-          "x is (N, K), z is (num_probes, K), y is (num_probes,).");
+          "x is (N, K), z is (num_probes, K), y is (num_probes,). Starting "
+          "ellipsoids go in `guesses`, tried before the default circle rungs; "
+          "pass your a-priori covariance there to try it first.");
 
     // ---- the operator ------------------------------------------------------
     //

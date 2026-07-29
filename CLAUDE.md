@@ -89,19 +89,23 @@ with $\mu$ either free (part of $\theta$) or fixed at a given constant.
 **Notation: $T$ denotes the pullback**, not a forward map -- if a forward
 map is ever needed, call it $T^{-1}$.
 
-**The initial-guess dictionary.** Each row's fit is a multi-start: `sigma0` (the
-prior you supplied) plus `num_rungs` **circle** rungs at log-spaced scales, plus
-a warm start from the previous ladder level -- four fits per level at the
-defaults. A second family, scaled copies of the window's own shape, exists but
-is off by default. Both families draw on the SAME `num_rungs` scales, so that is
-one count, not one per family.
+**The initial-guess dictionary is DATA.** Each row's fit is a multi-start over
+a collection of `InitialGuess{sigma, mu?, label}` the caller passes in, plus
+`num_rungs` **circle** rungs the fit appends itself, plus a warm start from the
+previous ladder level. `num_rungs = 0` means "only my guesses".
+`circle_ladder`, `window_shape_ladder` and `oriented_ladder` build the common
+dictionaries; a guess's `mu` defaults to `default_mu`, and under
+`MuPolicy::Pinned` that is where its center STAYS. `fit_operator` passes the
+caller's `sigma` as the first guess, so a whole-operator row tries prior, three
+circles, warm start.
 
 The circles are insurance, not decoration: they sweep the *scale* axis at a
 neutral shape, and a prior's width is the thing most often wrong. Removing them
 on a field-scale prior that was 3-5x too wide doubled the held-out error, and
-the cross-validation score did not report it. Nothing in the dictionary covers
-*orientation* independently of the prior -- a known, deliberately parked gap;
-see `dev/robust-init-notes.md` and `experiments/anisotropy_hardening.py`.
+the cross-validation score did not report it. Nothing in the DEFAULT dictionary
+covers *orientation* independently of the prior -- `oriented_ladder` does, and
+is deliberately not default; see `dev/robust-init-notes.md` and
+`experiments/anisotropy-hardening.md`.
 
 **VarPro.** The ellipsoid parameters $\theta$ are nonlinear; the
 coefficients ($c$, $s$) are linear given $\theta$. Variable projection
@@ -176,8 +180,8 @@ API. What remains is packaging.
 
 | | |
 |---|---|
-| C++ core | complete -- 145 cases / 105,618 assertions |
-| Python bindings | complete -- 49 pytest cases |
+| C++ core | complete -- 149 cases / 105,699 assertions |
+| Python bindings | complete -- 51 pytest cases |
 | Examples | 15, covering every exported name |
 | Docs | user-facing set written; Doxygen not yet configured |
 | Field-scale validation | reproduced at both basal-friction states; see `docs/validation.md` |

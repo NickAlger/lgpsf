@@ -92,7 +92,8 @@ def main():
             config.target_score = None      # no early exit: compare like for like
 
             result = lgpsf.fit_from_probes(x, mass, z, y, mu0, config=config,
-                                           sigma0=sigma0, target_mass=mass[rho])
+                                           guesses=[lgpsf.InitialGuess(sigma0)],
+                                           target_mass=mass[rho])
             cells.append(f"{result.score:.4f} / {result.model.num_modes}")
             best.setdefault(k, []).append((result.score, name))
         print(f"{name:>22}" + "".join(f"{c:>22}" for c in cells))

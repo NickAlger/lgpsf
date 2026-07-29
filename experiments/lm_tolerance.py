@@ -132,7 +132,7 @@ def fit_rows(problem, rows, V, config):
     for rho in rows:
         truth = H[rho, :]
         result = lgpsf.fit_from_probes(x, mass, V, V @ truth, x[:, rho],
-                                       config=config, sigma0=problem["sigma"][rho],
+                                       config=config, guesses=[lgpsf.InitialGuess(problem["sigma"][rho])],
                                        target_mass=mass[rho])
         iterations += sum(c.num_iterations for c in result.candidates)
         candidates += len(result.candidates)

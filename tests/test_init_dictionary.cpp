@@ -20,19 +20,24 @@
 #include "test_helpers.hpp"
 
 using lgpsf::InitCandidate;
+using lgpsf::InitialGuess;
 using lgpsf::MuMode;
 using lgpsf::RawMoments;
 using lgpsf::backproject;
+using lgpsf::circle_ladder;
 using lgpsf::circle_rungs;
 using lgpsf::ladder_scales;
 using lgpsf::local_spacing;
 using lgpsf::mid_out;
+using lgpsf::oriented_ladder;
 using lgpsf::oriented_sigma;
 using lgpsf::raw_moments;
 using lgpsf::theta_hat_from_cholesky;
+using lgpsf::theta_hat_from_sigma;
 using lgpsf::theta_hat_size;
 using lgpsf::unpack_theta_hat;
 using lgpsf::window_radius;
+using lgpsf::window_shape_ladder;
 using lgpsf::window_rungs;
 using lgpsf::window_shape;
 
@@ -420,4 +425,110 @@ TEST_CASE("the noise threshold rescues a bump on a mostly-far-field window")
     const Eigen::MatrixXd tight = x.middleRows(95, 11);
     const Eigen::VectorXd tight_r = r.segment(95, 11);
     CHECK_THROWS_AS(raw_moments(tight, tight_r, -1, 0.0, 3.0), std::invalid_argument);
+}
+
+
+TEST_CASE("theta_hat_from_sigma inverts the pinned encoding")
+{
+    Eigen::MatrixXd sigma(2, 2);
+    sigma << 4.0, 1.0,
+             1.0, 9.0;
+    const Eigen::VectorXd theta_hat = theta_hat_from_sigma(sigma);
+
+    const Eigen::VectorXd mu0 = Eigen::VectorXd::Zero(2);
+    const auto frame = unpack_theta_hat(theta_hat, mu0, MuMode::Pinned);
+    const Eigen::MatrixXd recovered = frame.L * frame.L.transpose();
+    CHECK(recovered.isApprox(sigma, 1e-12));
+
+    // A silent NaN reaching the solver is the failure this guards.
+    Eigen::MatrixXd indefinite(2, 2);
+    indefinite << 1.0, 2.0,
+                  2.0, 1.0;
+    CHECK_THROWS_AS(theta_hat_from_sigma(indefinite), std::invalid_argument);
+    CHECK_THROWS_AS(theta_hat_from_sigma(Eigen::MatrixXd::Identity(2, 3)),
+                    std::invalid_argument);
+}
+
+TEST_CASE("circle_ladder reproduces the circle_rungs it replaces")
+{
+    // The public (mu, sigma) helper and the internal theta_hat generator must
+    // agree, or swapping the dictionary over changes every default fit.
+    // sigma = r^2 I goes through a Cholesky on the way back to log r, so this
+    // also pins down that the round trip is exact rather than merely close.
+    const int count = 60;
+    Eigen::MatrixXd x(count, 2);
+    for ( int i = 0; i < count; ++i )
+    {
+        x(i, 0) = 0.13 * i;
+        x(i, 1) = 0.07 * i - 1.0;
+    }
+    Eigen::VectorXd mu0(2);
+    mu0 << 1.0, -0.25;
+
+    for ( int num_rungs : {1, 3, 6} )
+    {
+        const Eigen::VectorXd radii = lgpsf::ladder_scales_for(x, mu0, num_rungs);
+        const std::vector<InitCandidate> expected = circle_rungs(radii, 2);
+        const std::vector<InitialGuess> actual = circle_ladder(x, mu0, num_rungs);
+
+        REQUIRE(actual.size() == expected.size());
+        for ( std::size_t i = 0; i < actual.size(); ++i )
+        {
+            CHECK(actual[i].label == expected[i].label);
+            CHECK_FALSE(actual[i].mu.has_value());   // centered at default_mu
+            const Eigen::VectorXd theta_hat =
+                theta_hat_from_sigma(actual[i].sigma);
+            for ( Eigen::Index j = 0; j < theta_hat.size(); ++j )
+            {
+                CHECK(theta_hat(j) == expected[i].theta_hat(j));
+            }
+        }
+    }
+}
+
+TEST_CASE("window_shape_ladder and oriented_ladder have the geometry they claim")
+{
+    const int count = 80;
+    Eigen::MatrixXd x(count, 2);
+    std::mt19937 gen(7);
+    std::normal_distribution<double> normal(0.0, 1.0);
+    for ( int i = 0; i < count; ++i )
+    {
+        x(i, 0) = 3.0 * normal(gen);
+        x(i, 1) = 0.5 * normal(gen);
+    }
+    const Eigen::VectorXd m2 = Eigen::VectorXd::Constant(count, 0.25);
+    const Eigen::VectorXd mu0 = Eigen::VectorXd::Zero(2);
+
+    const std::vector<InitialGuess> window = window_shape_ladder(x, m2, mu0, 3);
+    REQUIRE(window.size() == 3);
+    for ( const InitialGuess& guess : window )
+    {
+        // SPD, and elongated the way the batch is (3:1 in x by construction).
+        const Eigen::VectorXd values =
+            Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd>(
+                guess.sigma, Eigen::EigenvaluesOnly).eigenvalues();
+        CHECK(values.minCoeff() > 0.0);
+        CHECK(std::sqrt(values.maxCoeff() / values.minCoeff()) > 2.0);
+    }
+
+    const std::vector<InitialGuess> oriented =
+        oriented_ladder(x, mu0, 2, {0.0, 90.0}, 4.0);
+    REQUIRE(oriented.size() == 4);          // 2 scales x 2 angles
+    for ( const InitialGuess& guess : oriented )
+    {
+        const Eigen::VectorXd values =
+            Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd>(
+                guess.sigma, Eigen::EigenvaluesOnly).eigenvalues();
+        CHECK(std::sqrt(values.maxCoeff() / values.minCoeff())
+              == doctest::Approx(4.0));
+    }
+    // The 0-degree entries are wide in x, the 90-degree ones wide in y.
+    CHECK(oriented[0].sigma(0, 0) > oriented[0].sigma(1, 1));
+    CHECK(oriented[1].sigma(1, 1) > oriented[1].sigma(0, 0));
+
+    CHECK_THROWS_AS(oriented_ladder(x, mu0, 2, {0.0}, 0.5), std::invalid_argument);
+    CHECK_THROWS_AS(oriented_ladder(x, mu0, 2, {}, 4.0), std::invalid_argument);
+    const Eigen::VectorXd mu3 = Eigen::VectorXd::Zero(3);
+    CHECK_THROWS_AS(oriented_ladder(x, mu3, 2, {0.0}, 4.0), std::invalid_argument);
 }

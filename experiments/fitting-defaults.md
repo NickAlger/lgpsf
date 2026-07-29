@@ -5,8 +5,9 @@ field-scale PDE Hessian, which overturned one of the recommendations below —
 see [what happened to these](#what-happened-to-these-recommendations). Read both
 before trusting a frog-only conclusion about anything.
 
-Numbers regenerated under the current defaults; every block sets its own knobs,
-so the tables measure the same configurations they always did.
+Rewritten 2026-07-29 against the API the change produced: two of the knobs it
+originally swept are gone, and one comparison it could never make became
+available. Where a conclusion changed, both are shown.
 
 ## The question
 
@@ -27,26 +28,47 @@ ratios rather than seconds; each configuration is fitted twice and the faster
 run reported, because the first fit in a process pays warm-up costs larger
 than most of the effects here.
 
-## Nothing in the ladder changed an answer
+## The circle rungs ARE load-bearing
 
-Sixty whole-operator fits. Every relative-error ratio came out **1.00**.
-Representative, on the 4:1 kernel with a correct prior:
+`fit_operator` always passes the caller's sigma as the first guess, so
+`num_rungs = 0` is exactly "the prior alone". That is the comparison that
+decides whether the default dictionary needs anything besides the prior, and it
+was not expressible until initial guesses became data:
 
-| setting | rel. error | speedup |
+| prior | sigma + 6 circles | sigma + 3 circles | sigma alone |
+|---|---|---|---|
+| correct (2:1) | 0.1271 | 0.1276 (1.00×) | 0.1335 (**1.05×**) |
+| rotated 90° | 0.2700 | 0.2700 (1.00×) | 0.2736 (1.01×) |
+| **4× too wide** | 0.1323 | 0.1335 (1.01×) | 0.1513 (**1.14×**) |
+| 4× too narrow | 0.4299 | 0.4294 (1.00×) | 0.4299 (1.00×) |
+| isotropic | — | — | 0.1392 (1.02×) |
+
+**The prior alone is never better and is up to 1.14× worse**, with the damage
+concentrated exactly where the theory says: on the prior wrong in *scale*.
+Dropping the circles buys ~3.8×, and it is not worth it — the same conclusion a
+real Hessian reached far more loudly (0.20 → 0.50, and 190 → 816 failed rows).
+
+**This reverses what the first version of this experiment concluded**, and the
+reason is worth keeping. That version compared "circles" against "no circles"
+while the *window-shape* rungs were still on, and found 1.00× — because those
+rungs covered for the missing circles. Remove both families, which is what
+`num_rungs = 0` now means, and the loss appears. It is the same redundancy the
+glaciology sweep found from the other side: the fit needs *some* family of
+multi-scale starts, and it does not much matter which.
+
+## Three rungs is the knee
+
+| setting | rel. error (4:1, correct prior) | speedup |
 |---|---|---|
-| `num_rungs = 6`, circles always **(0.1.0 default)** | 0.1343 | — |
-| `num_rungs = 3` | 0.1342 | 1.68× |
-| `num_rungs = 2` | 0.1342 | 2.13× |
-| `window_shape_rungs` off | 0.1342 | 1.60× |
-| circles never | 0.1343 | 1.85× |
+| `num_rungs = 6` | 0.1342 | — |
+| `num_rungs = 4` | 0.1342 | 1.32× |
+| **`num_rungs = 3`** | **0.1342** | **1.57×** |
+| `num_rungs = 2` | 0.1350 (1.01×) | 1.92× |
+| `num_rungs = 1` | 0.1367 (1.02×) | 2.78× |
 
-That holds under a 90°-rotated prior, a 4× too wide prior, a 4× too narrow
-prior, and a prior with no shape information at all. The ladder is not what
-determines accuracy on this problem, at any prior quality tested.
-
-`circle_rungs_above_aspect = 3` behaves as designed: on the 4:1 kernel with a
-correct prior it keeps the circles and costs nothing (1.00×), and on the
-isotropic prior it drops them for 1.79×. The gate fires where it should.
+Accuracy is flat down to 3 and starts slipping at 2 — which is why the default
+is 3 and not 2. Three log-spaced rungs bracket the scale range closely enough
+that Levenberg-Marquardt closes the rest.
 
 ## Why: the prior binds through the WINDOW, not the initial guess
 
@@ -93,24 +115,30 @@ one was overturned, and one changed for a reason this experiment could not see.
 |---|---|---|---|
 | `num_rungs` | 6 → 3 | **3** | Held up: never worse in eight field-scale conditions. |
 | `varpro.ftol` | (not tested here) | **1e-4** | Separate sweep, [`lm-tolerance.md`](lm-tolerance.md). |
-| `circle_rungs_above_aspect` | 1.0 → 3.0 | **1.0 — rejected** | See below. |
-| `window_shape_rungs` | keep on | **off** | On the real Hessian it never helped and cost 1.7×; under a ball window it degenerates into a second copy of the circle rungs. |
+| `circle_rungs_above_aspect` | 1.0 → 3.0 | **rejected, then deleted** | See below. The knob no longer exists; `num_rungs = 0` is how you drop the circles now. |
+| `window_shape_rungs` | keep on | **deleted, opt-in as `window_shape_ladder`** | On the real Hessian it never helped and cost 1.7×; under a ball window it degenerates into a second copy of the circle rungs. |
 
-**The rejected one is the interesting one.** This sweep found the circle rungs
-worthless — 1.00× error under every damaged prior it tested. On the real
-operator, removing them **doubled** the held-out error (0.20 → 0.50) and took
-the count of rows predicting worse than zero from 190 to 816.
+**The rejected one is the interesting one.** As originally run, this sweep
+found the circle rungs worthless — 1.00× error under every damaged prior. On
+the real operator, removing them **doubled** the held-out error (0.20 → 0.50)
+and took the count of rows predicting worse than zero from 190 to 816.
 
-The reason is a gap in this experiment that the caveat above half-anticipated.
-`damaged_priors` rotates the prior, or scales it *and the window with it*. What
-it never produces is a prior whose **scale is wrong while the window stays
-usable** — and scale, not shape, is what the circle ladder actually rescues.
-The glaciology pointwise prior is 3–5× too wide at the channel, which is
-exactly that case.
+Two things were wrong with the original, and the rewrite fixes one of them.
 
-So the frog was not merely unable to see the circle rungs' value. It was
-constructed in a way that could not produce the failure they exist for. Sixty
-unanimous results, and one of the four conclusions was wrong.
+**It never removed the backup.** Its "circles never" variant left the
+window-shape rungs in place, and those are multi-scale starts too. The rewritten
+block above removes both and the frog does then show a loss — 1.14× on the prior
+wrong in scale.
+
+**And it still understates the effect**, because of the deeper gap the caveat
+above half-anticipated: `damaged_priors` rotates the prior, or scales it *and
+the window with it*, so it never produces a prior whose scale is wrong while the
+window stays usable. That is the glaciology pointwise case, 3–5× too wide at the
+channel, and it is where the effect is 2× rather than 1.14×.
+
+So a synthetic problem understated a real effect by a factor of seven, in a
+direction that would have shipped a worse default. The frog is a good check on
+whether something is broken, and a bad one on whether something is unnecessary.
 
 ## What this does not measure
 

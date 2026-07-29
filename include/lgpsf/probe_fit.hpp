@@ -58,6 +58,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -256,49 +257,13 @@ struct ProbeFitConfig
     /// mode list is `FixedSet` and a level ladder is `ShellLadder`.
     std::shared_ptr<const ModePolicy> mode_policy;
 
-    /// Log-spaced scales in the initial-guess ladder, from the local mesh
-    /// spacing to the window radius. Both rung families use these SAME scales,
-    /// so this is one count, not one per family.
+    /// How many default circle rungs to add, at log-spaced scales from the
+    /// local mesh spacing to the batch radius -- `circle_ladder`'s dictionary.
+    ///
+    /// **0 means "only the guesses I passed"**, and is an error if none were.
+    /// Anything else appends that many rungs AFTER the caller's guesses, so a
+    /// supplied a-priori shape is still tried first.
     int num_rungs = 3;
-
-    /// Also ladder scaled copies of the window's own empirical shape.
-    ///
-    /// Off by default: the window's shape derives from the same `sigma` as the
-    /// initial guess, so this family carries no shape information `sigma0` did
-    /// not already have -- and when the window is a ball it degenerates into a
-    /// second copy of the circle rungs. Measured on a real Hessian it never
-    /// helped and cost 1.7x. Turn it on if your window shape is informative
-    /// for a reason the prior is not.
-    bool window_shape_rungs = false;
-
-    /// Add the CIRCLE rungs only when the a-priori ellipsoid is at least this
-    /// anisotropic -- the ratio of its largest 1-sigma axis to its smallest.
-    ///
-    /// Circle rungs are the fallback for a prior that misleads. They sweep the
-    /// SCALE axis at a neutral shape, which is what rescues a `sigma0` whose
-    /// width is wrong -- and a prior's width is the thing most often wrong.
-    ///
-    /// An aspect ratio is always >= 1, so **1.0 means always add them**, which
-    /// is the default and what the shipped configuration relies on.
-    ///
-    /// @warning Raising this is not a mild economy. With `window_shape_rungs`
-    /// off (also the default), the circles are the ONLY family besides
-    /// `sigma0` itself, so raising the gate above a near-round prior's aspect
-    /// leaves the search with one starting guess and a warm start. Measured on
-    /// a real PDE Hessian whose prior was 3-5x too wide, that **doubled the
-    /// held-out error** (0.20 -> 0.50) and took the count of rows predicting
-    /// worse than zero from 190 to 816. Nothing in the cross-validation score
-    /// reports it -- the median CV moved 1% while held-out error moved 106% --
-    /// so this failure is not self-diagnosing. Raise it only if you know your
-    /// prior's SCALE is sound. See `experiments/` for the measurements.
-    ///
-    /// Ignored when no `sigma0` is supplied: there is then no prior to judge,
-    /// and the circles are the only shape hypothesis there is.
-    ///
-    /// NOT to be confused with `OperatorFitConfig::window_aspect_cap`, which
-    /// shapes the WINDOW -- the region a row is fitted on -- and has nothing
-    /// to do with initial guesses.
-    double circle_rungs_above_aspect = 1.0;
 
     /// Absolute early-exit certificate: stop once an admissible candidate
     /// scores at or below this. Unset disables it.
@@ -343,8 +308,14 @@ struct CandidateFit
     /// stores absolute parameters, so nothing needs this to decode it.
     bool released = false;
 
-    /// The starting point, in the stream's internal encoding.
-    Eigen::VectorXd theta_hat_init;
+    /// Where this candidate started, in the PUBLIC absolute encoding -- the
+    /// same one `model.theta` uses, so `theta_init.head(N)` is the center it
+    /// was seeded at and the pair reads as "started here, finished there".
+    ///
+    /// Absolute rather than the internal `theta_hat` because candidates no
+    /// longer share one origin: a guess may carry its own center, and a
+    /// displacement against an unstated reference cannot be decoded.
+    Eigen::VectorXd theta_init;
 
     /// In-sample whitened cost -- a diagnostic, NEVER used for selection.
     double cost = 0.0;
@@ -487,12 +458,23 @@ inline Eigen::VectorXd axes_of( const Eigen::Ref<const Eigen::VectorXd>& theta_h
 /// @param m2_diag  (K,) lumped masses on the batch.
 /// @param z        (K, k) raw probe fields restricted to the batch.
 /// @param y        (k,) the target's raw responses.
-/// @param mu0      (N,) reference center, e.g. the target's own dof location.
+/// @param default_mu  (N,) the row's center, e.g. the target's own dof
+///                 location. Three roles: it carries the spatial dimension
+///                 (`N = default_mu.size()`; there is no separate dimension
+///                 parameter), it centers the default rungs and any guess that
+///                 does not carry its own `mu`, and it sets the batch radius
+///                 the admissibility guard uses.
 /// @param spike_index  Index of the target's own point within the batch, which
 ///                 builds the one-hot spike; negative disables the spike,
 ///                 justified only for targets known not to be spike-dominated.
 /// @param config   Candidate axes and search policy.
-/// @param sigma0   Optional a-priori covariance, tried FIRST.
+/// @param guesses  Starting ellipsoids, tried in order and BEFORE the default
+///                 rungs. Where to seed a nonlinear search is problem-specific,
+///                 so this is data rather than a flag selecting among
+///                 dictionaries chosen in advance; `circle_ladder`,
+///                 `window_shape_ladder` and `oriented_ladder` build the common
+///                 ones. Pass the a-priori covariance here to try it first,
+///                 which is what `fit_operator` does.
 /// @param target_mass  The target's own mass. Unset infers it from
 ///                 `m2_diag[spike_index]`, exact for the square equal-mass
 ///                 case and 1 with no spike. The whitened design is
@@ -504,18 +486,19 @@ inline Eigen::VectorXd axes_of( const Eigen::Ref<const Eigen::VectorXd>& theta_h
 ///                 stopped, and every candidate that was tried.
 /// @throws std::invalid_argument if the shapes disagree, if
 ///         `config.mode_policy` is unset (it is required -- no order is
-///         defensible as a silent default), or if `spike_index` is out of
-///         range.
+///         defensible as a silent default), if `spike_index` is out of range,
+///         or if `config.num_rungs == 0` leaves no guesses at all.
 inline ProbeFitResult fit_from_probes(
     const Eigen::Ref<const Eigen::MatrixXd>& x,
     const Eigen::Ref<const Eigen::VectorXd>& m2_diag,
     const Eigen::Ref<const Eigen::MatrixXd>& z,
     const Eigen::Ref<const Eigen::VectorXd>& y,
-    const Eigen::Ref<const Eigen::VectorXd>& mu0, int spike_index = -1,
+    const Eigen::Ref<const Eigen::VectorXd>& default_mu, int spike_index = -1,
     const ProbeFitConfig& config = ProbeFitConfig(),
-    const std::optional<Eigen::MatrixXd>& sigma0 = std::nullopt,
+    const std::vector<InitialGuess>& guesses = {},
     std::optional<double> target_mass = std::nullopt )
 {
+    const Eigen::Ref<const Eigen::VectorXd>& mu0 = default_mu;
     const int dim = static_cast<int>(mu0.size());
     const Eigen::Index num_points = x.rows();
     const Eigen::Index num_probes = z.cols();
@@ -575,45 +558,62 @@ inline ProbeFitResult fit_from_probes(
             ? kfold_split(static_cast<int>(num_probes), config.cv_folds)
             : config.split;
 
-    // --- geometry: the ladder's scales and the window's own shape ----------
-    const double local = local_spacing(x, mu0);
+    // The admissibility guard's bound, needed whether or not any default rung
+    // is generated.
     const double radius = window_radius(x, mu0);
-    const Eigen::VectorXd radii = ladder_scales(local, radius, config.num_rungs);
 
-    std::vector<InitCandidate> inits;
-    if ( sigma0 )
+    // A guess resolved into what the fit needs: the shape in the pinned
+    // encoding, and the center it is anchored at.
+    struct ResolvedInit
     {
-        inits.push_back(InitCandidate{
-            "sigma0", theta_hat_from_cholesky(
-                          Eigen::MatrixXd(sigma0->llt().matrixL()))});
+        std::string label;
+        Eigen::VectorXd theta_hat;
+        Eigen::VectorXd center;
+    };
+
+    std::vector<ResolvedInit> inits;
+    for ( std::size_t i = 0; i < guesses.size(); ++i )
+    {
+        const InitialGuess& guess = guesses[i];
+        if ( guess.sigma.rows() != dim || guess.sigma.cols() != dim )
+        {
+            throw std::invalid_argument(
+                "lgpsf::fit_from_probes: guess " + std::to_string(i)
+                + " has a " + std::to_string(guess.sigma.rows()) + "x"
+                + std::to_string(guess.sigma.cols()) + " sigma but N is "
+                + std::to_string(dim));
+        }
+        if ( guess.mu && guess.mu->size() != dim )
+        {
+            throw std::invalid_argument(
+                "lgpsf::fit_from_probes: guess " + std::to_string(i)
+                + " has a mu of size " + std::to_string(guess.mu->size())
+                + " but N is " + std::to_string(dim));
+        }
+        inits.push_back(ResolvedInit{
+            guess.label.empty() ? "guess[" + std::to_string(i) + "]"
+                                : guess.label,
+            theta_hat_from_sigma(guess.sigma),
+            guess.mu ? *guess.mu : Eigen::VectorXd(mu0)});
     }
-    if ( config.window_shape_rungs )
+    // The default dictionary: isotropic rungs spanning the batch's own scales.
+    // They are the fallback for a prior that misleads -- see circle_ladder --
+    // and `num_rungs = 0` is how a caller says "only my guesses".
+    if ( config.num_rungs > 0 )
     {
-        const std::vector<InitCandidate> shaped =
-            window_rungs(radii, window_shape(x, m2_diag));
-        inits.insert(inits.end(), shaped.begin(), shaped.end());
+        for ( const InitialGuess& rung :
+              circle_ladder(x, mu0, config.num_rungs) )
+        {
+            inits.push_back(ResolvedInit{rung.label,
+                                         theta_hat_from_sigma(rung.sigma),
+                                         Eigen::VectorXd(mu0)});
+        }
     }
-    // Circle rungs rescue a misleading prior. With no prior there is nothing
-    // to judge and they are indispensable; with a nearly-round one they
-    // duplicate what sigma0 and the window rungs already cover.
-    bool want_circles = true;
-    if ( sigma0 && config.circle_rungs_above_aspect > 1.0 )
+    if ( inits.empty() )
     {
-        const Eigen::VectorXd values =
-            Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd>(
-                *sigma0, Eigen::EigenvaluesOnly).eigenvalues();
-        const double smallest = values.minCoeff();
-        // A degenerate prior counts as infinitely anisotropic, so the circles
-        // stay: that is exactly the case they exist for.
-        const double aspect = ( smallest > 0.0 )
-                                  ? std::sqrt(values.maxCoeff() / smallest)
-                                  : std::numeric_limits<double>::infinity();
-        want_circles = aspect >= config.circle_rungs_above_aspect;
-    }
-    if ( want_circles )
-    {
-        const std::vector<InitCandidate> circles = circle_rungs(radii, dim);
-        inits.insert(inits.end(), circles.begin(), circles.end());
+        throw std::invalid_argument(
+            "lgpsf::fit_from_probes: nothing to start from -- num_rungs is 0 "
+            "and no guesses were supplied");
     }
 
     const std::vector<Eigen::VectorXd> jitter =
@@ -621,8 +621,39 @@ inline ProbeFitResult fit_from_probes(
             ? jitter_table(theta_hat_size(dim, ladder_mode), kMaxModeProposals)
             : config.jitter;
 
-    const auto make_basis = [&]( const std::vector<Mode>& modes, MuMode mode ) {
-        return WhitenedBasis(x, mass, m2_diag, modes, mu0, mode);
+    // Each candidate is fitted about its OWN center: a guess may carry one,
+    // and under MuPolicy::Pinned that is where the center stays. The basis and
+    // every decode of theta_hat therefore take the candidate's center rather
+    // than a single row-wide origin.
+    const auto make_basis = [&]( const std::vector<Mode>& modes, MuMode mode,
+                                 const Eigen::VectorXd& center ) {
+        return WhitenedBasis(x, mass, m2_diag, modes, center, mode);
+    };
+
+    // Bases are keyed on (modes, center) and shared: when every guess sits at
+    // default_mu -- the usual case -- this builds exactly one per level, as it
+    // did when the center was row-wide.
+    struct BasisCache
+    {
+        std::vector<std::pair<Eigen::VectorXd, WhitenedBasis>> entries;
+
+        const WhitenedBasis& get( const Eigen::VectorXd& center,
+                                  const std::vector<Mode>& modes, MuMode mode,
+                                  const std::function<WhitenedBasis(
+                                      const std::vector<Mode>&, MuMode,
+                                      const Eigen::VectorXd&)>& build )
+        {
+            for ( const auto& entry : entries )
+            {
+                if ( entry.first.size() == center.size()
+                     && entry.first == center )
+                {
+                    return entry.second;
+                }
+            }
+            entries.emplace_back(center, build(modes, mode, center));
+            return entries.back().second;
+        }
     };
 
     std::vector<CandidateFit> candidates;
@@ -632,12 +663,13 @@ inline ProbeFitResult fit_from_probes(
                                     const std::string& modes_label,
                                     const std::vector<Mode>& modes,
                                     const Eigen::VectorXd& start, MuMode mode,
-                                    bool released, const WhitenedBasis& basis ) {
+                                    bool released, const WhitenedBasis& basis,
+                                    const Eigen::VectorXd& center ) {
         CandidateFit candidate;
         candidate.label = label;
         candidate.modes_label = modes_label;
         candidate.released = released;
-        candidate.theta_hat_init = start;
+        candidate.theta_init = to_theta(start, center, mode);
         candidate.model.modes = modes;
 
         VarProResult fit;
@@ -650,7 +682,7 @@ inline ProbeFitResult fit_from_probes(
             // An unusable starting point -- a ladder rung far outside the
             // batch geometry. Expected and survivable: the candidate simply
             // scores as unusable and the stream moves on.
-            candidate.model.theta = to_theta(start, mu0, mode);
+            candidate.model.theta = to_theta(start, center, mode);
             candidate.model.c =
                 Eigen::VectorXd::Zero(static_cast<Eigen::Index>(modes.size()));
             candidate.model.s = Eigen::VectorXd::Zero(e_hat.cols());
@@ -659,7 +691,7 @@ inline ProbeFitResult fit_from_probes(
             return candidate;
         }
 
-        candidate.model.theta = to_theta(fit.theta_hat, mu0, mode);
+        candidate.model.theta = to_theta(fit.theta_hat, center, mode);
         candidate.model.c = fit.c;
         candidate.model.s = fit.s;
         candidate.cost = fit.cost;
@@ -667,13 +699,13 @@ inline ProbeFitResult fit_from_probes(
         candidate.num_iterations = fit.num_iterations;
         candidate.score =
             linear_cv_score(z_hat, y_hat, basis, fit.theta_hat, e_hat, split);
-        candidate.axes = detail::axes_of(fit.theta_hat, mu0, mode);
+        candidate.axes = detail::axes_of(fit.theta_hat, center, mode);
 
         bool admissible = candidate.axes.maxCoeff() <= radius;
         if ( mode == MuMode::Fitted )
         {
             // The displacement encoding makes this the bound it always meant
-            // to be: theta_hat's leading block IS mu - mu0.
+            // to be: theta_hat's leading block IS mu - center.
             admissible = admissible && fit.theta_hat.head(dim).norm() <= radius;
         }
         candidate.admissible = admissible;
@@ -699,10 +731,14 @@ inline ProbeFitResult fit_from_probes(
         std::function<Eigen::VectorXd( const std::vector<Mode>& )> profit;
         double residual_norm_squared = 0.0;
     };
+    // Takes the center the theta_hat is encoded against: the winner's, which
+    // need not be default_mu.
     const auto make_margin_scorer = [&]( const Eigen::VectorXd& theta_hat,
-                                         const std::vector<Mode>& active ) {
+                                         const std::vector<Mode>& active,
+                                         const Eigen::VectorXd& center ) {
         MarginScorer scorer;
-        const WhitenedBasis active_basis = make_basis(active, ladder_mode);
+        const WhitenedBasis active_basis =
+            make_basis(active, ladder_mode, center);
         Eigen::MatrixXd values;
         try
         {
@@ -729,10 +765,10 @@ inline ProbeFitResult fit_from_probes(
         const Eigen::MatrixXd range = detail::orthonormal_range(design);
 
         scorer.residual_norm_squared = residual.squaredNorm();
-        scorer.profit = [&, theta_hat, residual, range](
+        scorer.profit = [&, theta_hat, residual, range, center](
                             const std::vector<Mode>& candidate_modes ) {
             const WhitenedBasis candidate_basis =
-                make_basis(candidate_modes, ladder_mode);
+                make_basis(candidate_modes, ladder_mode, center);
             Eigen::MatrixXd columns;
             try
             {
@@ -829,6 +865,10 @@ inline ProbeFitResult fit_from_probes(
     int patience_left = config.mode_patience;
     bool have_warm_start = false;
     Eigen::VectorXd warm_start;
+    Eigen::VectorXd warm_center = mu0;
+    // One center per candidate, parallel to `candidates`: the decode origin is
+    // per-candidate now, and the winner's has to survive into the warm start.
+    std::vector<Eigen::VectorXd> level_centers;
     std::vector<Mode> last_fit_modes;
     bool last_fit_valid = false;
     bool stopped = false;
@@ -890,30 +930,43 @@ inline ProbeFitResult fit_from_probes(
         }
 
         modes_of.emplace_back(proposal->label, proposal->modes);
-        const WhitenedBasis basis = make_basis(proposal->modes, ladder_mode);
+        BasisCache level_bases;
 
-        std::vector<std::pair<std::string, Eigen::VectorXd>> level_inits;
+        struct LevelInit
+        {
+            std::string label;
+            Eigen::VectorXd theta_hat;
+            Eigen::VectorXd center;
+        };
+        std::vector<LevelInit> level_inits;
         if ( have_warm_start )
         {
             const Eigen::VectorXd& kick =
                 jitter[std::min(history.size(), jitter.size() - 1)];
-            level_inits.emplace_back("warm(" + candidates.back().modes_label + ")",
-                                     Eigen::VectorXd(warm_start + kick));
+            level_inits.push_back(
+                LevelInit{"warm(" + candidates.back().modes_label + ")",
+                          Eigen::VectorXd(warm_start + kick), warm_center});
         }
-        for ( const InitCandidate& init : inits )
+        for ( const ResolvedInit& init : inits )
         {
-            level_inits.emplace_back(
-                init.label, ladder_mode == MuMode::Pinned
-                                ? init.theta_hat
-                                : release_mu(init.theta_hat, dim));
+            level_inits.push_back(
+                LevelInit{init.label,
+                          ladder_mode == MuMode::Pinned
+                              ? init.theta_hat
+                              : release_mu(init.theta_hat, dim),
+                          init.center});
         }
 
         const std::size_t level_start = candidates.size();
-        for ( const auto& entry : level_inits )
+        for ( const LevelInit& entry : level_inits )
         {
-            candidates.push_back(run_candidate(entry.first, proposal->label,
-                                               proposal->modes, entry.second,
-                                               ladder_mode, false, basis));
+            const WhitenedBasis& basis = level_bases.get(
+                entry.center, proposal->modes, ladder_mode, make_basis);
+            candidates.push_back(run_candidate(entry.label, proposal->label,
+                                               proposal->modes, entry.theta_hat,
+                                               ladder_mode, false, basis,
+                                               entry.center));
+            level_centers.push_back(entry.center);
             if ( hit_target(candidates.back()) )
             {
                 stop_reason = StopReason::Target;
@@ -938,9 +991,10 @@ inline ProbeFitResult fit_from_probes(
         {
             best_score = candidates[static_cast<std::size_t>(level_winner)].score;
             patience_left = config.mode_patience;
+            warm_center = level_centers[static_cast<std::size_t>(level_winner)];
             warm_start = to_theta_hat(
-                candidates[static_cast<std::size_t>(level_winner)].model.theta, mu0,
-                ladder_mode);
+                candidates[static_cast<std::size_t>(level_winner)].model.theta,
+                warm_center, ladder_mode);
             have_warm_start = true;
         }
         else
@@ -952,11 +1006,13 @@ inline ProbeFitResult fit_from_probes(
                                       level_winner >= 0});
         if ( level_winner >= 0 )
         {
+            const Eigen::VectorXd& winner_center =
+                level_centers[static_cast<std::size_t>(level_winner)];
             scorer = make_margin_scorer(
                 to_theta_hat(
                     candidates[static_cast<std::size_t>(level_winner)].model.theta,
-                    mu0, ladder_mode),
-                proposal->modes);
+                    winner_center, ladder_mode),
+                proposal->modes, winner_center);
         }
         last_fit_modes = proposal->modes;
         last_fit_valid = true;
@@ -990,7 +1046,7 @@ inline ProbeFitResult fit_from_probes(
                 winning_modes = entry.second;
             }
         }
-        const WhitenedBasis free_basis = make_basis(winning_modes, MuMode::Fitted);
+        BasisCache free_bases;
 
         std::vector<int> sources;
         for ( std::size_t i = 0; i < candidates.size(); ++i )
@@ -1022,13 +1078,21 @@ inline ProbeFitResult fit_from_probes(
             }
             seen.push_back(source.model.theta);
 
-            // Re-encoding the absolute parameters against mu0 in the fitted
-            // mode is exactly release_mu of the pinned ones: a pinned
-            // candidate's center IS mu0, so the displacement comes out zero.
+            // Re-encode against the SOURCE's own center, not a row-wide one:
+            // that is what makes this exactly release_mu of the pinned
+            // candidate, so the released fit starts where the pinned one
+            // finished with a zero displacement. Against any other origin it
+            // would silently start displaced -- and still converge to
+            // something, which is why this is spelled out.
+            const Eigen::VectorXd& source_center =
+                level_centers[static_cast<std::size_t>(index)];
+            const WhitenedBasis& free_basis = free_bases.get(
+                source_center, winning_modes, MuMode::Fitted, make_basis);
             candidates.push_back(run_candidate(
                 "release(" + source.label + ")", winning_label, winning_modes,
-                to_theta_hat(source.model.theta, mu0, MuMode::Fitted),
-                MuMode::Fitted, true, free_basis));
+                to_theta_hat(source.model.theta, source_center, MuMode::Fitted),
+                MuMode::Fitted, true, free_basis, source_center));
+            level_centers.push_back(source_center);
             if ( hit_target(candidates.back()) )
             {
                 stop_reason = StopReason::Target;

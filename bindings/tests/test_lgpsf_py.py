@@ -384,10 +384,13 @@ def synthetic_target(per_side=11, num_probes=40, level=2, seed=7):
     y_hat = z_hat @ (c_true @ phi_hat) + z_hat @ (s_true @ e_hat)
     y = np.sqrt(mass) * y_hat
 
+    frame = lgpsf.unpack_theta_hat(theta_hat_true, mu0, lgpsf.MuMode.Pinned)
+    sigma_true = frame.L @ frame.L.T
+
     return dict(x=x, m2_diag=m2_diag, z=z, y=y, mu0=mu0, mass=mass,
                 spike_index=spike_index, modes=modes, c_true=c_true,
                 s_true=s_true, theta_hat_true=theta_hat_true, e_hat=e_hat,
-                z_hat=z_hat, y_hat=y_hat, basis=basis)
+                z_hat=z_hat, y_hat=y_hat, basis=basis, sigma_true=sigma_true)
 
 
 def fixed_config(target, **kwargs):
@@ -399,6 +402,61 @@ def fixed_config(target, **kwargs):
     for key, value in kwargs.items():
         setattr(config, key, value)
     return config
+
+
+def test_initial_guesses_are_data_not_flags():
+    """Guesses go in as (mu, sigma); num_rungs=0 means 'only mine'."""
+    target = synthetic_target()
+    x, mu0 = target["x"], target["mu0"]
+
+    # The helpers build the common dictionaries, and the default one is what
+    # the fit adds on its own.
+    circles = lgpsf.circle_ladder(x, mu0, 3)
+    assert len(circles) == 3
+    assert all(g.mu is None for g in circles)          # centered at default_mu
+    assert all(g.label.startswith("circle r=") for g in circles)
+
+    oriented = lgpsf.oriented_ladder(x, mu0, 2, [0.0, 90.0], 4.0)
+    assert len(oriented) == 4                          # 2 scales x 2 angles
+
+    prior = lgpsf.InitialGuess(target["sigma_true"], label="mine")
+    result = lgpsf.fit_from_probes(
+        x, target["m2_diag"], target["z"], target["y"], mu0,
+        spike_index=target["spike_index"],
+        config=fixed_config(target, num_rungs=0), guesses=[prior],
+        target_mass=target["mass"])
+    assert len(result.candidates) == 1
+    assert result.candidates[0].label == "mine"
+
+    # theta_init is the PUBLIC absolute encoding, so its leading block is the
+    # center the candidate was seeded at.
+    dim = mu0.size
+    assert np.allclose(result.candidates[0].theta_init[:dim], mu0)
+
+    # Nothing to start from is an error, not a silent fallback.
+    with pytest.raises(ValueError):
+        lgpsf.fit_from_probes(
+            x, target["m2_diag"], target["z"], target["y"], mu0,
+            spike_index=target["spike_index"],
+            config=fixed_config(target, num_rungs=0), guesses=[],
+            target_mass=target["mass"])
+
+
+def test_a_guess_keeps_its_own_center_when_pinned():
+    """Pinned means 'do not move mu from its guess', not 'mu is default_mu'."""
+    target = synthetic_target()
+    mu0 = target["mu0"]
+    offset = mu0 + 0.05
+
+    result = lgpsf.fit_from_probes(
+        target["x"], target["m2_diag"], target["z"], target["y"], mu0,
+        spike_index=target["spike_index"],
+        config=fixed_config(target, num_rungs=0),
+        guesses=[lgpsf.InitialGuess(target["sigma_true"], mu=offset)],
+        target_mass=target["mass"])
+
+    assert np.allclose(result.model.frame().mu, offset)
+    assert not np.allclose(result.model.frame().mu, mu0)
 
 
 def test_fit_from_probes_recovers_a_known_target():

@@ -89,7 +89,9 @@ int main()
     // where the columns are, their quadrature weights, where the PSF is
     // centered, and its approximate shape.
     const Eigen::VectorXd mu0 = problem.x.row(kRow).transpose();
-    const Eigen::MatrixXd sigma0 = problem.sigma[kRow];
+    // The a-priori shape, packaged as a starting guess. The fit appends its
+    // own default circle rungs after it; `num_rungs = 0` would say "only this".
+    const lgpsf::InitialGuess prior{problem.sigma[kRow], std::nullopt, "sigma0"};
     const Eigen::VectorXd truth = problem.H.row(kRow).transpose();
     const double truth_norm = truth.norm();
 
@@ -117,7 +119,7 @@ int main()
 
         const lgpsf::ProbeFitResult result = lgpsf::fit_from_probes(
             problem.x, problem.mass, z, y, mu0, /*spike_index=*/-1, config,
-            sigma0, problem.mass(kRow));
+            {prior}, problem.mass(kRow));
 
         // result.model is an LGExpansion: a standalone, evaluable model.
         // eval_expansion gives the smooth CONTINUUM kernel, so multiply by the
@@ -148,11 +150,10 @@ int main()
         config.mode_policy =
             std::make_shared<lgpsf::ShellLadder>(std::vector<int>{1, 3});
         config.num_rungs = 2;
-        config.window_shape_rungs = false;
         config.target_score = std::nullopt;
 
         const lgpsf::ProbeFitResult result = lgpsf::fit_from_probes(
-            problem.x, problem.mass, z, y, mu0, -1, config, sigma0,
+            problem.x, problem.mass, z, y, mu0, -1, config, {prior},
             problem.mass(kRow));
 
         std::printf("\n%3s  %24s  %6s  %11s  %8s\n",

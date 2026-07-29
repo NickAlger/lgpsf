@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: MIT
 """Does the initial-guess ladder have an anisotropy blind spot? At 8:1, no.
 
-A standing worry about the initial-guess dictionary: it offers `sigma0`,
-circles at `num_rungs` scales, and optionally scaled copies of the window's
-shape -- every one of which is either the prior's own shape or ROUND. Nothing
-in it covers ORIENTATION independently of the prior. The prototype's
+A standing worry about the initial-guess dictionary: by default it is circles
+at `num_rungs` scales, and the guess a caller usually adds is their own prior --
+so every entry is either the prior's shape or ROUND. Nothing reaches for
+ORIENTATION independently of the prior. The prototype's
 `varpro_frog_robust_init.py` found that this bites hard at 8:1 anisotropy, and
 `dev/robust-init-notes.md` parked a recipe adding an oriented-ellipse family.
-`lgpsf::oriented_sigma` was ported for it and is tested, but no rung family is
-built from it, so nothing reaches it.
+`oriented_ladder` now builds it, so the question is answerable without a
+library change -- but it is not on by default, and this is why.
 
 **This experiment exists to keep that worry measurable, and as it stands it
 does not confirm it.** Under the shipping defaults the circle ladder handles
@@ -25,9 +25,9 @@ rungs, or narrows the ladder, this is what would catch it.
 
 WHAT IS MEASURED. One row of an 8:1 frog, fitted repeatedly from a single
 starting ellipsoid at a time -- circles across scales, oriented ellipses across
-angles, and the a-priori shape. A single start is expressible through the
-shipping API: set `sigma0` to the guess and turn both rung families off, and
-the dictionary reduces to that one entry.
+angles, and the a-priori shape. A single start is one line of the shipping
+API: `num_rungs = 0` says "only my guesses", so passing one guess makes the
+dictionary exactly that entry.
 
     python experiments/anisotropy_hardening.py
 
@@ -41,8 +41,9 @@ foregone conclusions:
       question about basins, and the `fit aspect` column answers it.
 
   What does the SHIPPING default reach?  The last block runs the real
-      configuration (`sigma0` + 3 circles) so the gap is a number rather than
-      an argument.
+      configuration -- the caller's sigma as first guess, then 3 default circle
+      rungs, which is what `fit_operator` assembles -- so the gap is a number
+      rather than an argument.
 """
 import numpy as np
 
@@ -118,20 +119,19 @@ def build_row():
 def fit_from(x, mass, rho, mu0, truth, z, y, sigma_init, max_level, mu_policy):
     """One fit from ONE starting ellipsoid.
 
-    Setting `sigma0` to the guess and disabling both rung families reduces the
-    initial-guess dictionary to that single entry; a one-level mode policy
-    removes the warm start too. So this is exactly a single-start fit, run
-    through the shipping code path.
+    `num_rungs = 0` drops the default circle rungs, leaving the one guess; a
+    one-level mode policy removes the warm start too. So this is exactly a
+    single-start fit, run through the shipping code path.
     """
     config = lgpsf.ProbeFitConfig()
     config.mode_policy = lgpsf.ShellLadder([max_level])
     config.target_score = None
     config.mu = mu_policy
-    config.window_shape_rungs = False
-    config.circle_rungs_above_aspect = float("inf")     # no circles
+    config.num_rungs = 0                     # only the guess below
 
-    result = lgpsf.fit_from_probes(x, mass, z, y, mu0, config=config,
-                                   sigma0=sigma_init, target_mass=mass[rho])
+    result = lgpsf.fit_from_probes(
+        x, mass, z, y, mu0, config=config,
+        guesses=[lgpsf.InitialGuess(sigma_init)], target_mass=mass[rho])
     predicted = mass[rho] * lgpsf.eval_expansion(result.model, x) * mass
     error = np.linalg.norm(predicted - truth) / np.linalg.norm(truth)
     frame = result.model.frame()
@@ -204,15 +204,18 @@ def main():
                   f"({ok(oriented)}/{len(oriented)} reached the good basin)")
             print(f"  a-priori shape {'':<18} rel err {apriori[0][2]:.4f}")
 
-            # What the SHIPPING configuration reaches: sigma0 + num_rungs
-            # circles, which is every family the library actually has.
+            # What the SHIPPING configuration reaches. `fit_operator` passes
+            # the caller's sigma as the first guess and appends the default
+            # circle rungs, so that is the dictionary reproduced here; a bare
+            # row-layer call would get the circles alone.
             shipped = lgpsf.ProbeFitConfig()
             shipped.mode_policy = lgpsf.ShellLadder([max_level])
             shipped.target_score = None
             shipped.mu = mu_policy
-            result = lgpsf.fit_from_probes(x, mass, z, y, mu0, config=shipped,
-                                           sigma0=sigma_true,
-                                           target_mass=mass[rho])
+            result = lgpsf.fit_from_probes(
+                x, mass, z, y, mu0, config=shipped,
+                guesses=[lgpsf.InitialGuess(sigma_true, label="sigma0")],
+                target_mass=mass[rho])
             predicted = mass[rho] * lgpsf.eval_expansion(result.model, x) * mass
             error = np.linalg.norm(predicted - truth) / np.linalg.norm(truth)
             fitted = shape_of(result.model.frame().L @ result.model.frame().L.T)

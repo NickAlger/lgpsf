@@ -142,7 +142,6 @@ int main()
     config.row.mode_policy = std::make_shared<ShellLadder>(std::vector<int>{0, 1, 2});
     config.row.mu = MuPolicy::Pinned;
     config.row.num_rungs = 4;
-    config.row.window_shape_rungs = false;
     config.num_threads = 1;           // single-threaded, to compare with Python
 
     std::printf("Field-scale profile: %d columns, %d probes, %d fitted rows\n",

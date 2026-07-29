@@ -297,7 +297,7 @@ struct RowOutcome
 /// @param HV      (R_all, k) raw responses, `HV(rho, l) = (H V.col(l))(rho)`.
 /// @param sigma   R_all covariances: the caller's BEST GUESS at each bump's
 ///                shape, NOT required to be conservative. Three consumers --
-///                the sigma0 initialization rung, the baseline fit, and the
+///                the a-priori initialization guess, the baseline fit, and the
 ///                window (made conservative by `tau_window`).
 /// @param mu0     (R_all, N) reference centers; unset defaults to the row
 ///                dofs' own coordinates.
@@ -634,9 +634,16 @@ inline OperatorFit fit_operator(
                     std::optional<ProbeFitResult> searched;
                     if ( searchable )
                     {
+                        // The caller's a-priori shape is passed as the FIRST
+                        // guess, so it is tried before the default rungs --
+                        // the dictionary the row fit assembles is unchanged
+                        // from when `sigma0` was its own parameter.
+                        InitialGuess prior;
+                        prior.sigma = covariance;
+                        prior.label = "sigma0";
                         searched = fit_from_probes(
                             x_window, m2_window, z, y, center, spike_position,
-                            row_config, covariance, target_mass);
+                            row_config, {prior}, target_mass);
                     }
 
                     // --- the guard ------------------------------------------

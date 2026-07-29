@@ -52,6 +52,9 @@ def main():
     x, mass = problem["x"], problem["mass"]
     rho = int(np.argmin(np.linalg.norm(x - np.array(TARGET)[:, None], axis=0)))
     mu0, sigma0 = x[:, rho], problem["sigma"][rho]
+    # A guess carries a label, which is what the candidate table below
+    # shows; unlabelled ones report as "guess[0]".
+    prior = lgpsf.InitialGuess(sigma0, label="sigma0")
 
     rng = np.random.default_rng(0)
     z = rng.normal(size=(NUM_PROBES, problem["count"]))
@@ -61,16 +64,15 @@ def main():
     config = lgpsf.ProbeFitConfig()
     config.mode_policy = lgpsf.ShellLadder([1, 3])
     config.num_rungs = 2
-    config.window_shape_rungs = False
     config.target_score = None            # exhaust the ladder
     exhaustive = lgpsf.fit_from_probes(x, mass, z, y, mu0, config=config,
-                                       sigma0=sigma0, target_mass=mass[rho])
+                                       guesses=[prior], target_mass=mass[rho])
     show(exhaustive, "target_score = None: every candidate is scored")
 
     # The same search, allowed to stop as soon as a candidate is good enough.
     config.target_score = 0.2
     early = lgpsf.fit_from_probes(x, mass, z, y, mu0, config=config,
-                                  sigma0=sigma0, target_mass=mass[rho])
+                                  guesses=[prior], target_mass=mass[rho])
     show(early, "target_score = 0.2: stop once a candidate clears the bar")
 
     saved = len(exhaustive.candidates) - len(early.candidates)

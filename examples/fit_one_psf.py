@@ -55,7 +55,8 @@ def main():
         config.target_score = None                     # sweep the whole ladder
 
         result = lgpsf.fit_from_probes(x, mass, z, y, mu0,
-                                       config=config, sigma0=sigma0,
+                                       config=config,
+                                       guesses=[lgpsf.InitialGuess(sigma0)],
                                        target_mass=mass[rho])
 
         # `result.model` is an LGExpansion -- a standalone, evaluable model.

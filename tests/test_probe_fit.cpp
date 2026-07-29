@@ -270,7 +270,7 @@ TEST_CASE("a fit recovers the target it was built from")
 
     const ProbeFitResult result =
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
-                        target.spike_index, config, std::nullopt, target.mass);
+                        target.spike_index, config, {}, target.mass);
 
     MESSAGE("recovery: " << result.candidates.size() << " candidates, score "
                          << result.score << ", winner '"
@@ -299,7 +299,7 @@ TEST_CASE("the returned parameters decode on their own")
 
     const ProbeFitResult result =
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
-                        target.spike_index, config, std::nullopt, target.mass);
+                        target.spike_index, config, {}, target.mass);
 
     const lgpsf::EllipsoidFrame decoded = unpack_theta(result.model.theta);
     CHECK((decoded.mu - result.model.frame().mu).cwiseAbs().maxCoeff() < 1e-12);
@@ -317,7 +317,7 @@ TEST_CASE("the default pins the center")
 
     const ProbeFitResult result =
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
-                        target.spike_index, config, std::nullopt, target.mass);
+                        target.spike_index, config, {}, target.mass);
     CHECK_FALSE(result.released);
     CHECK((result.model.frame().mu - target.mu0).cwiseAbs().maxCoeff() == 0.0);
     for ( const CandidateFit& candidate : result.candidates )
@@ -336,7 +336,7 @@ TEST_CASE("releasing the center is available on request")
 
     const ProbeFitResult result =
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
-                        target.spike_index, config, std::nullopt, target.mass);
+                        target.spike_index, config, {}, target.mass);
 
     int released = 0;
     for ( const CandidateFit& candidate : result.candidates )
@@ -354,7 +354,7 @@ TEST_CASE("releasing the center is available on request")
     config.mu = MuPolicy::Free;
     const ProbeFitResult free_fit =
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
-                        target.spike_index, config, std::nullopt, target.mass);
+                        target.spike_index, config, {}, target.mass);
     CHECK((free_fit.model.frame().mu - target.mu0).cwiseAbs().maxCoeff() < 1e-4);
 }
 
@@ -372,7 +372,7 @@ TEST_CASE("admissibility is exactly the window-containment rule")
 
     const ProbeFitResult result =
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
-                        target.spike_index, config, std::nullopt, target.mass);
+                        target.spike_index, config, {}, target.mass);
 
     for ( const CandidateFit& candidate : result.candidates )
     {
@@ -403,7 +403,7 @@ TEST_CASE("a fit that outgrows the window is ruled inadmissible")
 
     const ProbeFitResult result =
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
-                        target.spike_index, config, std::nullopt, target.mass);
+                        target.spike_index, config, {}, target.mass);
 
     int inadmissible = 0;
     for ( const CandidateFit& candidate : result.candidates )
@@ -431,7 +431,7 @@ TEST_CASE("the counting rule skips levels the probes cannot support")
 
     const ProbeFitResult result =
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
-                        target.spike_index, config, std::nullopt, target.mass);
+                        target.spike_index, config, {}, target.mass);
 
     MESSAGE("skipped: " << result.skipped.size() << " level(s)");
     REQUIRE(result.skipped.size() >= 1u);
@@ -454,7 +454,7 @@ TEST_CASE("the target certificate stops the search early")
 
     const ProbeFitResult result =
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
-                        target.spike_index, config, std::nullopt, target.mass);
+                        target.spike_index, config, {}, target.mass);
 
     CHECK(result.stop_reason == StopReason::Target);
     CHECK(result.score <= 0.05);
@@ -463,7 +463,7 @@ TEST_CASE("the target certificate stops the search early")
     config.target_score = std::nullopt;
     const ProbeFitResult full =
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
-                        target.spike_index, config, std::nullopt, target.mass);
+                        target.spike_index, config, {}, target.mass);
     MESSAGE("certificate: " << result.candidates.size() << " candidates vs "
                             << full.candidates.size() << " without");
     CHECK(full.candidates.size() > result.candidates.size());
@@ -481,7 +481,7 @@ TEST_CASE("the simplicity tie-break prefers the smaller mode set")
 
     const ProbeFitResult result =
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
-                        target.spike_index, config, std::nullopt, target.mass);
+                        target.spike_index, config, {}, target.mass);
 
     MESSAGE("tie-break chose " << result.model.modes.size() << " modes at score "
                                << result.score);
@@ -499,10 +499,10 @@ TEST_CASE("the fit is a pure function of its inputs")
 
     const ProbeFitResult first =
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
-                        target.spike_index, config, std::nullopt, target.mass);
+                        target.spike_index, config, {}, target.mass);
     const ProbeFitResult second =
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
-                        target.spike_index, config, std::nullopt, target.mass);
+                        target.spike_index, config, {}, target.mass);
 
     REQUIRE(first.candidates.size() == second.candidates.size());
     CHECK(first.winner == second.winner);
@@ -527,17 +527,17 @@ TEST_CASE("supplying a different split changes the score, deterministically")
 
     const ProbeFitResult plain =
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
-                        target.spike_index, config, std::nullopt, target.mass);
+                        target.spike_index, config, {}, target.mass);
     const ProbeFitResult shuffled =
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
-                        target.spike_index, permuted, std::nullopt, target.mass);
+                        target.spike_index, permuted, {}, target.mass);
 
     MESSAGE("round-robin score " << plain.score << " vs permuted " << shuffled.score);
     CHECK(plain.score != shuffled.score);   // the split is genuinely in play
     CHECK(plain.score == doctest::Approx(shuffled.score).epsilon(0.5));
 }
 
-TEST_CASE("an a-priori sigma is tried first")
+TEST_CASE("a supplied guess is tried before the default rungs")
 {
     std::mt19937 gen(11);
     const Target target = make_target(gen);
@@ -546,14 +546,71 @@ TEST_CASE("an a-priori sigma is tried first")
 
     const lgpsf::EllipsoidFrame truth =
         lgpsf::unpack_theta_hat(target.theta_hat_true, target.mu0, MuMode::Pinned);
-    const Eigen::MatrixXd sigma = truth.L * truth.L.transpose();
+    lgpsf::InitialGuess prior;
+    prior.sigma = truth.L * truth.L.transpose();
+    prior.label = "sigma0";
 
     const ProbeFitResult result =
         fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
-                        target.spike_index, config, sigma, target.mass);
+                        target.spike_index, config, {prior}, target.mass);
     REQUIRE(!result.candidates.empty());
     CHECK(result.candidates.front().label == "sigma0");
     CHECK(result.score < 1e-6);
+
+    // An unlabelled guess still identifies itself in the candidate table.
+    lgpsf::InitialGuess unlabelled;
+    unlabelled.sigma = prior.sigma;
+    const ProbeFitResult anonymous =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, config, {unlabelled}, target.mass);
+    CHECK(anonymous.candidates.front().label == "guess[0]");
+
+    // num_rungs = 0 means "only mine" -- and with nothing of mine, it is an
+    // error rather than a silent fallback to the baseline.
+    ProbeFitConfig only_mine = config;
+    only_mine.num_rungs = 0;
+    const ProbeFitResult alone =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, only_mine, {prior}, target.mass);
+    CHECK(alone.candidates.size() == 1);
+    CHECK(alone.candidates.front().label == "sigma0");
+    CHECK_THROWS_AS(fit_from_probes(target.x, target.m2_diag, target.z, target.y,
+                                    target.mu0, target.spike_index, only_mine, {},
+                                    target.mass),
+                    std::invalid_argument);
+}
+
+TEST_CASE("a guess carrying its own mu is pinned there, not at default_mu")
+{
+    // MuPolicy::Pinned means the optimizer does not move mu from its initial
+    // guess -- not that mu is default_mu. A guess with its own center must
+    // therefore ship a model centered there, and `theta_init` must record it.
+    std::mt19937 gen(11);
+    const Target target = make_target(gen);
+    ProbeFitConfig config =
+        basic_config(std::make_shared<FixedSet>(target.modes, "truth"));
+    config.num_rungs = 0;
+
+    const lgpsf::EllipsoidFrame truth =
+        lgpsf::unpack_theta_hat(target.theta_hat_true, target.mu0, MuMode::Pinned);
+    const int dim = static_cast<int>(target.mu0.size());
+    const Eigen::VectorXd offset =
+        target.mu0 + Eigen::VectorXd::Constant(dim, 0.05);
+
+    lgpsf::InitialGuess elsewhere;
+    elsewhere.sigma = truth.L * truth.L.transpose();
+    elsewhere.mu = offset;
+    elsewhere.label = "offset";
+
+    const ProbeFitResult result =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, config, {elsewhere}, target.mass);
+    REQUIRE(result.candidates.size() == 1);
+    const Eigen::VectorXd shipped_mu = result.model.frame().mu;
+    CHECK(shipped_mu.isApprox(offset, 1e-12));
+    CHECK(result.candidates.front().theta_init.head(dim).isApprox(offset, 1e-12));
+    // and NOT at default_mu, which is what a row-wide origin would have given
+    CHECK((shipped_mu - target.mu0).norm() > 1e-3);
 }
 
 TEST_CASE("the engine supplies adaptive feedback to a policy that asks for it")
@@ -603,7 +660,7 @@ TEST_CASE("the engine supplies adaptive feedback to a policy that asks for it")
 
     ProbeFitConfig config = basic_config(policy);
     fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
-                    target.spike_index, config, std::nullopt, target.mass);
+                    target.spike_index, config, {}, target.mass);
 
     REQUIRE(!policy->already_active.empty());
     REQUIRE(!policy->newly_added.empty());

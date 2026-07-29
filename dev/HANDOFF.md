@@ -10,12 +10,13 @@ narrative and open items only; when a thread closes, its record moves to
 
 | | state |
 |---|---|
-| C++ core | complete — 145 cases / 105,618 assertions |
+| C++ core | complete — 149 cases / 105,699 assertions |
 | QR-first inner solve | landed — 2.1× on a whole-field fit, every number unchanged to four digits |
 | Field-scale validation | smooth and rough basal friction both reproduced; the recorded 0.0147 matched exactly |
-| Python bindings | complete — 49 pytest cases |
+| Python bindings | complete — 51 pytest cases |
 | Examples | 15, covering every exported name; the frog example is the public gate |
-| Fitting defaults | **changed 2026-07-28** — `sigma0` + 3 circles, `ftol` 1e-4. See below; fits are not bit-identical to 0.1.0 |
+| Fitting defaults | **changed 2026-07-28** — prior + 3 circles, `ftol` 1e-4. See below; fits are not bit-identical to 0.1.0 |
+| Initial-guess API | **changed 2026-07-29** — guesses are data, not flags. `dev/initial-guess-api-plan.md`; `fit_operator` bit-identical across it |
 | Anisotropy blind spot | **parked, and now measurable** — `experiments/anisotropy_hardening.py`. See below |
 | User documentation | written — README, installation, quickstart, api-guide, defaults |
 | Direction of dependence | enforced by `tools/check_dependencies.py` over docs, dev and experiments too |
@@ -36,11 +37,12 @@ with the worst row 12× better at k=20.
 
 Three things worth carrying forward:
 
-- **`circle_rungs_above_aspect` stays at 1.0 and that is load-bearing.** With
-  the window rungs now off, the circles are the only family besides `sigma0`.
-  Gating them off on a prior that was 3–5× too wide doubled held-out error
-  (0.20 → 0.50) and took failed rows from 190 to 816. The knob exists; the
-  default must not move without redoing that measurement.
+- **The circle rungs are load-bearing and must stay on by default.** They are
+  the only family besides the caller's own guess. Dropping them on a prior that
+  was 3–5× too wide doubled held-out error (0.20 → 0.50) and took failed rows
+  from 190 to 816; on the frog the same comparison is 1.14×. `num_rungs = 0` is
+  how a caller opts out, and the default must not move without redoing that
+  measurement.
 - **The CV score cannot see that failure** — median CV moved 1.0% while
   held-out error moved 106%. Any future auto-tuning driven by the CV score
   would walk straight into it.
@@ -50,20 +52,38 @@ Three things worth carrying forward:
 
 ## The anisotropy blind spot: parked with a trigger
 
-The initial-guess dictionary covers scale but not **orientation** — every entry
-is `sigma0`'s shape or round. `lgpsf::oriented_sigma` was ported for an
-oriented-ellipse family, and is tested, but **no rung family is built from it**;
-`dev/robust-init-notes.md` has the parked recipe and a 2026-07-28 update.
+The DEFAULT dictionary covers scale but not **orientation** — every entry is
+the caller's prior or round. `oriented_ladder` now builds the missing family
+(2026-07-29), so the question is answerable without a library change, but it is
+not on by default. `dev/robust-init-notes.md` has the parked recipe and a
+2026-07-28 update.
 
 Re-measured by `experiments/anisotropy_hardening.py` at 8:1: the blind spot is
 real under **free** mu but does not appear under the pinned default, where the
 scale-bracketing ladder reaches the best start of any family. Circular starts
 do not bias the fitted answer toward roundness (7.7–12.5:1 on a true 8:1).
 
-**Parked deliberately** — building the oriented family properly is a small
+**Parked deliberately** — deciding whether it should be default is a small
 research project, not a patch. Pick it up if mu release is re-armed as a
 default, if a problem with genuinely anisotropic priors appears, or if N = 3
 arrives, where orientation is SO(3) and the covering dictionary grows.
+
+## Initial guesses became data, 2026-07-29
+
+`fit_from_probes` takes `guesses` — `InitialGuess{sigma, mu?, label}` — instead
+of choosing among dictionaries selected by flags. `sigma0`,
+`window_shape_rungs` and `circle_rungs_above_aspect` are gone;
+`num_rungs = 0` means "only my guesses"; `mu0` is `default_mu`; and
+`MuPolicy::Pinned` honours a guess's own `mu`. Plan and rationale in
+[`initial-guess-api-plan.md`](initial-guess-api-plan.md), migration table in the
+CHANGELOG.
+
+`fit_operator` is bit-identical across the change — it passes the caller's
+`sigma` as the first guess. Two traps the plan flagged were real and are fixed:
+the release path re-encodes against the candidate's own center (the old
+zero-displacement invariant breaks once centers differ), and
+`CandidateFit::theta_hat_init` became `theta_init` in the public absolute
+encoding, because a displacement against an unstated origin cannot be decoded.
 
 ## The cleanup: done
 

@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -29,6 +30,31 @@
 #include "lgpsf/ellipsoid_transform.hpp"
 
 namespace lgpsf {
+
+/// One starting ellipsoid for the per-row search, in the PUBLIC `(mu, sigma)`
+/// form -- the same form a caller already thinks in, rather than the internal
+/// `theta_hat` encoding.
+///
+/// Where to seed a nonlinear search is problem-specific, so the fit takes a
+/// collection of these rather than flags selecting between dictionaries the
+/// library imagined in advance. The helpers below build the common ones; a
+/// caller who needs something else builds it directly.
+struct InitialGuess
+{
+    /// (N, N) symmetric positive definite. The starting ellipsoid's shape.
+    Eigen::MatrixXd sigma;
+
+    /// (N,) center to start from. Unset means the fit's `default_mu`.
+    ///
+    /// Under `MuPolicy::Pinned` this is where the center STAYS -- pinning means
+    /// the optimizer does not move mu from its initial guess, not that mu is
+    /// `default_mu`. Under the fitted policies it is the seed.
+    std::optional<Eigen::VectorXd> mu;
+
+    /// Provenance, carried into `CandidateFit::label` and out to diagnostics so
+    /// a fit can say which guess produced its answer. Auto-filled when empty.
+    std::string label;
+};
 
 /// One labelled starting hypothesis. The label is carried through the
 /// candidate stream and out into diagnostics, so a fit can say which family
@@ -405,6 +431,154 @@ inline std::vector<InitCandidate> window_rungs(
         out.push_back(InitCandidate{
             detail::rung_label("window", radii(i)),
             theta_hat_from_cholesky(Eigen::MatrixXd(radii(i) * shape))});
+    }
+    return out;
+}
+
+/// The pinned `theta_hat` of a starting ellipsoid given as a covariance.
+///
+/// @param sigma (N, N) symmetric positive definite.
+/// @return      The pinned encoding: N log-diagonals, then strictly-lower.
+/// @throws std::invalid_argument if @p sigma is not square, or not positive
+///         definite -- a silent NaN would otherwise reach the solver.
+inline Eigen::VectorXd theta_hat_from_sigma(
+    const Eigen::Ref<const Eigen::MatrixXd>& sigma )
+{
+    if ( sigma.rows() != sigma.cols() )
+    {
+        throw std::invalid_argument(
+            "lgpsf::theta_hat_from_sigma: sigma is "
+            + std::to_string(sigma.rows()) + "x" + std::to_string(sigma.cols())
+            + ", expected square");
+    }
+    const Eigen::LLT<Eigen::MatrixXd> llt(sigma);
+    if ( llt.info() != Eigen::Success )
+    {
+        throw std::invalid_argument(
+            "lgpsf::theta_hat_from_sigma: sigma is not positive definite");
+    }
+    return theta_hat_from_cholesky(Eigen::MatrixXd(llt.matrixL()));
+}
+
+/// The scales the default ladder uses: log-spaced from the batch's local mesh
+/// spacing to its radius about @p default_mu. Exposed so a caller building
+/// their own dictionary can span the same range the library would.
+inline Eigen::VectorXd ladder_scales_for(
+    const Eigen::Ref<const Eigen::MatrixXd>& x,
+    const Eigen::Ref<const Eigen::VectorXd>& default_mu, int num_rungs )
+{
+    return ladder_scales(local_spacing(x, default_mu),
+                         window_radius(x, default_mu), num_rungs);
+}
+
+/// Isotropic guesses at log-spaced scales -- **the library's default
+/// dictionary**, and the one that carries the robustness.
+///
+/// The circles are not a claim that point-spread functions are round. They
+/// sweep the SCALE axis at a neutral shape, and a prior's width is the thing
+/// most often wrong: on a field-scale Hessian whose prior was 3-5x too wide,
+/// removing them doubled the held-out error. They are ordered middle-out, so
+/// the rung most likely to win is tried first and `target_score` can exit early.
+///
+/// @param x           (K, N) batch points.
+/// @param default_mu  (N,) center for every rung.
+/// @param num_rungs   How many scales, >= 1.
+inline std::vector<InitialGuess> circle_ladder(
+    const Eigen::Ref<const Eigen::MatrixXd>& x,
+    const Eigen::Ref<const Eigen::VectorXd>& default_mu, int num_rungs )
+{
+    const Eigen::VectorXd radii = ladder_scales_for(x, default_mu, num_rungs);
+    const Eigen::Index dim = default_mu.size();
+    std::vector<InitialGuess> out;
+    for ( int i : mid_out(static_cast<int>(radii.size())) )
+    {
+        InitialGuess guess;
+        guess.sigma = radii(i) * radii(i)
+                      * Eigen::MatrixXd::Identity(dim, dim);
+        guess.label = detail::rung_label("circle", radii(i));
+        out.push_back(std::move(guess));
+    }
+    return out;
+}
+
+/// Scaled copies of the batch's own empirical shape, at the same scales.
+///
+/// Worth reaching for when the batch's extent is informative about the target
+/// for a reason the prior is not. It is NOT informative when the batch is a
+/// window derived from that same prior, which is the usual case -- there it
+/// carries no shape information `sigma` did not already have, and when the
+/// window is a ball it degenerates into a second copy of `circle_ladder`.
+inline std::vector<InitialGuess> window_shape_ladder(
+    const Eigen::Ref<const Eigen::MatrixXd>& x,
+    const Eigen::Ref<const Eigen::VectorXd>& m2_diag,
+    const Eigen::Ref<const Eigen::VectorXd>& default_mu, int num_rungs )
+{
+    const Eigen::VectorXd radii = ladder_scales_for(x, default_mu, num_rungs);
+    const Eigen::MatrixXd shape = window_shape(x, m2_diag);
+    std::vector<InitialGuess> out;
+    for ( int i : mid_out(static_cast<int>(radii.size())) )
+    {
+        const Eigen::MatrixXd factor = radii(i) * shape;
+        InitialGuess guess;
+        guess.sigma = factor * factor.transpose();
+        guess.label = detail::rung_label("window", radii(i));
+        out.push_back(std::move(guess));
+    }
+    return out;
+}
+
+/// Anisotropic guesses over a grid of orientations -- **the circle family's
+/// blind spot**, and the one family the library does not use by default.
+///
+/// A circle carries no orientation information, so a strongly anisotropic
+/// target whose prior points the wrong way attacks the default dictionary
+/// where it is weakest. This covers orientation explicitly. It is not on by
+/// default because it has not earned it: measured at 8:1 anisotropy the
+/// default ladder matched it under the pinned center policy, and only under a
+/// freed center did orientation coverage pull ahead. See
+/// `experiments/anisotropy-hardening.md`.
+///
+/// Two-dimensional only. In 3-D orientation space is SO(3) and a covering
+/// dictionary is a different object; this signature does not generalize.
+///
+/// @param angles_degrees Orientations of the major axis.
+/// @param aspect         Major-to-minor 1-sigma axis ratio, > 1.
+/// @throws std::invalid_argument if N != 2, @p aspect <= 1, or no angles.
+inline std::vector<InitialGuess> oriented_ladder(
+    const Eigen::Ref<const Eigen::MatrixXd>& x,
+    const Eigen::Ref<const Eigen::VectorXd>& default_mu, int num_rungs,
+    const std::vector<double>& angles_degrees, double aspect )
+{
+    if ( default_mu.size() != 2 )
+    {
+        throw std::invalid_argument(
+            "lgpsf::oriented_ladder: two-dimensional only, got N = "
+            + std::to_string(default_mu.size()));
+    }
+    if ( !(aspect > 1.0) )
+    {
+        throw std::invalid_argument(
+            "lgpsf::oriented_ladder: aspect must be > 1, got "
+            + std::to_string(aspect));
+    }
+    if ( angles_degrees.empty() )
+    {
+        throw std::invalid_argument("lgpsf::oriented_ladder: no angles given");
+    }
+    const Eigen::VectorXd radii = ladder_scales_for(x, default_mu, num_rungs);
+    std::vector<InitialGuess> out;
+    for ( int i : mid_out(static_cast<int>(radii.size())) )
+    {
+        for ( double angle : angles_degrees )
+        {
+            char buffer[80];
+            std::snprintf(buffer, sizeof(buffer), "oriented r=%.3g ang=%.3g",
+                          radii(i), angle);
+            InitialGuess guess;
+            guess.sigma = oriented_sigma(radii(i), radii(i) / aspect, angle);
+            guess.label = buffer;
+            out.push_back(std::move(guess));
+        }
     }
     return out;
 }

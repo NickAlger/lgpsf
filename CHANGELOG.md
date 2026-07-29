@@ -8,23 +8,54 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Initial guesses are passed as data, not selected by flags.** Where to seed
+  a nonlinear search is problem-specific, so `fit_from_probes` now takes a
+  `guesses` collection of `InitialGuess{sigma, mu?, label}` instead of choosing
+  among dictionaries the library imagined in advance.
+  - **Removed** `fit_from_probes`'s `sigma0` parameter, and
+    `ProbeFitConfig::window_shape_rungs` / `circle_rungs_above_aspect`.
+  - `mu0` is renamed **`default_mu`** — it centers the default rungs and any
+    guess that omits its own `mu`, and still carries the spatial dimension.
+  - `MuPolicy::Pinned` now honours a **guess's own `mu`**: pinning means the
+    optimizer does not move the center from its initial guess, not that the
+    center is `default_mu`.
+  - `ProbeFitConfig::num_rungs` gains **`0` = "only my guesses"**; it is an
+    error if none were passed.
+  - `CandidateFit::theta_hat_init` becomes **`theta_init`, in the public
+    absolute encoding** — candidates no longer share one origin, so a
+    displacement against an unstated reference could not be decoded.
+  - **New**: `InitialGuess`, `circle_ladder`, `window_shape_ladder`,
+    `oriented_ladder`, `theta_hat_from_sigma`. `oriented_ladder` makes the
+    orientation-covering family reachable for the first time — it is not on by
+    default, but the question is now answerable without a library change.
+
+  `fit_operator` is **bit-identical** across this change: it passes the
+  caller's `sigma` as the first guess, so the dictionary it assembles is
+  unchanged. Migration:
+
+  | before | after |
+  |---|---|
+  | `fit_from_probes(..., sigma0=S)` | `fit_from_probes(..., guesses=[InitialGuess(S)])` |
+  | `config.window_shape_rungs = True` | `guesses += window_shape_ladder(...)` |
+  | `config.circle_rungs_above_aspect = inf` | `config.num_rungs = 0` |
+
 - **Less conservative fitting defaults.** The initial-guess dictionary is now
   `sigma0` + 3 circles (plus a warm start), where it was `sigma0` + 6 circles +
   6 window-shaped starts. Roughly 4.4× fewer nonlinear fits per row, measured
   at −2.7% to +2.3% on held-out score across eight conditions of a field-scale
   PDE Hessian, and *better* in the tail (worst row 12× better at k = 20).
   - `ProbeFitConfig::num_rungs` `6` → `3`.
-  - `ProbeFitConfig::window_shape_rungs` `true` → `false`. The window derives
-    from the same `sigma` as the initial guess, so this family carried no shape
-    information `sigma0` did not already have; when the window is a ball it
-    degenerated into a second copy of the circle rungs.
+  - The window-shape rung family stopped being a default (and is now
+    `window_shape_ladder`, opt-in). The window derives from the same `sigma`
+    as the initial guess, so it carried no shape information the prior did not
+    already have; when the window is a ball it degenerated into a second copy
+    of the circle rungs.
   - `VarProOptions::ftol`, `xtol`, `gtol` `1e-8` → `1e-4`. `ftol` is the only
     one that binds. `1e-4` is the loosest setting at which the mode ladder
     still made every decision it makes at `1e-8`.
-  - `ProbeFitConfig::circle_rungs_above_aspect` stays at `1.0` — circles
-    always on. Raising it is now load-bearing rather than an economy: with the
-    window rungs off it leaves `sigma0` as the only start, which doubled
-    held-out error on a prior that was wrong in scale.
+  - The circle rungs stay on by default, reversing the synthetic sweep's
+    provisional recommendation to gate them. Dropping them leaves the prior as
+    the only start, which doubled held-out error on a prior wrong in scale.
 
   Fits are **not** bit-identical to 0.1.0. Selection can change where two
   candidates tie, and looser tolerances shift which local minimum a row lands
@@ -32,9 +63,8 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- `experiments/lm_tolerance.py`, `experiments/anisotropy_hardening.py` and
-  their write-ups, plus a `circle_rungs_above_aspect` gate on the circle rungs
-  (default `1.0`, i.e. no behaviour change from that knob alone).
+- `experiments/lm_tolerance.py` and `experiments/anisotropy_hardening.py`, with
+  their write-ups.
 
 ## [0.1.0] — 2026-07-28
 

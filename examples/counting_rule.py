@@ -57,7 +57,8 @@ def main():
     config.mode_policy = lgpsf.ShellLadder([0, 1, 2, 3, 4, 5, 6])
     config.target_score = None
     result = lgpsf.fit_from_probes(x, mass, z, y, mu0, config=config,
-                                   sigma0=sigma0, target_mass=mass[rho])
+                                   guesses=[lgpsf.InitialGuess(sigma0)],
+                                   target_mass=mass[rho])
 
     print(f"{'candidate':>26}  {'modes':>5}  {'admissible':>10}  {'score':>8}")
     seen = set()
