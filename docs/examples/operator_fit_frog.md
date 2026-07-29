@@ -11,30 +11,20 @@ and `HV = H @ V`.
 
 `operator_fit_frog.cpp` is this same example in C++, against the same problem.
 
-## Figures
-
-![hero.png](../img/operator_fit_frog__hero.png)
-
-![operator_fit_frog_convergence.png](../img/operator_fit_frog__operator_fit_frog_convergence.png)
-
-![operator_fit_frog_impulses.png](../img/operator_fit_frog__operator_fit_frog_impulses.png)
-
 ## Output
 
 ```text
 building the frog operator on a 24 x 24 grid (576 dofs) ...
 
     k   rel. Frobenius   modes/row   rows fit
-   10           0.6214         1.0        553
-   14           0.5766         2.4        554
-   20           0.5211         5.1        574
-   30           0.2277         9.6        573
-   45           0.1271        14.9        573
-   70           0.0365        27.2        575
+   10           0.6089         1.0        557
+   14           0.5719         2.4        556
+   20           0.5171         5.1        574
+   30           0.2281         9.6        572
+   45           0.1276        14.9        572
+   70           0.0364        27.1        575
 
-wrote examples/operator_fit_frog_convergence.png
-wrote examples/operator_fit_frog_impulses.png
-wrote examples/hero.png
+(matplotlib not installed -- numbers above are the whole result; install it for the figures)
 ```
 
 ## Program

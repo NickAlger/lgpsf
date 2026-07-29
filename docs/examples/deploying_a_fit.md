@@ -30,25 +30,25 @@ matvec vs assemble_sparse : max |difference| 0.00e+00
 eval_entries vs the matrix: max |difference| 0.00e+00
 
    tau       nnz   % dense  rel. error vs truth
-   1.0      2998      0.9%               0.7940
-   2.0     10933      3.3%               0.3444
-   3.0     23477      7.1%               0.0950
-   6.0     38108     11.5%               0.0297
-   inf     38148     11.5%               0.0297
+   1.0      2987      0.9%               0.7941
+   2.0     10947      3.3%               0.3367
+   3.0     23503      7.1%               0.0920
+   6.0     38148     11.5%               0.0293
+   inf     38148     11.5%               0.0293
 
 row 320: window holds 83 of 576 columns
 
  distance     eval_kernel    unrestricted
-     0.00      1.7741e+00      1.7741e+00
-     0.10      9.1832e-02      9.1832e-02
-     0.20      0.0000e+00      1.1619e-04
-     0.30      0.0000e+00      1.6438e-10
-     0.50      0.0000e+00      8.1187e-32
-     0.80      0.0000e+00      7.4967e-86
+     0.00      1.7742e+00      1.7742e+00
+     0.10      9.1867e-02      9.1867e-02
+     0.20      0.0000e+00      1.1618e-04
+     0.30      0.0000e+00      1.6450e-10
+     0.50      0.0000e+00      8.1515e-32
+     0.80      0.0000e+00      7.5927e-86
 The restricted form is exactly zero outside the window. The unrestricted
 one keeps evaluating a model nothing ever checked there.
 
-Symmetrize.None_   error 0.0297
+Symmetrize.None_   error 0.0293
 Symmetrize.Average error 0.4472
 
 Averaging made it 15x WORSE, and correctly so: this operator is

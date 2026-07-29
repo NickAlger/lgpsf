@@ -27,21 +27,21 @@ saved you the rest.
 
 --- target_score = None: every candidate is scored ---
   #                           candidate  modes        cost     score  iters
-  0                              sigma0      3    5.78e-07    0.3278     14   
-  1                     circle r=0.0417      3    5.78e-07    0.3278      8   
-  2                      circle r=0.827      3    3.11e-06    0.7384      8   
-  3                      warm(level<=1)     10    8.27e-08    0.1642     13   
-  4                              sigma0     10    8.27e-08    0.1642     17   
-  5                     circle r=0.0417     10    8.27e-08    0.1642     14 <-
+  0                              sigma0      3    5.78e-07    0.3277      6   
+  1                     circle r=0.0417      3    5.78e-07    0.3277      6   
+  2                      circle r=0.827      3    3.79e-06    0.8275      2   
+  3                      warm(level<=1)     10    8.27e-08    0.1642      6   
+  4                              sigma0     10    8.27e-08    0.1643      9   
+  5                     circle r=0.0417     10    8.27e-08    0.1642      6 <-
   6                      circle r=0.827     10    2.60e-06    0.8146      4   
      shipped 10 modes, score 0.1642, stopped: Exhausted
 
 --- target_score = 0.2: stop once a candidate clears the bar ---
   #                           candidate  modes        cost     score  iters
-  0                              sigma0      3    5.78e-07    0.3278     14   
-  1                     circle r=0.0417      3    5.78e-07    0.3278      8   
-  2                      circle r=0.827      3    3.11e-06    0.7384      8   
-  3                      warm(level<=1)     10    8.27e-08    0.1642     13 <-
+  0                              sigma0      3    5.78e-07    0.3277      6   
+  1                     circle r=0.0417      3    5.78e-07    0.3277      6   
+  2                      circle r=0.827      3    3.79e-06    0.8275      2   
+  3                      warm(level<=1)     10    8.27e-08    0.1642      6 <-
      shipped 10 modes, score 0.1642, stopped: Target
 
 Early stopping skipped 3 candidate(s) for a score penalty of +0.0000.
@@ -50,7 +50,7 @@ cost nothing at all. That is the usual case: easy rows exit early, and hard
 rows fail the certificate and buy the full search anyway.
 
  modes   best in-sample cost   best held-out score
-     3              5.78e-07                0.3278
+     3              5.78e-07                0.3277
     10              8.27e-08                0.1642
 Cost falls with every mode added, whether or not the model got better.
 The score is what notices; see counting_rule.py for a case where they

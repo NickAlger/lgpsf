@@ -6,6 +6,36 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Less conservative fitting defaults.** The initial-guess dictionary is now
+  `sigma0` + 3 circles (plus a warm start), where it was `sigma0` + 6 circles +
+  6 window-shaped starts. Roughly 4.4× fewer nonlinear fits per row, measured
+  at −2.7% to +2.3% on held-out score across eight conditions of a field-scale
+  PDE Hessian, and *better* in the tail (worst row 12× better at k = 20).
+  - `ProbeFitConfig::num_rungs` `6` → `3`.
+  - `ProbeFitConfig::window_shape_rungs` `true` → `false`. The window derives
+    from the same `sigma` as the initial guess, so this family carried no shape
+    information `sigma0` did not already have; when the window is a ball it
+    degenerated into a second copy of the circle rungs.
+  - `VarProOptions::ftol`, `xtol`, `gtol` `1e-8` → `1e-4`. `ftol` is the only
+    one that binds. `1e-4` is the loosest setting at which the mode ladder
+    still made every decision it makes at `1e-8`.
+  - `ProbeFitConfig::circle_rungs_above_aspect` stays at `1.0` — circles
+    always on. Raising it is now load-bearing rather than an economy: with the
+    window rungs off it leaves `sigma0` as the only start, which doubled
+    held-out error on a prior that was wrong in scale.
+
+  Fits are **not** bit-identical to 0.1.0. Selection can change where two
+  candidates tie, and looser tolerances shift which local minimum a row lands
+  in. Set the four knobs back to their 0.1.0 values to reproduce old results.
+
+### Added
+
+- `experiments/lm_tolerance.py`, `experiments/anisotropy_hardening.py` and
+  their write-ups, plus a `circle_rungs_above_aspect` gate on the circle rungs
+  (default `1.0`, i.e. no behaviour change from that knob alone).
+
 ## [0.1.0] — 2026-07-28
 
 Initial release. Alpha: the method is validated at field scale, the API is not

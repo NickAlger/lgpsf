@@ -1,21 +1,27 @@
 # SPDX-License-Identifier: MIT
 """What is the initial-guess ladder actually buying?
 
-The per-row search is deliberately conservative. At every rung of the mode
-ladder it tries `1 + num_rungs` window-shaped starts and `num_rungs` circular
-ones, plus a warm start from the previous rung -- 14 nonlinear fits per rung at
-the defaults, and roughly 70 per row over a five-rung ladder. This asks how
-much of that is load-bearing.
+**This experiment is why the defaults changed.** lgpsf 0.1.0 shipped a
+deliberately conservative per-row search: at every rung of the mode ladder it
+tried `1 + num_rungs` window-shaped starts and `num_rungs` circular ones, plus a
+warm start -- 14 nonlinear fits per rung, roughly 70 per row over a five-rung
+ladder. It is now `sigma0` + 3 circles + a warm start, about 4.4x fewer. The
+sweep below is what that decision rested on; the tables measure against the old
+configuration, which is why every block sets its knobs explicitly rather than
+inheriting them.
 
 Two knobs are under test.
 
   `circle_rungs_above_aspect`  Circle rungs exist to rescue a prior that
-      misleads: a round start reaches basins an anisotropic one cannot. When
-      the prior is already nearly round they duplicate what `sigma0` and the
+      misleads: they sweep the SCALE axis at a neutral shape. When the prior is
+      already nearly round they look like duplicates of what `sigma0` and the
       window rungs cover. Setting this above 1 skips them for near-isotropic
-      priors.
+      priors. (The frog says they cost nothing. A real Hessian later said they
+      are worth 2x when the prior's scale is wrong -- see the caveat below,
+      which anticipated exactly that. The default stayed at 1.0.)
 
-  `num_rungs`  How many log-spaced scales the ladder tries.
+  `num_rungs`  How many log-spaced scales the ladder tries. Both families draw
+      on the same scales, so this is one count, not one per family.
 
 The axis that should decide both is PRIOR QUALITY, so the sweep runs over
 deliberately damaged priors as well as correct ones. A setting that only works
@@ -25,8 +31,10 @@ mediocre prior, which is everyone on a real problem.
     python experiments/fitting_defaults.py            # the full sweep
     python experiments/fitting_defaults.py --quick    # fewer conditions
 
-PROVISIONAL. The frog kernel is smooth, synthetic and two-dimensional. Nothing
-here should become a default until it survives a real operator.
+PROVISIONAL, and it stayed provisional for good reason. The frog kernel is
+smooth, synthetic and two-dimensional, and it damages the prior's SHAPE while
+leaving its scale about right -- which is why it could not see the one effect
+that turned out to matter.
 """
 import argparse
 import time

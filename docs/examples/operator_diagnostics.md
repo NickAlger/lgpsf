@@ -28,28 +28,28 @@ discrete spike rather than the smooth part.
 structural check: clean
 
 status
-  Fit                  554
-  FallbackBaseline      22
+  Fit                  556
+  FallbackBaseline      20
 
 stop_reason
   Exhausted            576
 
-search beat the a-priori model on 554 of 576 rows
-  median searched score 0.3242, median a-priori 0.4308
+search beat the a-priori model on 556 of 576 rows
+  median searched score 0.3241, median a-priori 0.4308
   Where it did not, the a-priori model shipped -- which is why a fit can
   never be worse than the prior you supplied.
 
-qc_map over 576 modelled rows: median 0.5082, 90th pct 0.7274, worst 1.4854
+qc_map over 576 modelled rows: median 0.5032, 90th pct 0.7240, worst 1.5224
   NaN on 0 rows -- those carry no model.
-  worst row 255 at (0.44, 0.65), 3 modes, score 0.6993
+  worst row 255 at (0.44, 0.65), 3 modes, score 0.6998
 
-  mean distance to the boundary: 0.192 for the 20 worst rows, 0.044 for the 20 best -- the hard rows are
+  mean distance to the boundary: 0.190 for the 20 worst rows, 0.044 for the 20 best -- the hard rows are
   INTERIOR, where there is the most structure to represent and the probe
   budget caps the modes that could represent it.
 
 spike_measure: max |m1 * s| = 0.00e+00 (spike disabled here, so this is zero)
 
-ellipsoid_field: 576 ellipsoids, median 1-sigma axes 0.0404 x 0.0969
+ellipsoid_field: 576 ellipsoids, median 1-sigma axes 0.0407 x 0.0964
   This is exactly what ellipsoid_tree consumes, so the fit doubles as a
   geometric description of the operator's locality.
 ```

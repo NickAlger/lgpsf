@@ -43,10 +43,10 @@ here. Then, from the repository root (it writes PNGs into examples/):
 building the frog operator on a 24 x 24 grid (576 dofs) ...
 
     k   rel. Frobenius   modes/row   rows fit
-   10           0.6395         1.0        554
-   20           0.5253         5.2        572
+   10           0.6266         1.0        555
+   20           0.5168         5.1        572
    45           0.1320        14.8        572
-  110           0.0297        27.8        576
+  110           0.0293        27.8        576
 
 wrote examples/operator_fit_frog_cxx_*.png
 ```

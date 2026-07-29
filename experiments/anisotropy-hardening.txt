@@ -1,0 +1,124 @@
+8:1 frog, grid 81, window radius 0.35 (2537 points)
+target row at (0.549, 0.352); true 1-sigma axes 0.1000 x 0.0125 at 99 degrees
+
+==============================================================================
+hard: 20 probes, 3 modes -- mu pinned (the default) -- one fit per starting ellipsoid
+==============================================================================
+initial guess          init aspect  init ang   rel err     score  fit aspect  fit ang
+circle r=0.15                 1.00        90    1.1183    0.8992       43.75       41
+circle r=0.1                  1.00        90    0.5725    0.2954       12.45       98
+circle r=0.07                 1.00        90    0.5723    0.2954       12.44       98
+circle r=0.05                 1.00        90    0.5727    0.2954       12.46       98
+circle r=0.035                1.00        90    0.5722    0.2954       12.44       98
+circle r=0.025                1.00        90    1.0237    0.6007        3.39       99
+a=0.07 ang=0                  4.00         0    0.5723    0.2954       12.44       98
+a=0.07 ang=45                 4.00        45    1.1263    1.0548       25.12       50
+a=0.07 ang=90                 4.00        90    0.5726    0.2954       12.46       98
+a=0.07 ang=135                4.00       135    0.5722    0.2954       12.44       98
+a=0.12 ang=0                  4.00         0    1.2523    0.8204       86.64      177
+a=0.12 ang=45                 4.00        45    1.1264    1.0546       24.69       50
+a=0.12 ang=90                 4.00        90    0.5722    0.2954       12.44       98
+a=0.12 ang=135                4.00       135    1.1811    0.7042        7.96      121
+a-priori true shape           8.00        99    0.5727    0.2954       12.46       98
+TRUE shape                    8.00        99
+
+  best circle    circle r=0.035     rel err 0.5722   (4/6 reached the good basin)
+  best oriented  a=0.12 ang=90      rel err 0.5722   (4/8 reached the good basin)
+  a-priori shape                    rel err 0.5727
+
+  SHIPPING DEFAULT (sigma0 + 3 circles, 4 candidates): rel err 0.5727, fitted 12.46:1 at 98 deg
+  gap to the best start of any family: 1.00x
+
+==============================================================================
+hard: 20 probes, 3 modes -- mu free -- one fit per starting ellipsoid
+==============================================================================
+initial guess          init aspect  init ang   rel err     score  fit aspect  fit ang
+circle r=0.15                 1.00        90    1.3392    0.7674        2.25       10
+circle r=0.1                  1.00        90    1.3459    0.6244        1.85      133
+circle r=0.07                 1.00        90    1.5034    0.4437        4.26      104
+circle r=0.05                 1.00        90    0.5607    0.2448       11.72       97
+circle r=0.035                1.00        90    1.2508    0.7592       19.46       14
+circle r=0.025                1.00        90    1.7103    0.7637       54.44       93
+a=0.07 ang=0                  4.00         0    1.2507    0.7594       19.53       14
+a=0.07 ang=45                 4.00        45    1.2871    0.8716       16.22       79
+a=0.07 ang=90                 4.00        90    0.5610    0.2447       11.78       97
+a=0.07 ang=135                4.00       135    0.5610    0.2448       11.76       97
+a=0.12 ang=0                  4.00         0    1.4675    0.7707        3.68      171
+a=0.12 ang=45                 4.00        45    1.4242    0.7575      126.93       49
+a=0.12 ang=90                 4.00        90    0.5610    0.2447       11.78       97
+a=0.12 ang=135                4.00       135    1.2574    0.6841        4.23      121
+a-priori true shape           8.00        99    0.5607    0.2448       11.72       97
+TRUE shape                    8.00        99
+
+  best circle    circle r=0.05      rel err 0.5607   (1/6 reached the good basin)
+  best oriented  a=0.07 ang=90      rel err 0.5610   (3/8 reached the good basin)
+  a-priori shape                    rel err 0.5607
+
+  SHIPPING DEFAULT (sigma0 + 3 circles, 4 candidates): rel err 0.5607, fitted 11.72:1 at 97 deg
+  gap to the best start of any family: 1.00x
+
+==============================================================================
+comfortable: 60 probes, 21 modes -- mu pinned (the default) -- one fit per starting ellipsoid
+==============================================================================
+initial guess          init aspect  init ang   rel err     score  fit aspect  fit ang
+circle r=0.15                 1.00        90    1.2093    1.0051       19.75       49
+circle r=0.1                  1.00        90    0.0402    0.0371        7.67       99
+circle r=0.07                 1.00        90    0.0403    0.0371        7.67       99
+circle r=0.05                 1.00        90    0.0402    0.0371        7.66       99
+circle r=0.035                1.00        90    0.0402    0.0371        7.66       99
+circle r=0.025                1.00        90    0.0403    0.0370        7.67       99
+a=0.07 ang=0                  4.00         0    0.0402    0.0371        7.66       99
+a=0.07 ang=45                 4.00        45    0.0402    0.0371        7.67       99
+a=0.07 ang=90                 4.00        90    0.0403    0.0370        7.67       99
+a=0.07 ang=135                4.00       135    0.0403    0.0370        7.67       99
+a=0.12 ang=0                  4.00         0    1.2935    1.1539        9.32        4
+a=0.12 ang=45                 4.00        45    1.1214    0.6995        2.92       60
+a=0.12 ang=90                 4.00        90    0.0406    0.0369        7.75       99
+a=0.12 ang=135                4.00       135    0.0403    0.0370        7.67       99
+a-priori true shape           8.00        99    0.0406    0.0369        7.74       99
+TRUE shape                    8.00        99
+
+  best circle    circle r=0.05      rel err 0.0402   (5/6 reached the good basin)
+  best oriented  a=0.07 ang=0       rel err 0.0402   (6/8 reached the good basin)
+  a-priori shape                    rel err 0.0406
+
+  SHIPPING DEFAULT (sigma0 + 3 circles, 4 candidates): rel err 0.0406, fitted 7.74:1 at 99 deg
+  gap to the best start of any family: 1.01x
+
+==============================================================================
+comfortable: 60 probes, 21 modes -- mu free -- one fit per starting ellipsoid
+==============================================================================
+initial guess          init aspect  init ang   rel err     score  fit aspect  fit ang
+circle r=0.15                 1.00        90    1.2788    0.6638        3.81       68
+circle r=0.1                  1.00        90    1.1416    0.6957        2.91       60
+circle r=0.07                 1.00        90    0.4583    0.3374        2.51       89
+circle r=0.05                 1.00        90    0.0396    0.0352        7.69       99
+circle r=0.035                1.00        90    0.4528    0.3371        2.53       89
+circle r=0.025                1.00        90    0.0396    0.0352        7.69       99
+a=0.07 ang=0                  4.00         0    1.2386    0.7633        3.08      175
+a=0.07 ang=45                 4.00        45    0.0396    0.0352        7.69       99
+a=0.07 ang=90                 4.00        90    0.0396    0.0352        7.68       99
+a=0.07 ang=135                4.00       135    0.0399    0.0351        7.73       99
+a=0.12 ang=0                  4.00         0    1.3418    0.8203        6.87        2
+a=0.12 ang=45                 4.00        45    1.1413    0.6958        2.91       60
+a=0.12 ang=90                 4.00        90    0.0396    0.0352        7.69       99
+a=0.12 ang=135                4.00       135    0.0397    0.0352        7.70       99
+a-priori true shape           8.00        99    0.0399    0.0351        7.74       99
+TRUE shape                    8.00        99
+
+  best circle    circle r=0.05      rel err 0.0396   (2/6 reached the good basin)
+  best oriented  a=0.07 ang=90      rel err 0.0396   (5/8 reached the good basin)
+  a-priori shape                    rel err 0.0399
+
+  SHIPPING DEFAULT (sigma0 + 3 circles, 4 candidates): rel err 0.0399, fitted 7.74:1 at 99 deg
+  gap to the best start of any family: 1.01x
+
+The `fit aspect` columns answer whether a round START biases the fitted ANSWER
+toward roundness: compare the circle rows against the oriented ones. They do
+not -- every start that reaches the good basin reports the same strongly
+anisotropic ellipsoid, so a circular start is a scaffold the solver discards.
+
+The `reached the good basin` counts are the robustness measure that matters: a
+family whose BEST member wins but whose other members diverge is not safe as
+the only family in the dictionary. See anisotropy-hardening.md and
+dev/robust-init-notes.md.

@@ -19,7 +19,7 @@ dense; the fit is not.
 |---|---|---|---|---|---|---|---|
 | 12 | 144 | 0.2908 | 0.1898 | 0.0906 | 0.0554 | 0.0157 | 0.0148 |
 | 16 | 256 | 0.4776 | 0.4006 | 0.1800 | 0.1174 | 0.0254 | 0.0178 |
-| 24 | 576 | 0.6395 | 0.5253 | 0.2266 | 0.1320 | 0.0366 | 0.0297 |
+| 24 | 576 | 0.6266 | 0.5168 | 0.2273 | 0.1320 | 0.0365 | 0.0293 |
 | 32 | 1024 | 0.6295 | 0.5297 | 0.2206 | 0.1369 | 0.0352 | 0.0302 |
 | 48 | 2304 | 0.6749 | 0.5465 | 0.2183 | 0.1431 | 0.0368 | 0.0301 |
 
@@ -27,14 +27,15 @@ Interpolating for the budget that reaches a fixed accuracy:
 
 | grid | dofs | k @ 10% | k @ 5% |
 |---|---|---|---|
-| 12 | 144 | 28.7 | 47.0 |
-| 16 | 256 | 47.6 | 58.9 |
+| 12 | 144 | 28.5 | 47.2 |
+| 16 | 256 | 47.7 | 59.6 |
 | **24** | **576** | **50.4** | **63.9** |
 | **32** | **1024** | **50.8** | **63.5** |
-| **48** | **2304** | **51.6** | **64.3** |
+| **48** | **2304** | **51.4** | **64.2** |
 
-**A 16× increase in degrees of freedom moves the 5% budget from 63.9 to 64.3.**
-That is the result.
+**A 4× increase in degrees of freedom moves the 5% budget from 63.9 to 64.2**
+(576 → 2304 dofs; from 256 dofs, a 9× increase, it moves from 59.6). That is
+the result.
 
 The rise across the two coarsest grids is not a counter-example, it is the
 under-resolved regime. The prior standard deviations are 0.1 and 0.05 on the
@@ -79,7 +80,7 @@ as preconditioner (see [`../examples/preconditioner.py`](../examples/preconditio
 
 | grid | dofs | CG plain | CG preconditioned | speedup |
 |---|---|---|---|---|
-| 12 | 144 | 842 | 35 | 24.1× |
+| 12 | 144 | 842 | 33 | 25.5× |
 | 16 | 256 | 1823 | 95 | 19.2× |
 | 24 | 576 | 3113 | 81 | 38.4× |
 | 32 | 1024 | 4196 | 68 | **61.7×** |
@@ -103,9 +104,9 @@ chosen for this study rather than a property of the method.
 
 | grid | dofs | level | modes used | rel. error |
 |---|---|---|---|---|
-| 24 | 576 | 6 | 27.8 | 0.0297 |
-| 24 | 576 | 8 | 37.4 | **0.0152** |
-| 24 | 576 | 10 | 37.4 | 0.0152 |
+| 24 | 576 | 6 | 27.8 | 0.0293 |
+| 24 | 576 | 8 | 37.4 | **0.0147** |
+| 24 | 576 | 10 | 37.4 | 0.0147 |
 | 32 | 1024 | 6 | 27.8 | 0.0302 |
 | 32 | 1024 | 8 | 37.7 | **0.0152** |
 | 32 | 1024 | 10 | 37.7 | 0.0152 |

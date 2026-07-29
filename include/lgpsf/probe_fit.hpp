@@ -256,24 +256,44 @@ struct ProbeFitConfig
     /// mode list is `FixedSet` and a level ladder is `ShellLadder`.
     std::shared_ptr<const ModePolicy> mode_policy;
 
-    int num_rungs = 6;              ///< Log-spaced scales in the initial-guess ladder.
-    bool window_shape_rungs = true; ///< Also ladder scaled copies of the window's shape.
+    /// Log-spaced scales in the initial-guess ladder, from the local mesh
+    /// spacing to the window radius. Both rung families use these SAME scales,
+    /// so this is one count, not one per family.
+    int num_rungs = 3;
+
+    /// Also ladder scaled copies of the window's own empirical shape.
+    ///
+    /// Off by default: the window's shape derives from the same `sigma` as the
+    /// initial guess, so this family carries no shape information `sigma0` did
+    /// not already have -- and when the window is a ball it degenerates into a
+    /// second copy of the circle rungs. Measured on a real Hessian it never
+    /// helped and cost 1.7x. Turn it on if your window shape is informative
+    /// for a reason the prior is not.
+    bool window_shape_rungs = false;
 
     /// Add the CIRCLE rungs only when the a-priori ellipsoid is at least this
     /// anisotropic -- the ratio of its largest 1-sigma axis to its smallest.
     ///
-    /// Circle rungs are the fallback for a prior that misleads: a round
-    /// starting guess reaches basins an anisotropic one cannot, which is what
-    /// makes the search robust when `sigma0` has the wrong shape or
-    /// orientation. When the prior is already nearly round they duplicate what
-    /// `sigma0` and the window rungs cover, and cost `num_rungs` extra fits at
-    /// every level of the mode ladder.
+    /// Circle rungs are the fallback for a prior that misleads. They sweep the
+    /// SCALE axis at a neutral shape, which is what rescues a `sigma0` whose
+    /// width is wrong -- and a prior's width is the thing most often wrong.
     ///
     /// An aspect ratio is always >= 1, so **1.0 means always add them**, which
-    /// is the conservative behavior. Raising it trades robustness against a
-    /// bad prior for roughly half the candidate fits. Ignored when no `sigma0`
-    /// is supplied: there is then no prior to judge, and the circles are the
-    /// only shape hypothesis besides the window's.
+    /// is the default and what the shipped configuration relies on.
+    ///
+    /// @warning Raising this is not a mild economy. With `window_shape_rungs`
+    /// off (also the default), the circles are the ONLY family besides
+    /// `sigma0` itself, so raising the gate above a near-round prior's aspect
+    /// leaves the search with one starting guess and a warm start. Measured on
+    /// a real PDE Hessian whose prior was 3-5x too wide, that **doubled the
+    /// held-out error** (0.20 -> 0.50) and took the count of rows predicting
+    /// worse than zero from 190 to 816. Nothing in the cross-validation score
+    /// reports it -- the median CV moved 1% while held-out error moved 106% --
+    /// so this failure is not self-diagnosing. Raise it only if you know your
+    /// prior's SCALE is sound. See `experiments/` for the measurements.
+    ///
+    /// Ignored when no `sigma0` is supplied: there is then no prior to judge,
+    /// and the circles are the only shape hypothesis there is.
     ///
     /// NOT to be confused with `OperatorFitConfig::window_aspect_cap`, which
     /// shapes the WINDOW -- the region a row is fitted on -- and has nothing

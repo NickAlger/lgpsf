@@ -6,102 +6,102 @@ blocks fit all 576 and report the faster of two runs
 which stopping test binds (row layer, num_rungs = 6)
 ==============================================================================
 setting                         iters/row   cands  it/cand      score    rel err  modes     sec
-all at 1e-8 (as in 0.1.0)          1184.8    67.9    17.45   0.128325   0.137323   14.2     5.8
-ftol = 1e-4 only                    653.0    67.9     9.62   0.128300   0.137313   14.2     3.4  (1.81x fewer, 1.00x err, 1.71x faster)
-xtol = 1e-4 only                   1030.1    67.9    15.18   0.128322   0.137323   14.2     5.0  (1.15x fewer, 1.00x err, 1.16x faster)
-gtol = 1e-4 only                   1046.1    67.9    15.41   0.128323   0.137323   14.2     5.0  (1.13x fewer, 1.00x err, 1.15x faster)
-all three at 1e-4                   643.0    67.9     9.47   0.128300   0.137313   14.2     3.4  (1.84x fewer, 1.00x err, 1.73x faster)
+all at the reference                648.2    38.4    16.90   0.128325   0.137323   14.2     2.8
+ftol = 1e-4 only                    355.2    38.4     9.26   0.128300   0.137313   14.2     1.8  (1.82x fewer, 1.00x err, 1.58x faster)
+xtol = 1e-4 only                    560.7    38.4    14.62   0.128322   0.137323   14.2     2.7  (1.16x fewer, 1.00x err, 1.04x faster)
+gtol = 1e-4 only                    572.6    38.4    14.93   0.128323   0.137323   14.2     2.5  (1.13x fewer, 1.00x err, 1.10x faster)
+all three at 1e-4                   350.2    38.4     9.13   0.128300   0.137313   14.2     1.7  (1.85x fewer, 1.00x err, 1.65x faster)
 
 ==============================================================================
 tolerance (row layer, num_rungs = 6)
 ==============================================================================
 setting                         iters/row   cands  it/cand      score    rel err  modes     sec
-ftol = xtol = gtol = 1e-08         1184.8    67.9    17.45   0.128325   0.137323   14.2     5.6
-ftol = xtol = gtol = 1e-06          899.7    67.9    13.25   0.128322   0.137323   14.2     4.7  (1.32x fewer, 1.00x err, 1.20x faster)
-ftol = xtol = gtol = 0.0001         643.0    67.9     9.47   0.128300   0.137313   14.2     3.4  (1.84x fewer, 1.00x err, 1.67x faster)
-ftol = xtol = gtol = 0.001          517.8    69.0     7.50   0.117233   0.121998   14.8     2.9  (2.29x fewer, 0.89x err, 1.92x faster)
-ftol = xtol = gtol = 0.01           371.0    69.0     5.38   0.117054   0.121960   14.8     2.2  (3.19x fewer, 0.89x err, 2.50x faster)
+ftol = xtol = gtol = 1e-08          648.2    38.4    16.90   0.128325   0.137323   14.2     2.6
+ftol = xtol = gtol = 1e-06          491.9    38.4    12.82   0.128322   0.137323   14.2     2.0  (1.32x fewer, 1.00x err, 1.28x faster)
+ftol = xtol = gtol = 0.0001         350.2    38.4     9.13   0.128300   0.137313   14.2     1.6  (1.85x fewer, 1.00x err, 1.62x faster)
+ftol = xtol = gtol = 0.001          281.6    39.0     7.22   0.117233   0.121998   14.8     1.4  (2.30x fewer, 0.89x err, 1.92x faster)
+ftol = xtol = gtol = 0.01           202.3    39.0     5.19   0.117054   0.121960   14.8     1.1  (3.20x fewer, 0.89x err, 2.37x faster)
 
 ==============================================================================
 tolerance (row layer, num_rungs = 3)
 ==============================================================================
 setting                         iters/row   cands  it/cand      score    rel err  modes     sec
-ftol = xtol = gtol = 1e-08          646.1    38.4    16.84   0.128325   0.137323   14.2     3.2
-ftol = xtol = gtol = 1e-06          486.2    38.4    12.68   0.128322   0.137322   14.2     2.5  (1.33x fewer, 1.00x err, 1.29x faster)
-ftol = xtol = gtol = 0.0001         342.0    38.4     8.92   0.128302   0.137312   14.2     1.8  (1.89x fewer, 1.00x err, 1.76x faster)
-ftol = xtol = gtol = 0.001          274.7    39.0     7.04   0.117248   0.121992   14.8     1.4  (2.35x fewer, 0.89x err, 2.22x faster)
-ftol = xtol = gtol = 0.01           189.3    39.0     4.85   0.117095   0.121788   14.8     1.1  (3.41x fewer, 0.89x err, 3.01x faster)
+ftol = xtol = gtol = 1e-08          379.0    23.6    16.06   0.128325   0.137323   14.2     1.7
+ftol = xtol = gtol = 1e-06          285.2    23.6    12.09   0.128322   0.137322   14.2     1.2  (1.33x fewer, 1.00x err, 1.40x faster)
+ftol = xtol = gtol = 0.0001         199.9    23.6     8.47   0.128302   0.137312   14.2     0.9  (1.90x fewer, 1.00x err, 1.93x faster)
+ftol = xtol = gtol = 0.001          160.0    24.0     6.67   0.117248   0.121992   14.8     0.8  (2.37x fewer, 0.89x err, 2.13x faster)
+ftol = xtol = gtol = 0.01           111.3    24.0     4.64   0.117095   0.121788   14.8     0.6  (3.40x fewer, 0.89x err, 2.64x faster)
 
 ==============================================================================
 tolerance at fixed ladder depth (row layer, num_rungs = 6)
 ==============================================================================
 setting                         iters/row   cands  it/cand      score    rel err  modes     sec
-ftol = xtol = gtol = 1e-08         1207.6    69.0    17.50   0.117308   0.122000   14.8     5.4
-ftol = xtol = gtol = 1e-06          917.5    69.0    13.30   0.117305   0.122001   14.8     4.2  (1.32x fewer, 1.00x err, 1.30x faster)
-ftol = xtol = gtol = 0.0001         656.0    69.0     9.51   0.117281   0.122001   14.8     3.2  (1.84x fewer, 1.00x err, 1.71x faster)
-ftol = xtol = gtol = 0.001          517.8    69.0     7.50   0.117233   0.121998   14.8     2.5  (2.33x fewer, 1.00x err, 2.18x faster)
-ftol = xtol = gtol = 0.01           371.0    69.0     5.38   0.117054   0.121960   14.8     2.0  (3.25x fewer, 1.00x err, 2.68x faster)
+ftol = xtol = gtol = 1e-08          660.5    39.0    16.94   0.117308   0.122000   14.8     2.7
+ftol = xtol = gtol = 1e-06          501.5    39.0    12.86   0.117305   0.122001   14.8     2.1  (1.32x fewer, 1.00x err, 1.27x faster)
+ftol = xtol = gtol = 0.0001         357.2    39.0     9.16   0.117281   0.122001   14.8     1.7  (1.85x fewer, 1.00x err, 1.61x faster)
+ftol = xtol = gtol = 0.001          281.6    39.0     7.22   0.117233   0.121998   14.8     1.3  (2.35x fewer, 1.00x err, 2.01x faster)
+ftol = xtol = gtol = 0.01           202.3    39.0     5.19   0.117054   0.121960   14.8     1.0  (3.27x fewer, 1.00x err, 2.65x faster)
 
 ==============================================================================
-max_evaluations (row layer, num_rungs = 6, tol = 1e-8)
+max_evaluations (row layer, num_rungs = 6, tol = reference)
 ==============================================================================
 setting                         iters/row   cands  it/cand      score    rel err  modes     sec
-max_evaluations = 100              1184.8    67.9    17.45   0.128325   0.137323   14.2     5.3
-max_evaluations = 50               1105.3    67.9    16.28   0.128324   0.137315   14.2     4.9  (1.07x fewer, 1.00x err, 1.08x faster)
-max_evaluations = 25                961.5    67.9    14.16   0.128322   0.137317   14.2     4.2  (1.23x fewer, 1.00x err, 1.25x faster)
+max_evaluations = 100               648.2    38.4    16.90   0.128325   0.137323   14.2     2.8
+max_evaluations = 50                607.1    38.4    15.83   0.128324   0.137315   14.2     2.4  (1.07x fewer, 1.00x err, 1.14x faster)
+max_evaluations = 25                532.5    38.4    13.88   0.128322   0.137317   14.2     2.2  (1.22x fewer, 1.00x err, 1.23x faster)
 
 ==============================================================================
 tolerance (whole operator, num_rungs = 6)
 ==============================================================================
 setting                           rel err      score  modes     sec
-ftol = xtol = gtol = 1e-08       0.127124   0.102329   14.8     9.1
-ftol = xtol = gtol = 1e-06       0.127124   0.102326   14.8     7.3  (1.00x err, 1.26x faster)
-ftol = xtol = gtol = 0.0001      0.127126   0.102302   14.8     5.8  (1.00x err, 1.58x faster)
-ftol = xtol = gtol = 0.001       0.127129   0.102249   14.8     5.3  (1.00x err, 1.72x faster)
-ftol = xtol = gtol = 0.01        0.127068   0.102051   14.8     4.4  (1.00x err, 2.09x faster)
+ftol = xtol = gtol = 1e-08       0.127124   0.102329   14.8     5.1
+ftol = xtol = gtol = 1e-06       0.127124   0.102327   14.8     4.6  (1.00x err, 1.11x faster)
+ftol = xtol = gtol = 0.0001      0.127124   0.102328   14.8     3.9  (1.00x err, 1.32x faster)
+ftol = xtol = gtol = 0.001       0.127137   0.102277   14.8     3.7  (1.00x err, 1.38x faster)
+ftol = xtol = gtol = 0.01        0.127040   0.102128   14.8     3.1  (1.00x err, 1.66x faster)
 
 ==============================================================================
 tolerance (whole operator, num_rungs = 3)
 ==============================================================================
 setting                           rel err      score  modes     sec
-ftol = xtol = gtol = 1e-08       0.127124   0.102346   14.8     5.6
-ftol = xtol = gtol = 1e-06       0.127124   0.102343   14.8     4.6  (1.00x err, 1.21x faster)
-ftol = xtol = gtol = 0.0001      0.127124   0.102340   14.8     3.8  (1.00x err, 1.46x faster)
-ftol = xtol = gtol = 0.001       0.127132   0.102293   14.8     3.2  (1.00x err, 1.74x faster)
-ftol = xtol = gtol = 0.01        0.127089   0.102134   14.8     3.0  (1.00x err, 1.89x faster)
+ftol = xtol = gtol = 1e-08       0.127641   0.102844   14.8     4.1
+ftol = xtol = gtol = 1e-06       0.127641   0.102841   14.8     3.5  (1.00x err, 1.19x faster)
+ftol = xtol = gtol = 0.0001      0.127642   0.102847   14.8     2.8  (1.00x err, 1.50x faster)
+ftol = xtol = gtol = 0.001       0.127647   0.102805   14.8     2.5  (1.00x err, 1.67x faster)
+ftol = xtol = gtol = 0.01        0.127540   0.102707   14.8     2.1  (1.00x err, 2.01x faster)
 
 ==============================================================================
 tolerance (whole operator, num_rungs = 6, no early exit)
 ==============================================================================
 setting                           rel err      score  modes     sec
-ftol = xtol = gtol = 1e-08       0.127124   0.101969   14.9    10.5
-ftol = xtol = gtol = 1e-06       0.127124   0.101966   14.9     8.7  (1.00x err, 1.21x faster)
-ftol = xtol = gtol = 0.0001      0.127125   0.101939   14.9     6.8  (1.00x err, 1.55x faster)
-ftol = xtol = gtol = 0.001       0.127129   0.101878   14.9     6.0  (1.00x err, 1.75x faster)
-ftol = xtol = gtol = 0.01        0.127067   0.101648   14.9     5.1  (1.00x err, 2.08x faster)
+ftol = xtol = gtol = 1e-08       0.127124   0.101970   14.9     7.0
+ftol = xtol = gtol = 1e-06       0.127124   0.101967   14.9     5.9  (1.00x err, 1.18x faster)
+ftol = xtol = gtol = 0.0001      0.127124   0.101961   14.9     4.6  (1.00x err, 1.52x faster)
+ftol = xtol = gtol = 0.001       0.127137   0.101911   14.9     4.1  (1.00x err, 1.72x faster)
+ftol = xtol = gtol = 0.01        0.127040   0.101731   14.9     3.4  (1.00x err, 2.06x faster)
 
 ==============================================================================
 tolerance (whole operator, num_rungs = 6, isotropic prior)
 ==============================================================================
 setting                           rel err      score  modes     sec
-ftol = xtol = gtol = 1e-08       0.136543   0.105481   14.7    11.4
-ftol = xtol = gtol = 1e-06       0.136543   0.105478   14.7     9.3  (1.00x err, 1.22x faster)
-ftol = xtol = gtol = 0.0001      0.136545   0.105457   14.7     7.2  (1.00x err, 1.59x faster)
-ftol = xtol = gtol = 0.001       0.136540   0.105408   14.7     6.2  (1.00x err, 1.82x faster)
-ftol = xtol = gtol = 0.01        0.136612   0.105249   14.7     5.4  (1.00x err, 2.12x faster)
+ftol = xtol = gtol = 1e-08       0.136543   0.105472   14.7     7.3
+ftol = xtol = gtol = 1e-06       0.136543   0.105470   14.7     6.2  (1.00x err, 1.18x faster)
+ftol = xtol = gtol = 0.0001      0.136543   0.105454   14.7     4.8  (1.00x err, 1.52x faster)
+ftol = xtol = gtol = 0.001       0.136534   0.105412   14.7     4.1  (1.00x err, 1.77x faster)
+ftol = xtol = gtol = 0.01        0.136601   0.105286   14.7     3.6  (1.00x err, 2.02x faster)
 
 ==============================================================================
 max_evaluations (whole operator, num_rungs = 6, tol = 1e-08)
 ==============================================================================
 setting                           rel err      score  modes     sec
-max_evaluations = 100            0.127124   0.102329   14.8    10.1
-max_evaluations = 50             0.127124   0.102329   14.8    10.2  (1.00x err, 0.99x faster)
-max_evaluations = 25             0.127122   0.102325   14.8     9.9  (1.00x err, 1.02x faster)
+max_evaluations = 100            0.127124   0.102329   14.8     6.9
+max_evaluations = 50             0.127124   0.102346   14.8     6.7  (1.00x err, 1.03x faster)
+max_evaluations = 25             0.127121   0.102345   14.8     6.4  (1.00x err, 1.08x faster)
 
 ==============================================================================
 max_evaluations (whole operator, num_rungs = 6, tol = 0.001)
 ==============================================================================
 setting                           rel err      score  modes     sec
-max_evaluations = 100            0.127129   0.102249   14.8     5.6
-max_evaluations = 50             0.127129   0.102249   14.8     5.8  (1.00x err, 0.97x faster)
-max_evaluations = 25             0.127128   0.102249   14.8     5.7  (1.00x err, 0.97x faster)
+max_evaluations = 100            0.127137   0.102277   14.8     3.8
+max_evaluations = 50             0.127137   0.102277   14.8     3.8  (1.00x err, 0.99x faster)
+max_evaluations = 25             0.127136   0.102277   14.8     3.8  (1.00x err, 1.00x faster)

@@ -10,15 +10,60 @@ narrative and open items only; when a thread closes, its record moves to
 
 | | state |
 |---|---|
-| C++ core | complete — 145 cases / 105,699 assertions |
+| C++ core | complete — 145 cases / 105,618 assertions |
 | QR-first inner solve | landed — 2.1× on a whole-field fit, every number unchanged to four digits |
 | Field-scale validation | smooth and rough basal friction both reproduced; the recorded 0.0147 matched exactly |
 | Python bindings | complete — 49 pytest cases |
 | Examples | 15, covering every exported name; the frog example is the public gate |
+| Fitting defaults | **changed 2026-07-28** — `sigma0` + 3 circles, `ftol` 1e-4. See below; fits are not bit-identical to 0.1.0 |
+| Anisotropy blind spot | **parked, and now measurable** — `experiments/anisotropy_hardening.py`. See below |
 | User documentation | written — README, installation, quickstart, api-guide, defaults |
 | Direction of dependence | enforced by `tools/check_dependencies.py` over docs, dev and experiments too |
 | Repo cleanup | 5 of 6 slices done — see below |
 | **Not done** | **CI, cibuildwheel, M6 release infra** |
+
+## Fitting defaults changed, 2026-07-28
+
+The initial-guess dictionary is now **`sigma0` + 3 circles** (plus a warm
+start), where it was `sigma0` + 6 circles + 6 window-shaped starts, and the LM
+tolerance is `1e-4` rather than `1e-8`. About 4.4× fewer nonlinear fits per row.
+
+Evidence: `experiments/lm-tolerance.md` and `experiments/fitting-defaults.md`
+(the synthetic sweeps), and the rough-beta Pine Island Glacier sweep in the
+research repo's replay directory — 9 variants × {smoothed, pointwise} ×
+{k=20, k=50} × {ball, ellipsoid window}, held-out QC between −2.7% and +2.3%
+with the worst row 12× better at k=20.
+
+Three things worth carrying forward:
+
+- **`circle_rungs_above_aspect` stays at 1.0 and that is load-bearing.** With
+  the window rungs now off, the circles are the only family besides `sigma0`.
+  Gating them off on a prior that was 3–5× too wide doubled held-out error
+  (0.20 → 0.50) and took failed rows from 190 to 816. The knob exists; the
+  default must not move without redoing that measurement.
+- **The CV score cannot see that failure** — median CV moved 1.0% while
+  held-out error moved 106%. Any future auto-tuning driven by the CV score
+  would walk straight into it.
+- **Every PIG prior row is ≤ 1.67:1 by construction** (`build_sigma` caps the
+  anisotropy at `r = 1.67`), so the field-scale validation cannot calibrate an
+  aspect-ratio threshold. Nothing in the repo can.
+
+## The anisotropy blind spot: parked with a trigger
+
+The initial-guess dictionary covers scale but not **orientation** — every entry
+is `sigma0`'s shape or round. `lgpsf::oriented_sigma` was ported for an
+oriented-ellipse family, and is tested, but **no rung family is built from it**;
+`dev/robust-init-notes.md` has the parked recipe and a 2026-07-28 update.
+
+Re-measured by `experiments/anisotropy_hardening.py` at 8:1: the blind spot is
+real under **free** mu but does not appear under the pinned default, where the
+scale-bracketing ladder reaches the best start of any family. Circular starts
+do not bias the fitted answer toward roundness (7.7–12.5:1 on a true 8:1).
+
+**Parked deliberately** — building the oriented family properly is a small
+research project, not a patch. Pick it up if mu release is re-armed as a
+default, if a problem with genuinely anisotropic priors appears, or if N = 3
+arrives, where orientation is SO(3) and the covering dictionary grows.
 
 ## The cleanup: done
 
@@ -129,19 +174,17 @@ was not true before slice 5.
 - matplotlib is not in the primary conda env and cannot be installed from the
   sandbox. `examples/operator_fit_frog.py` degrades gracefully without it.
 
-## In flight: less conservative fitting defaults
+## Closed: less conservative fitting defaults
 
-Read [`fitting-defaults-plan.md`](fitting-defaults-plan.md) first — it is
-written to survive a lost conversation and carries the state, the two
-remaining experiments, and the gotchas.
+Landed 2026-07-28; see the section near the top of this file for what shipped,
+and [`archive/fitting-defaults-plan.md`](archive/fitting-defaults-plan.md) for
+the plan it came from, annotated with which of its recommendations the real
+operator overturned.
 
-One-line summary: the initial-guess ladder turns out not to limit accuracy on
-the frog kernel, because a bad prior binds through the WINDOW rather than the
-initialization. `circle_rungs_above_aspect` has landed as a no-op at 1.0;
-`num_rungs` 6 -> 3 and that gate 1 -> 3 are recommended but unapplied, pending
-rough-beta PIG. The LM tolerance is ALREADY user-settable
-(`config.row.varpro.ftol`) — that task is choosing a default, not adding an
-option.
+The lesson worth keeping: **the frog kernel damages a prior's shape and
+orientation but not its scale**, and scale is what the circle rungs actually
+rescue. That is why sixty unanimous frog results pointed the wrong way on one
+of the four knobs, and why the field-scale check was not a formality.
 
 ## Parked
 

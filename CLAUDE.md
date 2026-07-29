@@ -89,6 +89,20 @@ with $\mu$ either free (part of $\theta$) or fixed at a given constant.
 **Notation: $T$ denotes the pullback**, not a forward map -- if a forward
 map is ever needed, call it $T^{-1}$.
 
+**The initial-guess dictionary.** Each row's fit is a multi-start: `sigma0` (the
+prior you supplied) plus `num_rungs` **circle** rungs at log-spaced scales, plus
+a warm start from the previous ladder level -- four fits per level at the
+defaults. A second family, scaled copies of the window's own shape, exists but
+is off by default. Both families draw on the SAME `num_rungs` scales, so that is
+one count, not one per family.
+
+The circles are insurance, not decoration: they sweep the *scale* axis at a
+neutral shape, and a prior's width is the thing most often wrong. Removing them
+on a field-scale prior that was 3-5x too wide doubled the held-out error, and
+the cross-validation score did not report it. Nothing in the dictionary covers
+*orientation* independently of the prior -- a known, deliberately parked gap;
+see `dev/robust-init-notes.md` and `experiments/anisotropy_hardening.py`.
+
 **VarPro.** The ellipsoid parameters $\theta$ are nonlinear; the
 coefficients ($c$, $s$) are linear given $\theta$. Variable projection
 eliminates the linear coefficients in closed form at every trial $\theta$
@@ -162,7 +176,7 @@ API. What remains is packaging.
 
 | | |
 |---|---|
-| C++ core | complete -- 145 cases / 105,699 assertions |
+| C++ core | complete -- 145 cases / 105,618 assertions |
 | Python bindings | complete -- 49 pytest cases |
 | Examples | 15, covering every exported name |
 | Docs | user-facing set written; Doxygen not yet configured |
@@ -189,6 +203,6 @@ Two facts worth knowing before touching anything:
 | `dev/HANDOFF.md` | Open threads, parked work, machine-specific build notes. |
 | `dev/design-notes.md` | The running decision log, oldest first. Some early entries predate the C++ and are marked where superseded. |
 | `dev/archive/` | Closed threads: the executed port plan, the API plans, session records. |
-| `experiments/` | Measurements about the library -- where the time goes, and whether refining the mesh costs more probes (it does not). |
+| `experiments/` | Measurements about the library -- where the time goes, whether refining the mesh costs more probes (it does not), and what the fitting defaults are worth. |
 | `examples/` | Fifteen examples, each teaching one thing. |
 | `archive/python-prototype/` | The frozen Python the method was developed in. History, not a reference. |

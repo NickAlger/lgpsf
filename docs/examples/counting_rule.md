@@ -33,17 +33,17 @@ k = 20 probes, P = 3 pinned ellipsoid parameters
 
                  candidate  modes  admissible     score
                   level<=0      1        True    0.3352
-                  level<=1      3        True    0.3604
+                  level<=1      3        True    0.3608
                   level<=2      6        True    0.2024
 
-shipped 6 modes, held-out score 0.2024
+shipped 6 modes, held-out score 0.2023
 skipped: level<=3; level<=4; level<=5
 
  modes  admissible   in-sample cost   held-out        1-sigma axes
      3        True        1.864e-07     0.3604     0.045    0.105
      6        True        4.278e-08     0.2024     0.036    0.061
-    10       False        8.884e-09     0.1775     0.035    0.071
-    15       False        1.546e-09     0.2178     0.049    0.101
+    10       False        8.885e-09     0.1771     0.035    0.071
+    15       False        1.546e-09     0.2177     0.049    0.101
     21       False        3.306e-21     0.4657     0.046    0.132
 
 Past the threshold the cost collapses toward zero and the score does not

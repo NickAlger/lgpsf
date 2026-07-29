@@ -6,118 +6,118 @@ are still wall clock on a shared machine, so read ratios rather than seconds
 2:1 kernel: circle rungs, at num_rungs = 6
 ==============================================================================
 prior                   aspect setting                      rel err    score     sec
-correct                   2.0: circles always (kappa=1)      0.1271   0.1020     9.9
-correct                   2.0: circles above 3:1 (kappa=3)    0.1271   0.1020     5.3  (1.00x err, 1.89x faster)
-correct                   2.0: circles never (kappa=inf)     0.1271   0.1020     5.4  (1.00x err, 1.85x faster)
-rotated 90 deg            2.0: circles always (kappa=1)      0.2712   0.2139    10.8
-rotated 90 deg            2.0: circles above 3:1 (kappa=3)    0.2712   0.2143     6.2  (1.00x err, 1.76x faster)
-rotated 90 deg            2.0: circles never (kappa=inf)     0.2712   0.2143     6.2  (1.00x err, 1.74x faster)
-4x too wide               2.0: circles always (kappa=1)      0.1323   0.1025    17.6
-4x too wide               2.0: circles above 3:1 (kappa=3)    0.1323   0.1025     9.9  (1.00x err, 1.78x faster)
-4x too wide               2.0: circles never (kappa=inf)     0.1323   0.1025    10.0  (1.00x err, 1.76x faster)
-4x too narrow             2.0: circles always (kappa=1)      0.4294   0.3679     8.9
-4x too narrow             2.0: circles above 3:1 (kappa=3)    0.4294   0.3679     5.1  (1.00x err, 1.76x faster)
-4x too narrow             2.0: circles never (kappa=inf)     0.4294   0.3679     5.0  (1.00x err, 1.79x faster)
-isotropic (no shape)      1.0: circles always (kappa=1)      0.1365   0.1053    10.3
-isotropic (no shape)      1.0: circles above 3:1 (kappa=3)    0.1365   0.1054     5.8  (1.00x err, 1.76x faster)
-isotropic (no shape)      1.0: circles never (kappa=inf)     0.1365   0.1054     5.8  (1.00x err, 1.77x faster)
+correct                   2.0: circles always (kappa=1)      0.1271   0.1019     6.2
+correct                   2.0: circles above 3:1 (kappa=3)    0.1271   0.1019     3.6  (1.00x err, 1.70x faster)
+correct                   2.0: circles never (kappa=inf)     0.1271   0.1019     3.6  (1.00x err, 1.71x faster)
+rotated 90 deg            2.0: circles always (kappa=1)      0.2701   0.2135     6.9
+rotated 90 deg            2.0: circles above 3:1 (kappa=3)    0.2700   0.2139     4.0  (1.00x err, 1.74x faster)
+rotated 90 deg            2.0: circles never (kappa=inf)     0.2700   0.2139     4.0  (1.00x err, 1.75x faster)
+4x too wide               2.0: circles always (kappa=1)      0.1323   0.1025    12.1
+4x too wide               2.0: circles above 3:1 (kappa=3)    0.1323   0.1025     7.1  (1.00x err, 1.72x faster)
+4x too wide               2.0: circles never (kappa=inf)     0.1323   0.1025     6.9  (1.00x err, 1.76x faster)
+4x too narrow             2.0: circles always (kappa=1)      0.4293   0.3673     5.0
+4x too narrow             2.0: circles above 3:1 (kappa=3)    0.4292   0.3673     2.9  (1.00x err, 1.73x faster)
+4x too narrow             2.0: circles never (kappa=inf)     0.4292   0.3673     2.8  (1.00x err, 1.79x faster)
+isotropic (no shape)      1.0: circles always (kappa=1)      0.1365   0.1053     6.7
+isotropic (no shape)      1.0: circles above 3:1 (kappa=3)    0.1365   0.1053     3.8  (1.00x err, 1.79x faster)
+isotropic (no shape)      1.0: circles never (kappa=inf)     0.1365   0.1053     4.0  (1.00x err, 1.70x faster)
 
 ==============================================================================
 2:1 kernel: number of rungs, circles always
 ==============================================================================
 prior                   aspect setting                      rel err    score     sec
-correct                   2.0: num_rungs = 6                 0.1271   0.1020     9.4
-correct                   2.0: num_rungs = 4                 0.1274   0.1020     6.8  (1.00x err, 1.38x faster)
-correct                   2.0: num_rungs = 3                 0.1271   0.1020     5.4  (1.00x err, 1.72x faster)
-correct                   2.0: num_rungs = 2                 0.1271   0.1020     4.2  (1.00x err, 2.21x faster)
-rotated 90 deg            2.0: num_rungs = 6                 0.2712   0.2139    11.0
-rotated 90 deg            2.0: num_rungs = 4                 0.2712   0.2141     8.1  (1.00x err, 1.36x faster)
-rotated 90 deg            2.0: num_rungs = 3                 0.2712   0.2142     6.8  (1.00x err, 1.62x faster)
-rotated 90 deg            2.0: num_rungs = 2                 0.2712   0.2143     5.1  (1.00x err, 2.15x faster)
-4x too wide               2.0: num_rungs = 6                 0.1323   0.1025    19.4
-4x too wide               2.0: num_rungs = 4                 0.1323   0.1025    14.5  (1.00x err, 1.34x faster)
-4x too wide               2.0: num_rungs = 3                 0.1335   0.1031    11.7  (1.01x err, 1.66x faster)
-4x too wide               2.0: num_rungs = 2                 0.1335   0.1031     8.8  (1.01x err, 2.21x faster)
-4x too narrow             2.0: num_rungs = 6                 0.4294   0.3679     9.8
-4x too narrow             2.0: num_rungs = 4                 0.4295   0.3681     7.0  (1.00x err, 1.40x faster)
-4x too narrow             2.0: num_rungs = 3                 0.4292   0.3680     5.6  (1.00x err, 1.76x faster)
-4x too narrow             2.0: num_rungs = 2                 0.4294   0.3681     4.3  (1.00x err, 2.25x faster)
-isotropic (no shape)      1.0: num_rungs = 6                 0.1365   0.1053    11.3
-isotropic (no shape)      1.0: num_rungs = 4                 0.1365   0.1053     8.1  (1.00x err, 1.39x faster)
-isotropic (no shape)      1.0: num_rungs = 3                 0.1365   0.1054     6.7  (1.00x err, 1.70x faster)
-isotropic (no shape)      1.0: num_rungs = 2                 0.1365   0.1054     5.0  (1.00x err, 2.28x faster)
+correct                   2.0: num_rungs = 6                 0.1271   0.1019     6.1
+correct                   2.0: num_rungs = 4                 0.1274   0.1020     4.7  (1.00x err, 1.29x faster)
+correct                   2.0: num_rungs = 3                 0.1271   0.1020     3.6  (1.00x err, 1.67x faster)
+correct                   2.0: num_rungs = 2                 0.1271   0.1020     2.9  (1.00x err, 2.10x faster)
+rotated 90 deg            2.0: num_rungs = 6                 0.2701   0.2135     7.3
+rotated 90 deg            2.0: num_rungs = 4                 0.2701   0.2135     5.1  (1.00x err, 1.44x faster)
+rotated 90 deg            2.0: num_rungs = 3                 0.2700   0.2136     4.2  (1.00x err, 1.74x faster)
+rotated 90 deg            2.0: num_rungs = 2                 0.2700   0.2137     3.2  (1.00x err, 2.29x faster)
+4x too wide               2.0: num_rungs = 6                 0.1323   0.1025    11.5
+4x too wide               2.0: num_rungs = 4                 0.1323   0.1025     8.4  (1.00x err, 1.38x faster)
+4x too wide               2.0: num_rungs = 3                 0.1335   0.1031     7.2  (1.01x err, 1.61x faster)
+4x too wide               2.0: num_rungs = 2                 0.1335   0.1031     5.1  (1.01x err, 2.26x faster)
+4x too narrow             2.0: num_rungs = 6                 0.4293   0.3673     5.0
+4x too narrow             2.0: num_rungs = 4                 0.4295   0.3674     3.5  (1.00x err, 1.43x faster)
+4x too narrow             2.0: num_rungs = 3                 0.4290   0.3671     2.9  (1.00x err, 1.76x faster)
+4x too narrow             2.0: num_rungs = 2                 0.4293   0.3676     2.2  (1.00x err, 2.27x faster)
+isotropic (no shape)      1.0: num_rungs = 6                 0.1365   0.1053     7.0
+isotropic (no shape)      1.0: num_rungs = 4                 0.1365   0.1053     5.1  (1.00x err, 1.39x faster)
+isotropic (no shape)      1.0: num_rungs = 3                 0.1365   0.1053     4.3  (1.00x err, 1.65x faster)
+isotropic (no shape)      1.0: num_rungs = 2                 0.1365   0.1053     3.3  (1.00x err, 2.15x faster)
 
 ==============================================================================
 2:1 kernel: window-shape rungs, at num_rungs = 4
 ==============================================================================
 prior                   aspect setting                      rel err    score     sec
-correct                   2.0: window rungs on               0.1274   0.1020     7.5
-correct                   2.0: window rungs off              0.1280   0.1025     4.7  (1.00x err, 1.60x faster)
-rotated 90 deg            2.0: window rungs on               0.2712   0.2141     8.7
-rotated 90 deg            2.0: window rungs off              0.2712   0.2142     5.4  (1.00x err, 1.62x faster)
-4x too wide               2.0: window rungs on               0.1323   0.1025    14.6
-4x too wide               2.0: window rungs off              0.1323   0.1025     8.9  (1.00x err, 1.63x faster)
-4x too narrow             2.0: window rungs on               0.4295   0.3681     6.9
-4x too narrow             2.0: window rungs off              0.4299   0.3687     4.2  (1.00x err, 1.63x faster)
-isotropic (no shape)      1.0: window rungs on               0.1365   0.1053     8.2
-isotropic (no shape)      1.0: window rungs off              0.1365   0.1053     4.9  (1.00x err, 1.67x faster)
+correct                   2.0: window rungs on               0.1274   0.1020     5.1
+correct                   2.0: window rungs off              0.1280   0.1025     3.3  (1.00x err, 1.54x faster)
+rotated 90 deg            2.0: window rungs on               0.2701   0.2135     6.1
+rotated 90 deg            2.0: window rungs off              0.2700   0.2136     3.5  (1.00x err, 1.72x faster)
+4x too wide               2.0: window rungs on               0.1323   0.1025    10.2
+4x too wide               2.0: window rungs off              0.1323   0.1025     6.3  (1.00x err, 1.61x faster)
+4x too narrow             2.0: window rungs on               0.4295   0.3674     4.1
+4x too narrow             2.0: window rungs off              0.4299   0.3684     2.7  (1.00x err, 1.56x faster)
+isotropic (no shape)      1.0: window rungs on               0.1365   0.1053     6.1
+isotropic (no shape)      1.0: window rungs off              0.1365   0.1053     3.6  (1.00x err, 1.66x faster)
 
 ==============================================================================
 4:1 kernel: circle rungs, at num_rungs = 6
 ==============================================================================
 prior                   aspect setting                      rel err    score     sec
-correct                   4.0: circles always (kappa=1)      0.1343   0.0977    14.0
-correct                   4.0: circles above 3:1 (kappa=3)    0.1343   0.0977    14.0  (1.00x err, 1.00x faster)
-correct                   4.0: circles never (kappa=inf)     0.1343   0.0979     7.9  (1.00x err, 1.76x faster)
-rotated 90 deg            4.0: circles always (kappa=1)      0.6305   0.4907    17.9
-rotated 90 deg            4.0: circles above 3:1 (kappa=3)    0.6305   0.4907    17.9  (1.00x err, 1.00x faster)
-rotated 90 deg            4.0: circles never (kappa=inf)     0.6291   0.4917    10.0  (1.00x err, 1.79x faster)
-4x too wide               4.0: circles always (kappa=1)      0.1352   0.0972    25.6
-4x too wide               4.0: circles above 3:1 (kappa=3)    0.1352   0.0972    26.2  (1.00x err, 0.98x faster)
-4x too wide               4.0: circles never (kappa=inf)     0.1352   0.0972    14.5  (1.00x err, 1.76x faster)
-4x too narrow             4.0: circles always (kappa=1)      0.4066   0.3342    11.3
-4x too narrow             4.0: circles above 3:1 (kappa=3)    0.4066   0.3342    11.1  (1.00x err, 1.02x faster)
-4x too narrow             4.0: circles never (kappa=inf)     0.4069   0.3347     6.3  (1.00x err, 1.80x faster)
-isotropic (no shape)      1.0: circles always (kappa=1)      0.1427   0.1047    22.3
-isotropic (no shape)      1.0: circles above 3:1 (kappa=3)    0.1427   0.1053    12.8  (1.00x err, 1.74x faster)
-isotropic (no shape)      1.0: circles never (kappa=inf)     0.1427   0.1053    12.8  (1.00x err, 1.75x faster)
+correct                   4.0: circles always (kappa=1)      0.1343   0.0977    10.3
+correct                   4.0: circles above 3:1 (kappa=3)    0.1343   0.0977    10.4  (1.00x err, 1.00x faster)
+correct                   4.0: circles never (kappa=inf)     0.1343   0.0978     5.6  (1.00x err, 1.85x faster)
+rotated 90 deg            4.0: circles always (kappa=1)      0.6288   0.4891    10.5
+rotated 90 deg            4.0: circles above 3:1 (kappa=3)    0.6288   0.4891    10.4  (1.00x err, 1.01x faster)
+rotated 90 deg            4.0: circles never (kappa=inf)     0.6284   0.4909     5.9  (1.00x err, 1.77x faster)
+4x too wide               4.0: circles always (kappa=1)      0.1351   0.0972    19.2
+4x too wide               4.0: circles above 3:1 (kappa=3)    0.1351   0.0972    19.1  (1.00x err, 1.00x faster)
+4x too wide               4.0: circles never (kappa=inf)     0.1351   0.0972    10.7  (1.00x err, 1.79x faster)
+4x too narrow             4.0: circles always (kappa=1)      0.4050   0.3334     7.3
+4x too narrow             4.0: circles above 3:1 (kappa=3)    0.4050   0.3334     7.5  (1.00x err, 0.97x faster)
+4x too narrow             4.0: circles never (kappa=inf)     0.4051   0.3338     4.0  (1.00x err, 1.80x faster)
+isotropic (no shape)      1.0: circles always (kappa=1)      0.1426   0.1047    16.7
+isotropic (no shape)      1.0: circles above 3:1 (kappa=3)    0.1427   0.1053     9.4  (1.00x err, 1.77x faster)
+isotropic (no shape)      1.0: circles never (kappa=inf)     0.1427   0.1053     9.5  (1.00x err, 1.76x faster)
 
 ==============================================================================
 4:1 kernel: number of rungs, circles always
 ==============================================================================
 prior                   aspect setting                      rel err    score     sec
-correct                   4.0: num_rungs = 6                 0.1343   0.0977    13.8
-correct                   4.0: num_rungs = 4                 0.1343   0.0977    10.1  (1.00x err, 1.36x faster)
-correct                   4.0: num_rungs = 3                 0.1342   0.0978     8.1  (1.00x err, 1.69x faster)
-correct                   4.0: num_rungs = 2                 0.1342   0.0978     6.4  (1.00x err, 2.16x faster)
-rotated 90 deg            4.0: num_rungs = 6                 0.6305   0.4907    18.0
-rotated 90 deg            4.0: num_rungs = 4                 0.6295   0.4912    12.7  (1.00x err, 1.42x faster)
-rotated 90 deg            4.0: num_rungs = 3                 0.6284   0.4910    10.1  (1.00x err, 1.78x faster)
-rotated 90 deg            4.0: num_rungs = 2                 0.6289   0.4916     7.4  (1.00x err, 2.41x faster)
-4x too wide               4.0: num_rungs = 6                 0.1352   0.0972    25.9
-4x too wide               4.0: num_rungs = 4                 0.1352   0.0972    18.6  (1.00x err, 1.39x faster)
-4x too wide               4.0: num_rungs = 3                 0.1352   0.0972    14.9  (1.00x err, 1.74x faster)
-4x too wide               4.0: num_rungs = 2                 0.1352   0.0973    11.5  (1.00x err, 2.26x faster)
-4x too narrow             4.0: num_rungs = 6                 0.4066   0.3342    11.0
-4x too narrow             4.0: num_rungs = 4                 0.4075   0.3343     8.2  (1.00x err, 1.35x faster)
-4x too narrow             4.0: num_rungs = 3                 0.4074   0.3346     6.4  (1.00x err, 1.72x faster)
-4x too narrow             4.0: num_rungs = 2                 0.4073   0.3347     5.0  (1.00x err, 2.22x faster)
-isotropic (no shape)      1.0: num_rungs = 6                 0.1427   0.1047    22.4
-isotropic (no shape)      1.0: num_rungs = 4                 0.1426   0.1048    16.2  (1.00x err, 1.38x faster)
-isotropic (no shape)      1.0: num_rungs = 3                 0.1426   0.1048    13.2  (1.00x err, 1.70x faster)
-isotropic (no shape)      1.0: num_rungs = 2                 0.1426   0.1048     9.9  (1.00x err, 2.27x faster)
+correct                   4.0: num_rungs = 6                 0.1343   0.0977    10.5
+correct                   4.0: num_rungs = 4                 0.1343   0.0977     7.6  (1.00x err, 1.38x faster)
+correct                   4.0: num_rungs = 3                 0.1342   0.0977     6.2  (1.00x err, 1.68x faster)
+correct                   4.0: num_rungs = 2                 0.1342   0.0977     4.9  (1.00x err, 2.13x faster)
+rotated 90 deg            4.0: num_rungs = 6                 0.6288   0.4891    10.5
+rotated 90 deg            4.0: num_rungs = 4                 0.6270   0.4893     7.4  (1.00x err, 1.42x faster)
+rotated 90 deg            4.0: num_rungs = 3                 0.6267   0.4896     6.2  (1.00x err, 1.70x faster)
+rotated 90 deg            4.0: num_rungs = 2                 0.6261   0.4900     4.5  (1.00x err, 2.35x faster)
+4x too wide               4.0: num_rungs = 6                 0.1351   0.0972    19.1
+4x too wide               4.0: num_rungs = 4                 0.1351   0.0972    13.9  (1.00x err, 1.38x faster)
+4x too wide               4.0: num_rungs = 3                 0.1352   0.0972    11.3  (1.00x err, 1.69x faster)
+4x too wide               4.0: num_rungs = 2                 0.1351   0.0972     8.8  (1.00x err, 2.17x faster)
+4x too narrow             4.0: num_rungs = 6                 0.4050   0.3334     7.6
+4x too narrow             4.0: num_rungs = 4                 0.4061   0.3335     5.3  (1.00x err, 1.42x faster)
+4x too narrow             4.0: num_rungs = 3                 0.4064   0.3339     4.3  (1.00x err, 1.77x faster)
+4x too narrow             4.0: num_rungs = 2                 0.4066   0.3341     3.4  (1.00x err, 2.19x faster)
+isotropic (no shape)      1.0: num_rungs = 6                 0.1426   0.1047    15.0
+isotropic (no shape)      1.0: num_rungs = 4                 0.1426   0.1048     9.7  (1.00x err, 1.55x faster)
+isotropic (no shape)      1.0: num_rungs = 3                 0.1426   0.1048     8.0  (1.00x err, 1.89x faster)
+isotropic (no shape)      1.0: num_rungs = 2                 0.1426   0.1048     5.9  (1.00x err, 2.55x faster)
 
 ==============================================================================
 4:1 kernel: window-shape rungs, at num_rungs = 4
 ==============================================================================
 prior                   aspect setting                      rel err    score     sec
-correct                   4.0: window rungs on               0.1343   0.0977    10.1
-correct                   4.0: window rungs off              0.1342   0.0978     6.4  (1.00x err, 1.58x faster)
-rotated 90 deg            4.0: window rungs on               0.6295   0.4912    12.8
-rotated 90 deg            4.0: window rungs off              0.6262   0.4913     7.6  (0.99x err, 1.69x faster)
-4x too wide               4.0: window rungs on               0.1352   0.0972    18.3
-4x too wide               4.0: window rungs off              0.1353   0.0974    11.3  (1.00x err, 1.62x faster)
-4x too narrow             4.0: window rungs on               0.4075   0.3343     8.2
-4x too narrow             4.0: window rungs off              0.4074   0.3346     4.9  (1.00x err, 1.68x faster)
-isotropic (no shape)      1.0: window rungs on               0.1426   0.1048    16.1
-isotropic (no shape)      1.0: window rungs off              0.1426   0.1048     9.7  (1.00x err, 1.66x faster)
+correct                   4.0: window rungs on               0.1343   0.0977     6.2
+correct                   4.0: window rungs off              0.1342   0.0977     3.9  (1.00x err, 1.60x faster)
+rotated 90 deg            4.0: window rungs on               0.6270   0.4893     6.1
+rotated 90 deg            4.0: window rungs off              0.6254   0.4902     3.7  (1.00x err, 1.63x faster)
+4x too wide               4.0: window rungs on               0.1351   0.0972    11.2
+4x too wide               4.0: window rungs off              0.1352   0.0974     6.9  (1.00x err, 1.62x faster)
+4x too narrow             4.0: window rungs on               0.4061   0.3335     4.4
+4x too narrow             4.0: window rungs off              0.4067   0.3340     2.8  (1.00x err, 1.58x faster)
+isotropic (no shape)      1.0: window rungs on               0.1426   0.1048     9.5
+isotropic (no shape)      1.0: window rungs off              0.1426   0.1048     5.8  (1.00x err, 1.63x faster)

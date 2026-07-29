@@ -2,9 +2,9 @@ Is the ladder or the budget binding at large k? (k = 110, so the counting
 rule permits 52 modes)
 
  grid   dofs   level    modes rel. error
-   24    576       6     27.8     0.0297
-   24    576       8     37.4     0.0152
-   24    576      10     37.4     0.0152
+   24    576       6     27.8     0.0293
+   24    576       8     37.4     0.0147
+   24    576      10     37.4     0.0147
    32   1024       6     27.8     0.0302
    32   1024       8     37.7     0.0152
    32   1024      10     37.7     0.0152

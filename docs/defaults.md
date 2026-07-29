@@ -20,37 +20,72 @@ the problem was.
 | | default | |
 |---|---|---|
 | `mu` | `MuPolicy.Pinned` | The center stays where you put it. |
-| `num_rungs` | `6` | Log-spaced circle scales in the initial-guess ladder. |
-| `window_shape_rungs` | `true` | Also try scaled copies of the window's own shape. |
+| `num_rungs` | `3` | Log-spaced scales in the initial-guess ladder, from the local mesh spacing to the window radius. **One count, shared by both rung families** — not one per family. |
+| `circle_rungs_above_aspect` | `1.0` | An aspect ratio is always ≥ 1, so this means **always add the circle rungs**. See below — raising it is not a mild economy. |
+| `window_shape_rungs` | `false` | Also try scaled copies of the window's own shape. Off: the window derives from the same `sigma` as the initial guess, so it carries no shape information `sigma0` did not already have. |
 | `target_score` | `0.05` | Stop early once a candidate is certifiably good. `None` sweeps the whole ladder. |
 | `mode_patience` | `2` | Stop growing modes after this many rungs without improvement. |
 | `cv_folds` | `5` | Held-out folds for the selection score. |
 | `varpro.ridge` | `1e-8` | Damps the linear coefficients only — the ellipsoid is never regularized. |
 | `varpro.jacobian` | `Kaufman` | Drops a term that vanishes at the solution; one reverse sweep instead of a full Jacobian tensor, same answer. |
-| `varpro.ftol` | `1e-8` | Stops one nonlinear fit on relative cost reduction. **This is the one that binds** — see below. |
-| `varpro.xtol` | `1e-8` | Stops it on relative step size. |
-| `varpro.gtol` | `1e-8` | Stops it on gradient orthogonality. |
+| `varpro.ftol` | `1e-4` | Stops one nonlinear fit on relative cost reduction. **This is the one that binds** — see below. |
+| `varpro.xtol` | `1e-4` | Stops it on relative step size. |
+| `varpro.gtol` | `1e-4` | Stops it on gradient orthogonality. |
 | `varpro.max_evaluations` | `100` | Runaway guard, not a performance knob: the loop stops on `ftol` long before it reaches this. |
 
-## The solver tolerance is loosenable, and `ftol` is the knob
+## What the defaults give you: four fits per ladder level
+
+The initial-guess dictionary at the defaults is
+
+    sigma0  +  3 circles  (+ a warm start from the previous level)
+
+Both rung families draw on the **same** `num_rungs` log-spaced scales, running
+from the local mesh spacing to the window radius, so `num_rungs` is one count
+rather than one per family. Each family is all-or-nothing at that count:
+`window_shape_rungs` switches one off, `circle_rungs_above_aspect` gates the
+other.
+
+The design is a base plus insurance. `sigma0` is the hypothesis you supplied
+and is usually right. The circles are there for when it is not — they sweep the
+**scale** axis at a neutral shape, and a prior's width is the thing most often
+wrong. No individual start is reliable; the multi-start is what makes the fit
+robust, and it does not need every member to work.
+
+**Raising `circle_rungs_above_aspect` is not a mild economy.** With
+`window_shape_rungs` off, the circles are the only family besides `sigma0`
+itself, so gating them off above a near-round prior's aspect ratio leaves the
+search with one starting guess. On a real PDE Hessian whose prior was 3–5× too
+wide, that **doubled the held-out error** (0.20 → 0.50) and took the count of
+rows predicting worse than zero from 190 to 816. Nothing in the
+cross-validation score reports it — the median CV moved 1% while held-out error
+moved 106% — so the failure is not self-diagnosing. Raise it only if you know
+your prior's *scale* is sound.
+
+A circular start does not bias the fitted ellipsoid toward roundness: on an 8:1
+target every start that converges reports 7.7–12.5:1. Levenberg–Marquardt
+optimizes the full log-Cholesky parameterization, so the start is a scaffold,
+not a constraint.
+
+## The solver tolerance: why `1e-4` and not `1e-8`
 
 The three tolerances are OR-ed and stop on different quantities, but `ftol` is
-the only one that fires in practice: loosening it alone to `1e-4` gives 1.81× of
-the 1.84× available from loosening all three. `xtol` needs the trust region to
+the only one that fires in practice: loosening it alone gives 1.81× of the
+1.84× available from loosening all three. `xtol` needs the trust region to
 shrink on rejected steps, and `gtol` tests a cosine that never approaches zero
 here, because the reduced residual at the optimum is data noise rather than
 zero.
 
-Loosening it is nearly free in accuracy. With the mode ladder held at fixed
-depth, `1e-8` → `1e-2` is 3.25× fewer LM iterations and leaves the error
-unchanged to four significant figures.
+Nothing downstream reads a fit to eight digits — candidates are selected on a
+held-out score living around `1e-1`. With the mode ladder held at fixed depth,
+`1e-8` → `1e-2` is 3.25× fewer LM iterations and leaves the error unchanged to
+four significant figures.
 
-What it does affect is **selection**, because the mode ladder reads the
-cross-validation score: at `1e-3` a score perturbation of 7.5 × 10⁻⁵ was enough
-to change how many modes shipped. `1e-4` is the loosest setting measured at
-which every ladder decision matched `1e-8`, so **`1e-4` is the recommended value
-if you want the fit cheaper** — worth about 1.6× — and further than that should
-be checked against your own held-out scores rather than assumed.
+What the tolerance can corrupt is **selection**, because the ladder reads that
+score: at `1e-3` a score perturbation of 7.5 × 10⁻⁵ was enough to change how
+many modes shipped. `1e-4` is the loosest setting at which every ladder
+decision still matched `1e-8`, which is why it is the default rather than the
+faster `1e-2`. Tighten it if you are solving to a criterion of your own instead
+of the library's selection rule.
 
 Measurements in [`experiments/lm-tolerance.md`](../experiments/lm-tolerance.md).
 

@@ -24,6 +24,6 @@ See [`../../examples/README.md`](../../examples/README.md) for what each one tea
 ## C++
 
 - [Fit ONE point-spread function from random probes -- the row layer in C++](fit_one_psf-cpp.md)
-- [Minimal smoke test for the VS Code build/debug setup: links against lgpsf](hello_world-cpp.md)
+- [Does the toolchain work?](hello_world-cpp.md)
 - [Fit a whole operator from random matvecs -- the complete pipeline in C++](operator_fit_frog-cpp.md)
 - [What a fit is FOR: preconditioning a regularized inverse problem](preconditioner-cpp.md)

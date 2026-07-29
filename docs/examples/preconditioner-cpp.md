@@ -59,13 +59,13 @@ BUILD OPTIMIZED. From the repository root:
 
 ```text
 fit of H from 80 probes: relative error 0.0328, 11.5% dense
-H^T H is 100.0% dense; the fitted H^T H is 34.9% dense, with relative error 0.0234
+H^T H is 100.0% dense; the fitted H^T H is 34.9% dense, with relative error 0.0235
 
     alpha       cond(A)        CG plain     CG with fit   speedup
     1e-02     4.741e+03          295                 16     18.4x
     1e-03     4.740e+04          866                 31     27.9x
     1e-04     4.740e+05         2557                 82     31.2x
-    1e-05     4.740e+06         5000 +              293     17.1x
+    1e-05     4.740e+06         5000 +              289     17.3x
 
 One fit, 80 operator applications, reused at every alpha -- the fit does not
 depend on the regularization, so a sweep costs one batch of probes plus a

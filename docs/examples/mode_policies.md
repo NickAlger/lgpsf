@@ -27,12 +27,12 @@ constant. This example runs them head to head at several budgets.
 ```text
                 policy                  k=20                  k=45                 k=110
                                score / modes         score / modes         score / modes
-     ShellLadder(0..6)            0.2024 / 6           0.1073 / 15           0.0340 / 28
+     ShellLadder(0..6)            0.2023 / 6           0.1073 / 15           0.0340 / 28
     WedgeLadder(10, 2)            0.3453 / 6           0.1549 / 16           0.1002 / 21
-    WedgeLadder(10, 4)            0.3474 / 1           0.0892 / 19           0.0401 / 42
-   RadialFirstLadder()            0.4554 / 3           0.2082 / 12           0.1174 / 26
+    WedgeLadder(10, 4)            0.3473 / 1           0.0892 / 19           0.0401 / 42
+   RadialFirstLadder()            0.4552 / 3           0.2081 / 12           0.1186 / 24
 
-  best at k=20   ShellLadder(0..6)  (0.2024)
+  best at k=20   ShellLadder(0..6)  (0.2023)
   best at k=45   WedgeLadder(10, 4)  (0.0892)
   best at k=110  ShellLadder(0..6)  (0.0340)
 

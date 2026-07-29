@@ -34,19 +34,19 @@ BUILD OPTIMIZED -- see operator_fit_frog.cpp. From the repository root:
 target row 320 at (0.562, 0.354)
 
     k   modes   held-out   rel. L2 vs truth  stop
-   10       1     0.2806             0.5049  Exhausted
-   20       6     0.3545             0.4974  Exhausted
-   45      15     0.1291             0.1074  Exhausted
+   10       1     0.2805             0.5047  Exhausted
+   20       6     0.3546             0.4974  Exhausted
+   45      15     0.1291             0.1075  Exhausted
   110      28     0.0243             0.0289  Exhausted
 
   #                 candidate   modes         cost     score
   0                    sigma0       3     5.14e-07    0.4117
-  1           circle r=0.0417       3     5.14e-07    0.4117
+  1           circle r=0.0417       3     5.14e-07    0.4118
   2            circle r=0.827       3     5.14e-07    0.4117
   3            warm(level<=1)      10     6.48e-08    0.1888
-  4                    sigma0      10     6.48e-08    0.1888  <-
-  5           circle r=0.0417      10     6.48e-08    0.1888
-  6            circle r=0.827      10     1.79e-06    0.7748
+  4                    sigma0      10     6.48e-08    0.1888
+  5           circle r=0.0417      10     6.48e-08    0.1888  <-
+  6            circle r=0.827      10     2.13e-06    0.8085
      cost is IN-SAMPLE and is never the selector; the held-out score is.
 ```
 

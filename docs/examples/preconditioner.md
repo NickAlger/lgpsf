@@ -54,14 +54,14 @@ what you would actually reach for.
 ## Output
 
 ```text
-fit of H from 80 probes: relative error 0.0300, 11.5% dense
-H^T H is 100.0% dense; the fitted H^T H is 34.9% dense, with relative error 0.0216
+fit of H from 80 probes: relative error 0.0299, 11.5% dense
+H^T H is 100.0% dense; the fitted H^T H is 34.9% dense, with relative error 0.0215
 
     alpha       cond(A)        CG plain     CG with fit   speedup
     1e-02     4.741e+03            294               15     19.6x
     1e-03     4.740e+04            883               29     30.4x
-    1e-04     4.740e+05           2619               77     34.0x
-    1e-05     4.740e+06           5000+             261     19.2x
+    1e-04     4.740e+05           2619               78     33.6x
+    1e-05     4.740e+06           5000+             259     19.3x
 
 One fit, 80 operator applications, reused at every alpha -- the fit does
 not depend on the regularization, so a sweep costs one batch of probes plus

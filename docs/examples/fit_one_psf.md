@@ -25,8 +25,8 @@ physicist would supply).
 ```text
 target row 320 at (0.562, 0.354)
     k   modes   held-out   rel. L2 vs truth  stop
-   10       1     0.3047             0.8679  Exhausted
-   20       6     0.2706             0.5301  Exhausted
+   10       1     0.3785             0.5007  Exhausted
+   20       6     0.2705             0.5293  Exhausted
    45      15     0.1131             0.1036  Exhausted
   110      28     0.0316             0.0271  Exhausted
 

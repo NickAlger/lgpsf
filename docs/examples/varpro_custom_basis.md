@@ -31,10 +31,10 @@ docs/varpro-whitening-notes.pdf.
 (log-diagonal and strict-lower of the Cholesky factor; the center is pinned)
 
         jacobian         cost   iters  residual evals
-         Kaufman   1.1094e-07      15              16
-    GolubPereyra   1.1094e-07       8               9
+         Kaufman   1.1094e-07       8               9
+    GolubPereyra   1.1094e-07       5               6
 
-same answer to 9.82e-06 in theta.
+same answer to 8.75e-04 in theta.
 Kaufman is the default: it drops a term that vanishes at the solution, so
 it costs one reverse sweep instead of a full Jacobian tensor and converges
 to the same place.
@@ -44,9 +44,9 @@ fitted 1-sigma axes 0.0342 x 0.0726
 10 linear coefficients, never searched over
 
      ridge         cost       ||c||
-     1e-12   1.1094e-07      5.0798
-     1e-08   1.1094e-07      5.0798
-     1e-04   1.1094e-07      5.0791
+     1e-12   1.1094e-07      5.0775
+     1e-08   1.1094e-07      5.0775
+     1e-04   1.1094e-07      5.0769
      1e-01   1.8789e-07      4.5509
 The ridge damps the LINEAR coefficients only -- the ellipsoid is never
 regularized, because it is what you are trying to learn.

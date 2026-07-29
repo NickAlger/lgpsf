@@ -1,5 +1,25 @@
 # Plan: less conservative fitting defaults
 
+> **ARCHIVED (2026-07-28). Both experiments ran and the defaults changed; this
+> is the plan they were made from, not a description of the outcome.** For what
+> shipped, read [`../../docs/defaults.md`](../../docs/defaults.md) and the
+> `Changed` entry in [`../../CHANGELOG.md`](../../CHANGELOG.md); for the
+> measurements, `experiments/lm-tolerance.md`,
+> `experiments/fitting-defaults.md` and `experiments/anisotropy-hardening.md`.
+>
+> **Two of its recommendations were overturned by the real operator**, which is
+> what Task B existed to test:
+>
+> - `circle_rungs_above_aspect` 1.0 -> 3.0 was **rejected**. On a prior wrong in
+>   SCALE rather than shape it doubled held-out error, and the frog could not
+>   see that because it only ever damaged shape and orientation. The knob
+>   shipped; its default did not move.
+> - `window_shape_rungs` was left ON here as "the family the frog cannot see
+>   the point of". It is now **OFF**: on a real Hessian it never helped, and
+>   under a ball window it degenerates into a second copy of the circle rungs.
+>
+> `num_rungs` 6 -> 3 and `ftol` 1e-8 -> 1e-4 landed as planned.
+
 Written 2026-07-28, mid-investigation, so a fresh session can continue without
 the conversation. Two experiments remain. Everything here is checked against
 the code as it stands at commit `82c813d`.

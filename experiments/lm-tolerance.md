@@ -1,15 +1,18 @@
 # How tight the Levenberg–Marquardt tolerance needs to be, 2026-07-28
 
-**PROVISIONAL**, on the same terms as [`fitting-defaults.md`](fitting-defaults.md):
-one smooth synthetic two-dimensional kernel. Measured by
-[`lm_tolerance.py`](lm_tolerance.py); full output in
-[`lm-tolerance.txt`](lm-tolerance.txt).
+**This is why the default is now `1e-4`.** One smooth synthetic
+two-dimensional kernel, so read it on the same terms as
+[`fitting-defaults.md`](fitting-defaults.md) — but unlike the rung knobs, this
+one was later re-checked on a field-scale PDE Hessian and cost at most 0.4% of
+held-out score there. Measured by [`lm_tolerance.py`](lm_tolerance.py); full
+output in [`lm-tolerance.txt`](lm-tolerance.txt). Every block sets its own
+tolerances and measures against `1e-8`, what lgpsf 0.1.0 shipped.
 
 ## The question
 
-Every candidate in the per-row search is a nonlinear least-squares fit, run to
-`ftol = xtol = gtol = 1e-8`. Nothing downstream reads a fit to eight digits:
-candidates are selected on a held-out cross-validation score, and on a
+Each candidate in the per-row search is a nonlinear least-squares fit, and 0.1.0
+ran it to `ftol = xtol = gtol = 1e-8`. Nothing downstream reads a fit to eight
+digits: candidates are selected on a held-out cross-validation score, and on a
 well-fitted row that score sits around `1e-1`. So the outer loop may be
 polishing digits the selection rule cannot see.
 
@@ -24,11 +27,11 @@ interior rows fitted individually:
 
 | loosened to 1e-4 | LM iterations/row | fewer |
 |---|---|---|
-| nothing (all at `1e-8`) | 1184.8 | — |
-| `ftol` only | 653.0 | **1.81×** |
-| `xtol` only | 1030.1 | 1.15× |
-| `gtol` only | 1046.1 | 1.13× |
-| all three | 643.0 | 1.84× |
+| nothing (all at `1e-8`) | 648.2 | — |
+| `ftol` only | 355.2 | **1.82×** |
+| `xtol` only | 560.7 | 1.16× |
+| `gtol` only | 572.6 | 1.13× |
+| all three | 350.2 | 1.85× |
 
 `ftol` accounts for essentially the whole effect, and MINPACK's semantics
 predict that. Its test is on the **relative** cost reduction, `1 − (‖f₊‖/‖f‖)²`,
@@ -50,13 +53,13 @@ result is as flat as it gets. 25 rows, `num_rungs = 6`:
 
 | tolerance | iterations/row | rel. error | score |
 |---|---|---|---|
-| `1e-8` | 1207.6 | 0.122000 | 0.117308 |
-| `1e-6` | 917.5 | 0.122001 | 0.117305 |
-| `1e-4` | 656.0 | 0.122001 | 0.117281 |
-| `1e-3` | 517.8 | 0.121998 | 0.117233 |
-| `1e-2` | 371.0 | 0.121960 | 0.117054 |
+| `1e-8` | 660.5 | 0.122000 | 0.117308 |
+| `1e-6` | 501.5 | 0.122001 | 0.117305 |
+| `1e-4` | 357.2 | 0.122001 | 0.117281 |
+| `1e-3` | 281.6 | 0.121998 | 0.117233 |
+| `1e-2` | 202.3 | 0.121960 | 0.117054 |
 
-**3.25× fewer iterations, and the error is unchanged to four significant
+**3.27× fewer iterations, and the error is unchanged to four significant
 figures.**
 
 Whole operators agree. 576 rows, correct prior, relative Frobenius error against
@@ -65,19 +68,20 @@ the dense truth:
 | tolerance | rel. error | modes | speedup, `num_rungs = 6` | `num_rungs = 3` |
 |---|---|---|---|---|
 | `1e-8` | 0.127124 | 14.8 | — | — |
-| `1e-6` | 0.127124 | 14.8 | 1.26× | 1.21× |
-| `1e-4` | 0.127126 | 14.8 | **1.58×** | **1.46×** |
-| `1e-3` | 0.127129 | 14.8 | 1.72× | 1.74× |
-| `1e-2` | 0.127068 | 14.8 | 2.09× | 1.89× |
+| `1e-6` | 0.127124 | 14.8 | 1.11× | 1.19× |
+| `1e-4` | 0.127124 | 14.8 | **1.32×** | **1.50×** |
+| `1e-3` | 0.127137 | 14.8 | 1.38× | 1.67× |
+| `1e-2` | 0.127040 | 14.8 | 1.66× | 2.01× |
 
 The same number of modes ships at every setting, and what movement there is sits
 in the sixth digit and is not monotone — `1e-2` came out *lower* than `1e-8`.
 That is perturbation, not degradation.
 
 **The two knobs are separable.** The tolerance behaves the same at both rung
-counts, and `num_rungs` 6 → 3 is worth 1.5–1.7× at every tolerance. Taking both,
-9.1 s → 3.8 s at identical error. Disabling the early exit and damaging the
-prior to carry no shape information both leave the picture unchanged.
+counts, and `num_rungs` 6 → 3 is worth 1.2–1.5× at every tolerance. Taking both,
+5.1 s → 2.8 s, for 0.4% in error (0.12712 → 0.12764) charged to the rungs rather
+than the tolerance. Disabling the early exit, and damaging the prior to carry no
+shape information, both leave the picture unchanged.
 
 ## The confound: the ladder reads the score
 
@@ -90,8 +94,8 @@ fifth decimal can flip whether a level counted as an improvement, and ship a row
 with a different number of modes. Modes are worth far more than solver digits.
 
 That is exactly what happened, and the two blocks line up entry for entry. At
-`1e-3` and `1e-2` the free-ladder run reports 69.0 candidates, 14.8 modes,
-517.8 and 371.0 iterations, and errors 0.121998 and 0.121960 — **every one of
+`1e-3` and `1e-2` the free-ladder run reports 39.0 candidates, 14.8 modes,
+281.6 and 202.3 iterations, and errors 0.121998 and 0.121960 — **every one of
 those identical to what the pinned-ladder run reports at the same tolerance**.
 The loose solve did not fit better. It stopped stopping early, and ran the same
 full ladder the pinned configuration always runs.
@@ -119,7 +123,7 @@ induces, against how big a perturbation it takes to change a decision:
 |---|---|---|
 | `1e-6` | 3.0 × 10⁻⁶ | unchanged |
 | `1e-4` | 2.7 × 10⁻⁵ | unchanged |
-| `1e-3` | 7.5 × 10⁻⁵ | **flipped** — 67.9 → 69.0 candidates, 14.2 → 14.8 modes |
+| `1e-3` | 7.5 × 10⁻⁵ | **flipped** — 38.4 → 39.0 candidates, 14.2 → 14.8 modes |
 | `1e-2` | 2.5 × 10⁻⁴ | flipped |
 
 (Perturbations read off the pinned-ladder block, which is the only one where a
@@ -128,7 +132,7 @@ it. The whole-operator block gives the same perturbations to one digit.)
 
 **`1e-4` is the last tolerance at which the ladder makes every decision it makes
 at `1e-8`.** That is a directly measured margin rather than a theorized one, and
-it is the reason for the recommendation below.
+it is the reason for the default.
 
 A scaling argument agrees in spirit but should not be leaned on. `ftol` limits
 the relative cost reduction of a single accepted step, and the CV score is a
@@ -142,32 +146,32 @@ total progress remains. Treat it as an order-of-magnitude guide.
 One further datum sits where the argument says the first crack should be. Under
 the shapeless prior — the weakest condition tested — `1e-2` is the only
 condition-and-tolerance combination anywhere in the sweep where the error moved
-the *wrong way* by more than noise: 0.136543 → 0.136612, 5 × 10⁻⁴ relative.
+the *wrong way* by more than noise: 0.136543 → 0.136601, 4 × 10⁻⁴ relative.
 Everywhere else `1e-2` happened to land slightly better.
 
 ## `max_evaluations` is not what binds
 
-Dropping the evaluation cap from 100 to 25 is worth 1.23× at the row layer and
-**nothing at all** on whole operators, at either end of the tolerance range,
-with no change in error anywhere. The loop stops on `ftol` long before it runs
-out of evaluations, so the cap is a runaway guard rather than a performance
-knob. Left alone.
+Dropping the evaluation cap from 100 to 25 is worth 1.22× fewer iterations at
+the row layer and **nothing at all** on whole operators, at either end of the
+tolerance range, with no change in error anywhere. The loop stops on `ftol`
+long before it runs out of evaluations, so the cap is a runaway guard rather
+than a performance knob. Left alone.
 
 ## Read the wall-clock ratios loosely
 
-The baseline configuration appears in two blocks and measured 9.1 s in one and
-10.1 s in the other, so **ratios below about 1.15× here are noise**, even though
+The baseline configuration appears in two blocks and measured 5.1 s in one and
+6.9 s in the other, so **ratios below about 1.35× here are noise**, even though
 each configuration is fitted twice and the faster run reported. The
-`max_evaluations` block shows the same thing from the other side: 0.97× and
-0.99× "speedups" for strictly cheaper settings.
+`max_evaluations` block shows the same thing from the other side: dropping the
+cap from 100 to 25 measures as 1.08× on a knob that changes nothing.
 
 The effects this rests on are larger than that, and the iteration counts are not
 timings at all — they are exact, deterministic, and reproduce run to run. Those
 are the numbers to weigh.
 
-## Recommendation
+## What shipped
 
-| knob | now | proposed |
+| knob | 0.1.0 | now |
 |---|---|---|
 | `varpro.ftol` | `1e-8` | **`1e-4`** |
 | `varpro.xtol` | `1e-8` | **`1e-4`** |
@@ -181,7 +185,7 @@ themselves are still fine — the accuracy tables stay flat all the way to `1e-2
 nominally about solver precision has begun to change which model ships. That it
 moved in a helpful direction on this problem is luck, not a reason.
 
-It takes 1.58× of the 2.09× available in wall time, and 1.84× of the 3.25×
+It takes 1.32× of the 1.66× available in wall time, and 1.85× of the 3.27×
 reduction in iterations.
 
 ## What this does not measure

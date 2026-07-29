@@ -1,15 +1,17 @@
 # SPDX-License-Identifier: MIT
 """How tight does the Levenberg-Marquardt tolerance need to be?
 
-Each candidate in the per-row search is a nonlinear least-squares fit, run to
-`ftol = xtol = gtol = 1e-8` by default. But nothing downstream reads the fit to
-eight digits: candidates are SELECTED on a held-out cross-validation score, and
-on a well-fitted row that score sits around 1e-1. The outer loop may be
-polishing digits the selection rule cannot see.
+Each candidate in the per-row search is a nonlinear least-squares fit, and a
+solver author's instinct is to run it to `ftol = xtol = gtol = 1e-8` -- which is
+what lgpsf 0.1.0 shipped. But nothing downstream reads the fit to eight digits:
+candidates are SELECTED on a held-out cross-validation score, and on a
+well-fitted row that score sits around 1e-1. The outer loop may be polishing
+digits the selection rule cannot see.
 
 That is the question here -- not whether the tolerance should be a user option
-(it already is, `config.row.varpro.ftol` and friends), but what its default
-should be.
+(it always was, `config.row.varpro.ftol` and friends), but what its default
+should be. **This experiment is why the default is now 1e-4**; the tables below
+measure against 1e-8 as the reference, so they read as "what loosening buys".
 
 Three things are measured, because they answer different halves of it.
 
@@ -59,6 +61,15 @@ THREADS = 4          # leave the machine usable while this runs
 
 TOLERANCES = [1e-8, 1e-6, 1e-4, 1e-3, 1e-2]
 
+# The tight end of the sweep, and the value every block measures against. It is
+# what the library shipped in 0.1.0, so the tables read as "what loosening from
+# a solver author's default buys". Held explicitly rather than inherited -- see
+# `row_config`.
+REFERENCE_TOL = 1e-8
+
+# The rung families follow the LIBRARY defaults (sigma0 + num_rungs circles,
+# no window-shape family), so the candidate counts here are what a user gets.
+
 
 def interior_rows(grid=GRID, stride=4, margin=4):
     """A regular subgrid of rows, away from the boundary.
@@ -76,8 +87,14 @@ def row_config(num_rungs, tol, max_evaluations=100, which=("ftol", "xtol", "gtol
     """A row-layer config with the named tolerances set to `tol`.
 
     `which` is what makes the first block possible: the tolerances not named
-    keep their 1e-8 default, so a change in iteration count is attributable to
-    the one that moved.
+    are held at the REFERENCE value, so a change in iteration count is
+    attributable to the one that moved.
+
+    The reference is written out rather than inherited. It used to be the
+    library default, and when that default moved to 1e-4 the first block
+    silently became three copies of the same configuration -- "ftol only" sets
+    ftol to a value the other two already had. Pinning it keeps the block
+    meaningful whatever the default is.
 
     `fixed_ladder` forces every row to the top of the mode ladder. Both of the
     ladder's stopping rules -- `target_score` and `mode_patience` -- read the
@@ -90,6 +107,9 @@ def row_config(num_rungs, tol, max_evaluations=100, which=("ftol", "xtol", "gtol
     config.mode_policy = lgpsf.ShellLadder(list(range(MAX_LEVEL + 1)))
     config.num_rungs = num_rungs
     config.varpro.max_evaluations = max_evaluations
+    config.varpro.ftol = REFERENCE_TOL
+    config.varpro.xtol = REFERENCE_TOL
+    config.varpro.gtol = REFERENCE_TOL
     for name in which:
         setattr(config.varpro, name, tol)
     if fixed_ladder:
@@ -229,7 +249,7 @@ def main():
     # 1. Three stopping tests, three quantities. Which one is actually firing?
     row_block(problem, rows, problem["V"],
               "which stopping test binds (row layer, num_rungs = 6)", {
-                  "all at 1e-8 (as in 0.1.0)": row_config(6, 1e-8),
+                  "all at the reference": row_config(6, REFERENCE_TOL),
                   "ftol = 1e-4 only": row_config(6, 1e-4, which=("ftol",)),
                   "xtol = 1e-4 only": row_config(6, 1e-4, which=("xtol",)),
                   "gtol = 1e-4 only": row_config(6, 1e-4, which=("gtol",)),
@@ -256,8 +276,8 @@ def main():
     # 4. And the evaluation cap, which is the other way to stop early -- but
     #    stops on effort rather than on any property of the fit.
     row_block(problem, rows, problem["V"],
-              "max_evaluations (row layer, num_rungs = 6, tol = 1e-8)",
-              {f"max_evaluations = {m}": row_config(6, 1e-8, max_evaluations=m)
+              "max_evaluations (row layer, num_rungs = 6, tol = reference)",
+              {f"max_evaluations = {m}": row_config(6, REFERENCE_TOL, max_evaluations=m)
                for m in (100, 50, 25)})
 
     if args.quick:
@@ -292,7 +312,7 @@ def main():
 
     # 8. The evaluation cap on whole operators, at both ends of the tolerance
     #    range: a loose tolerance may already be stopping first.
-    for tol in (1e-8, 1e-3):
+    for tol in (REFERENCE_TOL, 1e-3):
         whole_block(problem, problem["sigma"],
                     f"max_evaluations (whole operator, num_rungs = 6, "
                     f"tol = {tol:g})",

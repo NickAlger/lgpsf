@@ -1,11 +1,52 @@
 # Robust initialization for the per-row VarPro fit
 
-**Status: PARKED (2026-07-24).** Design note capturing the
-initial-guess robustness experiments and the recipe they support, so it
-can be picked up when the per-row fitting pipeline is assembled. All
-evidence is reproducible: `examples/varpro_frog_robust_init.py` (and the
-init sweeps in `examples/varpro_frog_fit.py`), with the sweep figures
-committed alongside.
+**Status: PARKED (2026-07-24), re-measured 2026-07-28 — see the update at the
+top before reading on.** Design note capturing the initial-guess robustness
+experiments and the recipe they support. The evidence below is the PROTOTYPE's,
+reproducible at `archive/python-prototype/examples/varpro_frog_robust_init.py`
+with the sweep figures committed alongside; paths in the body are as they were
+when this was written.
+
+---
+
+## UPDATE 2026-07-28: the oriented family was never built, and at present it is
+## not needed
+
+**The gap.** The recipe below prescribes an oriented-ellipse family as the
+member that fixes the circles' orientation blind spot.
+`lgpsf::oriented_sigma(a, b, angle_degrees)` was ported to
+`include/lgpsf/init_dictionary.hpp` for it and is tested — its docstring calls
+orientation "the circle family's blind spot" — but **no rung family is built
+from it**. `probe_fit.hpp` assembles `sigma0` + window rungs + circle rungs +
+warm start, and nothing calls `oriented_sigma`. No note recorded that as a
+decision; it appears to be an omission.
+
+**Re-measured against the live library** by `experiments/anisotropy_hardening.py`
+(write-up: `experiments/anisotropy-hardening.md`), on the same 8:1 frog:
+
+- The blind spot is **real under free mu** — oriented starts reach the good
+  basin 3/8 and 5/8 of the time against circles' 1/6 and 2/6.
+- It **does not appear under pinned mu**, which is now the default (`MuPolicy`
+  changed after this note was written). There circles are at least as reliable,
+  4/6 and 5/6 against 4/8 and 6/8.
+- The **shipping default reaches the best start of any family** in every
+  condition, 1.00–1.01×. Individual circles still fail at both ends of the
+  ladder exactly as described below; what saves them is that the ladder
+  brackets the scale rather than guessing it.
+- A circular start does **not** bias the fitted answer toward roundness: every
+  successful start reports 7.7–12.5:1 against a true 8:1.
+
+**Therefore: still parked, and now with a trigger.** Build the oriented family
+if mu release is ever re-armed as a default, if a problem with genuinely
+anisotropic priors appears (every PIG row is below 1.7:1 by construction, so
+the field-scale validation cannot see this), or if N = 3 arrives — where
+orientation is SO(3) and the dictionary-size caveat at the end of this note
+bites hardest.
+
+Doing it properly means committing to a small research project, which is why it
+is parked rather than half-built.
+
+---
 
 ## The problem
 

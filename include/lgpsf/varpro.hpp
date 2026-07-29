@@ -83,9 +83,21 @@ struct VarProOptions
     Eigen::VectorXd fixed_scale;
 
     int max_evaluations = 50;
-    double ftol = 1e-8;
-    double xtol = 1e-8;
-    double gtol = 1e-8;
+
+    /// Stopping tolerances, on relative cost reduction, relative step size and
+    /// gradient orthogonality respectively. `ftol` is the one that binds in
+    /// practice -- loosening it alone accounts for 1.81x of the 1.84x
+    /// available from loosening all three.
+    ///
+    /// 1e-4 rather than a solver author's 1e-8 because nothing downstream
+    /// reads a fit to eight digits: candidates are selected on a held-out
+    /// score living around 1e-1, and 1e-4 is the loosest setting at which the
+    /// mode ladder still made every decision it makes at 1e-8. Measured in
+    /// `experiments/lm-tolerance.md`; tighten if you are solving to a
+    /// criterion of your own rather than to the library's selection rule.
+    double ftol = 1e-4;
+    double xtol = 1e-4;
+    double gtol = 1e-4;
 };
 
 struct VarProResult
