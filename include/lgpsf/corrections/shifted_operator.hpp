@@ -97,6 +97,12 @@ struct ShiftedOperator
     /// make_pd. The exact PD floor of the sparse part: B_pd + a H_r > 0
     /// iff a > -lambda_floor. Absent until a flip pass has run.
     std::optional<double> lambda_floor;
+    /// Snapshot of block.C_corr at the moment make_pd certified. Because
+    /// merges never modify existing columns except by adding coefficients,
+    /// (C_corr - padded snapshot) is EXACTLY the correction added since
+    /// certification — which is what the warning-zone certificate must
+    /// bound (see solve.hpp). Empty until certification.
+    Eigen::MatrixXd C_corr_certified;
 
     Eigen::Index dim() const { return op.dim(); }
 };
@@ -178,7 +184,7 @@ inline ShiftedOperator make_shifted_operator( SymmetricOp op,
     // defaults) so partial-initialization warnings stay meaningful elsewhere
     ShiftedOperator A{std::move(op),   std::move(hr), std::move(archive),
                       empty_block(n),  a0,            0.5,
-                      -0.95,           std::nullopt};
+                      -0.95,           std::nullopt,  Eigen::MatrixXd()};
     const std::vector<std::string> issues = validate(A);
     if ( !issues.empty() )
     {

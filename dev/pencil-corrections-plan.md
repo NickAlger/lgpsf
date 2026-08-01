@@ -479,7 +479,12 @@ not code.
    on a CONVERGED leftmost survivor; leftmost discovery belongs to
    `make_pd` alone — run it before caching leftmost modes).
 6. Zone semantics + warnings + `solve(…, a)` dispatch (§5).
+   **Landed 2026-08-01** (`corrections/solve.hpp`; the warning-zone
+   certificate bounds post-certification corrections exactly via a
+   `C_corr` snapshot taken at certification).
 7. Two-level solve mode (§6) with the flexible-outer contract documented.
+   **Landed 2026-08-01** (inner PCG in `corrections/solve.hpp`;
+   nonpositive curvature throws rather than converging wrong).
 8. `deflate_free` (§4.3) in `corrections/deflation.hpp`.
 9. `value_pass` (§4.4) + archive growth.
 10. `rebuild_at` (§5) + persistence round-trip.

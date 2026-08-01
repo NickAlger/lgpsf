@@ -35,6 +35,7 @@
 #include "lgpsf/corrections/mode_block.hpp"
 #include "lgpsf/corrections/pencil_lanczos.hpp"
 #include "lgpsf/corrections/shifted_operator.hpp"
+#include "lgpsf/corrections/solve.hpp"
 #include "lgpsf/corrections/symmetric_op.hpp"
 #include "lgpsf/ellipsoid_transform.hpp"
 #include "lgpsf/exceptions.hpp"
@@ -1486,6 +1487,59 @@ PYBIND11_MODULE(lgpsf, m)
              "leftmost surviving pencil value. Uncertified on budget "
              "exhaustion -- progress persists, call again. Run BEFORE "
              "caching leftmost modes with extend_modes.");
+
+    py::enum_<corrections::Zone>(
+        corr, "Zone",
+        "Where a shift stands relative to the contracts: Guaranteed "
+        "(a >= a0, build contract), Warned (above the certified floor but "
+        "below a0 -- runtime certificate applies), Refused (at or below "
+        "the floor; rebuild_at is the remedy).")
+        .value("Guaranteed", corrections::Zone::Guaranteed)
+        .value("Warned", corrections::Zone::Warned)
+        .value("Refused", corrections::Zone::Refused);
+    py::class_<corrections::ZoneReport>(
+        corr, "ZoneReport", "The zone, and what is known about "
+        "definiteness there.")
+        .def_readonly("zone", &corrections::ZoneReport::zone)
+        .def_readonly("analytic_pd", &corrections::ZoneReport::analytic_pd)
+        .def_readonly("post_cert_min",
+                      &corrections::ZoneReport::post_cert_min)
+        .def_readonly("detail", &corrections::ZoneReport::detail);
+    corr.def("classify_shift", &corrections::classify_shift, "A"_a, "a"_a,
+             "Classify a shift against the struct's contracts; cheap "
+             "(at most one rank-sized eigendecomposition).");
+
+    py::enum_<corrections::SolveMode>(
+        corr, "SolveMode",
+        "Glr: apply M(a)^{-1} in closed form (the validated preconditioner "
+        "architecture). TwoLevel: solve B + E + a Hr itself by inner PCG "
+        "preconditioned by M(a)^{-1} -- a consumer wrapping this as a "
+        "preconditioner must use a FLEXIBLE outer method (FCG/FGMRES).")
+        .value("Glr", corrections::SolveMode::Glr)
+        .value("TwoLevel", corrections::SolveMode::TwoLevel);
+    py::class_<corrections::SolveResult>(corr, "SolveResult",
+                                         "Solution, zone, and residual.")
+        .def_readonly("X", &corrections::SolveResult::X)
+        .def_readonly("zone", &corrections::SolveResult::zone)
+        .def_readonly("iterations", &corrections::SolveResult::iterations)
+        .def_readonly("relative_residual",
+                      &corrections::SolveResult::relative_residual);
+    corr.def("solve",
+             []( const corrections::ShiftedOperator& A,
+                 const Eigen::MatrixXd& B_rhs, double a,
+                 corrections::SolveMode mode, double oracle_tol, double rtol,
+                 int max_iters ) {
+                 corrections::SolveOpts opts;
+                 opts.mode = mode;
+                 opts.oracle_tol = oracle_tol;
+                 opts.rtol = rtol;
+                 opts.max_iters = max_iters;
+                 return corrections::solve(A, B_rhs, a, opts);
+             },
+             "A"_a, "B"_a, "a"_a, "mode"_a = corrections::SolveMode::Glr,
+             "oracle_tol"_a = 1e-10, "rtol"_a = 1e-8, "max_iters"_a = 500,
+             "Solve at shift a, zone-checked: refused shifts raise, warned "
+             "shifts proceed and say so in the returned ZoneReport.");
 
     // ---- layout probe -----------------------------------------------------
     // Not part of the API; a permanent regression hook for the one bug this

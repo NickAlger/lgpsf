@@ -411,6 +411,9 @@ inline FlipReport make_pd( ShiftedOperator& A, double gamma = 0.5,
             report.lambda_floor = std::min(sweep.values(0), corrected_min);
             A.lambda_floor = report.lambda_floor;
             A.gamma = gamma;
+            // baseline for the warning-zone certificate: corrections added
+            // AFTER this moment are exactly C_corr minus this snapshot
+            A.C_corr_certified = A.block.C_corr;
             break;
         }
         // leftmost not resolved: spend more budget from a fresh start

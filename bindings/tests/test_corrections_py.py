@@ -284,3 +284,54 @@ def test_make_pd_certifies_the_real_fit_against_dense_truth():
                                  eigvals_only=True).min()
     assert min_eig(2.0 * -report.lambda_floor) > 0
     assert min_eig(0.5 * -report.lambda_floor) < 0
+
+
+def test_zones_and_both_solve_modes_on_the_real_fit():
+    # Certify the fit, then exercise the zone boundaries and both solve
+    # paths against scipy dense truth.
+    scipy = pytest.importorskip("scipy")
+    import scipy.linalg
+    import scipy.sparse
+
+    op = synthetic_operator()
+    fit = fit_synthetic(op)
+    n = op["count"]
+    Bs = scipy.sparse.csr_matrix(
+        lgpsf.assemble_sparse(fit.model, np.inf, lgpsf.Symmetrize.Weighted))
+    Hr = tridiag_spd(n)
+    Bd, Hrd = Bs.toarray(), Hr.toarray()
+    pencil = scipy.linalg.eigh(Bd, Hrd, eigvals_only=True)
+    a0 = -pencil.min() / 0.5 * 0.5
+    A = corr.make_shifted_operator(corr.sparse_op(Bs), corr.ProbeArchive(),
+                                   corr.sparse_hr_oracle(Hr), a0)
+
+    # before certification: warned, nothing claimed
+    assert corr.classify_shift(A, a0).zone == corr.Zone.Warned
+
+    report = corr.make_pd(A, max_iters=4 * n)
+    assert report.certified
+    floor = -A.lambda_floor
+    assert corr.classify_shift(A, a0).zone == corr.Zone.Guaranteed
+    mid = 0.5 * (floor + a0)
+    assert corr.classify_shift(A, mid).zone == corr.Zone.Warned
+    assert corr.classify_shift(A, mid).analytic_pd
+    assert corr.classify_shift(A, 0.5 * floor).zone == corr.Zone.Refused
+    with pytest.raises(ValueError):
+        corr.solve(A, np.ones((n, 1)), 0.5 * floor)
+
+    # cache the top modes, then solve both ways at a warned shift
+    corr.extend_modes(A, 6, max_iters=3 * n)
+    rng = np.random.default_rng(6)
+    b = rng.normal(size=(n, 1))
+    P0d = Bd + A.block.HrV @ A.block.C_corr @ A.block.HrV.T
+
+    glr = corr.solve(A, b, mid)
+    Sd = A.block.HrV @ A.block.C_surr @ A.block.HrV.T
+    np.testing.assert_allclose(glr.X, np.linalg.solve(mid * Hrd + Sd, b),
+                               atol=1e-8 * np.abs(glr.X).max())
+
+    two = corr.solve(A, b, mid, mode=corr.SolveMode.TwoLevel, rtol=1e-10)
+    assert two.zone.zone == corr.Zone.Warned
+    assert two.iterations > 0
+    np.testing.assert_allclose(two.X, np.linalg.solve(P0d + mid * Hrd, b),
+                               atol=1e-6 * np.abs(two.X).max())

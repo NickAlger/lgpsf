@@ -116,6 +116,17 @@ to [Semantic Versioning](https://semver.org/).
   operations are ill-posed under mesh refinement — the pencil's spectrum
   accumulates at 0 with only physics-determined modes away from it, which
   is the design principle the whole layer is built on.
+- **`lgpsf.corrections` zones and solve paths**: `classify_shift` places a
+  caller-supplied shift `a` in one of three zones — Guaranteed ($a \ge
+  a_0$, build contract), Warned (above the certified floor but below
+  $a_0$; an analytic runtime certificate bounds exactly the corrections
+  added since certification), Refused (at or below the floor). `solve`
+  dispatches zone-checked between GLR mode (closed-form $M(a)^{-1}$, the
+  validated preconditioner architecture) and two-level mode (inner PCG on
+  $B+E+aH_r$ preconditioned by $M(a)^{-1}$; a flexible outer method is
+  required when wrapping it). An indefinite operator on a warned shift
+  reveals itself as a nonpositive-curvature error rather than a silently
+  wrong answer.
 - **`Symmetrize::Weighted`**: a scale-aware symmetrization for
   `assemble_sparse` — a per-entry convex average with inverse-row-energy
   weights, so where two row fits disagree about a shared entry the weaker
