@@ -8,6 +8,10 @@ the Pine Island Glacier (PIG) ice-sheet Hessian. The design was worked
 out in a joint session 2026-07-31; this document is self-contained —
 every observation that motivates a design choice is quoted inline, so a
 fresh session can implement from it without access to anything private.
+Mathematical companion:
+[`pencil-corrections-notes.pdf`](pencil-corrections-notes.pdf) — the
+operations, ingredients, and formulas from the basics, including the
+two-coefficient mode block and the contradictions that forced it.
 
 **Scope decision.** Three things move into the library: (1) weighted
 symmetrization, into the existing assembly path; (2) PSD-ification

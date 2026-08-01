@@ -1,0 +1,505 @@
+% SPDX-License-Identifier: MIT
+% Part of lgpsf — https://github.com/NickAlger/lgpsf
+%
+% Mathematical companion to dev/pencil-corrections-plan.md: what the
+% corrections layer computes, from what ingredients, by what formulas —
+% including the one deviation from the original plan (the two-coefficient
+% mode block) and the contradictions that forced it.
+%
+% Build: pdflatex pencil-corrections-notes.tex  (twice, for references)
+\documentclass[11pt]{article}
+
+\usepackage[margin=1.1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage[colorlinks=true, linkcolor=blue, urlcolor=blue]{hyperref}
+
+\newcommand{\Bt}{\widetilde{B}}
+\newcommand{\Hd}{H_d}
+\newcommand{\Hr}{H_r}
+\newcommand{\Ccorr}{C_{\mathrm{corr}}}
+\newcommand{\Csurr}{C_{\mathrm{surr}}}
+\newcommand{\ip}[2]{\left\langle #1, #2 \right\rangle_{\Hr}}
+\newcommand{\floor}{\lambda_{\mathrm{floor}}}
+\newcommand{\R}{\mathbb{R}}
+
+\title{The pencil corrections layer:\\ operations, ingredients, and formulas}
+\author{lgpsf dev notes}
+\date{August 1, 2026}
+
+\begin{document}
+\maketitle
+
+\noindent
+These notes are the mathematical companion to
+\texttt{dev/pencil-corrections-plan.md}. They explain, from the basics, what
+the corrections layer computes, from what ingredients, and by what formulas
+--- and they explain the one deviation from the original plan (the mode
+block carries \emph{two} coefficient matrices rather than one) by exhibiting
+the contradictions that forced it. Everything here is implemented in
+\texttt{include/lgpsf/corrections/} through the flip
+(slices 1--5 of the plan); deflation (slices 8--9) is included so the
+operation set is complete, and is marked as planned.
+
+\section{The problem and the ingredients}
+
+We have fitted a sparse, symmetric operator $\Bt \in \R^{N \times N}$ that
+approximates a data-misfit Hessian $\Hd$ (for lgpsf, $\Bt$ is the assembled
+fit with \texttt{Symmetrize::Weighted}; validated at field scale on the Pine
+Island Glacier ice-sheet Hessian). The consumer wants to solve
+regularized systems
+\begin{equation}
+  (\Hd + a\,\Hr)\, x = b,
+  \label{eq:target}
+\end{equation}
+where $\Hr$ is their symmetric positive definite (SPD) regularization
+operator and $a > 0$ is a regularization parameter that \emph{varies}: an
+L-curve sweep reuses one Hessian at many values of $a$, so every operation
+below takes $a$ as an argument, and the build-time shift $a_0$ appears only
+in the contracts.
+
+The fit $\Bt$ is not directly usable in \eqref{eq:target}, for two reasons.
+First, it is indefinite: each row is fitted independently, so $\Bt$ carries
+a tail of small spurious negative eigenvalues even though $\Hd$ is positive
+semidefinite. Second, it is inexact: the fit compresses $k \sim 100$ probe
+applications of $\Hd$, and the residual error is significant in a
+predictable place (directions the probes resolved but the local model could
+not represent). The corrections layer repairs both --- PSD-ification for the
+first, deflation for the second --- and packages the result in two
+deployable forms (Section~\ref{sec:two-operators}).
+
+\medskip
+\noindent
+The layer is \emph{operator-blind}: nothing in it reads a matrix entry.
+The complete list of ingredients is:
+\begin{enumerate}
+  \item \textbf{apply $\Bt$} --- a caller-supplied symmetric operator,
+    dimension plus block matvec (\texttt{SymmetricOp});
+  \item \textbf{apply $\Hr$} --- cheap (mass and stiffness assemblies);
+  \item \textbf{solve $\Hr$ to a tolerance} --- the consumer's
+    \emph{oracle} (\texttt{HrOracle}), in practice Krylov preconditioned by
+    multigrid; this is the expensive primitive, and every spectral
+    operation costs $O(\#\text{modes})$ of them and nothing larger;
+  \item \textbf{the probe archive} --- the pairs $(Z, Y)$ with
+    $Y = \Hd Z$ that the fit was built from, plus any held-out and
+    value-pass pairs; this is the \emph{only} trace of $\Hd$ we hold;
+  \item \textbf{rank-sized dense algebra} --- eigendecompositions and
+    Cholesky factorizations of $\rho \times \rho$ matrices,
+    $\rho \lesssim$ a few hundred.
+\end{enumerate}
+Optionally the consumer supplies fresh applications of $\Hd$ itself, which
+unlocks the value pass. What we deliberately do \emph{not} have: matrix
+entries, $N$-sized factorizations, or transpose matvecs (everything
+crossing the boundary is symmetric, and the layer verifies that
+stochastically at construction). The restriction is what makes the same
+machinery serve a sparse assembly, a block-low-rank format, or a
+matrix-free shell, and what makes a distributed-memory port a change of
+vector type rather than of algorithm: every $N$-sized object below is a
+tall-skinny block combined through rank-sized Gram matrices.
+
+\section{The two operators we deploy}
+\label{sec:two-operators}
+
+All corrections are low-rank and live in one object, the \emph{mode block}
+(Section~\ref{sec:block}). Writing $E$ for the block's correction and $S$
+for its \emph{surrogate content} --- the distinction is the subject of
+Section~\ref{sec:deviation} --- the layer deploys two different operators:
+\begin{align}
+  P(a) &= \Bt + E + a\,\Hr,
+  \label{eq:P}\\
+  M(a) &= a\,\Hr + S.
+  \label{eq:M}
+\end{align}
+$P(a)$ is the \emph{corrected operator itself}: the full accuracy of the
+sparse fit plus every correction, applied matrix-free. It is what one uses
+as a proposal precision or applies inside an inner Krylov iteration; its
+exact solve is iterative.
+
+$M(a)$ is the \emph{GLR deployment object}: shift plus low rank, so its
+inverse is closed-form (Section~\ref{sec:woodbury}) --- one oracle solve
+and $O(N\rho)$ arithmetic per application, at \emph{every} $a$, with no
+refactorization. This is the preconditioner architecture validated
+end-to-end at PIG scale: the consumer's Krylov iteration on
+\eqref{eq:target} is preconditioned by $M(a)^{-1}$. The division of labor
+is worth stating plainly: the sparse fit is the information-compression
+device, and its pencil decomposition --- obtainable from sparse applies
+and oracle solves alone --- is the deployment device. $M(a)$ presents the
+part of the spectrum we have resolved; $P(a)$ retains everything the fit
+knows, resolved or not.
+
+\section{Why every spectral operation is a pencil operation}
+\label{sec:pencil}
+
+The typical $\Hd$ is an integral-kernel operator whose numerical rank $r$
+is fixed by the physics while the discretization dimension $N$ grows under
+mesh refinement ($r \sim 10^3$ at $N \sim 6.5 \times 10^3$ for the PIG
+coarse mesh, the same $r$ on refinements; $r \sim 10^4$ at $N \sim 10^6$
+for a continental mesh). In the Euclidean spectrum of $\Bt$ this limit is
+poison: the spectrum accumulates at $0$ \emph{from both sides}, with
+$N - r$ noise eigenvalues jitter-split around zero and no principled
+threshold between signal and noise. ``Flip the negative eigenvalues of
+$\Bt$'' is an ill-posed request: it touches $\sim (N-r)/2$ modes, more on
+every refinement.
+
+The generalized \emph{pencil}
+\begin{equation}
+  \Bt\, v \;=\; \lambda\, \Hr\, v
+  \label{eq:pencil}
+\end{equation}
+is the well-posed reformulation. Its eigenvalues are dimensionless
+data-to-prior ratios, mesh-independent, accumulating at $0$ with only the
+physics-determined informed modes away from it; equivalently, they are the
+Euclidean eigenvalues of the prior-preconditioned operator
+$\Hr^{-1/2} \Bt \Hr^{-1/2}$, computed without square roots. The design
+rule for the whole layer follows: \emph{never enumerate modes near an
+accumulation point}. ``The rightmost $k$ pencil modes'' and ``every pencil
+mode below $-\gamma a_0$'' are both requests for a physics-bounded,
+mesh-independent set; their Euclidean counterparts are not. Exact PSD of
+$\Bt$ alone (the case $a_0 = 0$) is out of scope for the same reason: in
+the $N \to \infty$ limit it requires touching unboundedly many noise
+modes. Every contract below is relative to $(\Hr, \gamma a_0)$.
+
+\section{The mode block, and the Woodbury identity that motivates it}
+\label{sec:block}
+\label{sec:woodbury}
+
+Every spectral correction the layer makes is low-rank against $\Hr$, and
+they all live in one object. The \emph{mode block} holds an
+$\Hr$-orthonormal basis $V \in \R^{N \times \rho}$,
+\begin{equation}
+  V^T \Hr V = I_\rho,
+  \label{eq:orthonormal}
+\end{equation}
+a provenance tag per column, and coefficient matrices over it. A
+correction term has the form
+\begin{equation}
+  E \;=\; (\Hr V)\, C \,(\Hr V)^T
+  \qquad\text{with $C = C^T \in \R^{\rho\times\rho}$.}
+  \label{eq:blockform}
+\end{equation}
+The factors of $\Hr$ look odd at first sight; they are what makes the
+form close under the pencil. If $(\theta_i, u_i)$ are eigenpairs of $C$,
+then with $v_i = V u_i$ one checks directly, using
+\eqref{eq:orthonormal}, that
+\begin{equation}
+  E\, v_i \;=\; \theta_i\, \Hr\, v_i,
+  \label{eq:block-eigs}
+\end{equation}
+i.e.\ \emph{the block's pencil eigenvalues against $\Hr$ are exactly
+$\operatorname{eig}(C)$}. Every positive-definiteness certificate in the
+layer is analytic because of this one fact.
+
+The second payoff is the shifted inverse. Consider
+$M(a) = a\Hr + (\Hr V) C (\Hr V)^T$ as in \eqref{eq:M}, and
+eigendecompose $C = U \Theta U^T$, $\Theta =
+\operatorname{diag}(\theta_1, \dots, \theta_\rho)$. The Sherman--Morrison
+--Woodbury formula, with $W = \Hr V$, needs the capacitance
+$C^{-1} + \tfrac1a W^T \Hr^{-1} W$; but $W^T \Hr^{-1} W = V^T \Hr V = I$
+by \eqref{eq:orthonormal}, so the capacitance is \emph{diagonal} in the
+eigenbasis of $C$ and the inverse closes over the oracle:
+\begin{equation}
+  \boxed{\;
+  M(a)^{-1} x
+  \;=\; \tfrac1a\, \Hr^{-1} x
+  \;-\; V\, U \operatorname{diag}\!\Bigl(
+        \tfrac{\theta_i}{a\,(a + \theta_i)}\Bigr)\, U^T V^T x.
+  \;}
+  \label{eq:woodbury}
+\end{equation}
+One oracle solve plus $O(N\rho)$ arithmetic per application. The formula
+is easiest to believe in $\Hr$-coordinates: on the eigendirection $v_i$
+the right side gives $\tfrac1a - \tfrac{\theta_i}{a(a+\theta_i)} =
+\tfrac1{a+\theta_i}$, which is the correct inverse of $a + \theta_i$; on
+the $\Hr$-orthogonal complement of $\operatorname{span}(V)$ it gives
+$\tfrac1a \Hr^{-1}$, as required. Consequently \eqref{eq:woodbury} is
+exact for \emph{every} symmetric $C$, invertible or not, and
+\begin{equation}
+  M(a) \succ 0
+  \quad\Longleftrightarrow\quad
+  a > \max\bigl(0,\, -\min_i \theta_i\bigr),
+  \label{eq:glr-floor}
+\end{equation}
+an analytic certificate (\texttt{glr\_pd\_floor}). Changing $a$ in
+\eqref{eq:woodbury} is scalar arithmetic --- this is why an entire L-curve
+sweep pays for no factorization anywhere.
+
+\subsection{Merging contributions}
+\label{sec:merge}
+
+Corrections arrive incrementally (a flip pass, then a deflation, then a
+deeper cache), so the block must absorb a new contribution
+$(\Hr V_{\mathrm{new}})\, C_{\mathrm{new}}\, (\Hr V_{\mathrm{new}})^T$,
+$V_{\mathrm{new}} \in \R^{N \times q}$, without disturbing what is already
+there. Existing columns are never modified --- provenance stays
+per-column, and previously computed quantities stay bitwise valid. The
+merge is classical Gram--Schmidt in the $\Hr$ inner product, done with
+Gram matrices so it costs $q$ oracle \emph{applies} (no solves) plus
+rank-sized dense algebra:
+\begin{align}
+  A &= V^T \Hr V_{\mathrm{new}} \in \R^{\rho \times q}
+      &&\text{(coefficients on existing columns),} \nonumber\\
+  W &= V_{\mathrm{new}} - V A
+      &&\text{(residual outside the block),} \nonumber\\
+  G &= W^T \Hr W = Q \Lambda Q^T
+      &&\text{(residual Gram, eigendecomposed),} \nonumber\\
+  V_{\mathrm{add}} &= W\, Q_+ \Lambda_+^{-1/2}
+      &&\text{(new $\Hr$-orthonormal columns),}
+  \label{eq:merge}
+\end{align}
+where $Q_+ \Lambda_+$ keeps the eigenvalues above a drop tolerance
+(relative to the largest candidate's squared $\Hr$-norm), and a second
+orthogonalization pass makes the arithmetic trustworthy. Candidates that
+lie (nearly) inside the current span produce no new columns; their
+contribution lands in the coefficients instead. With
+$B = V_{\mathrm{add}}^T \Hr V_{\mathrm{new}}$ and
+$M = \bigl[\begin{smallmatrix} A \\ B \end{smallmatrix}\bigr]$, the
+extended coefficient matrix is
+\begin{equation}
+  C \;\longleftarrow\;
+  \begin{bmatrix} C & 0 \\ 0 & 0 \end{bmatrix}
+  + M\, C_{\mathrm{new}}\, M^T ,
+  \label{eq:merge-coeffs}
+\end{equation}
+which is exact whenever nothing was dropped: it is just
+$V_{\mathrm{new}} = V A + V_{\mathrm{add}} B$ substituted into the
+contribution. Merging the same directions twice therefore adds
+coefficients, not columns.
+
+\section{The spectral machine: Lanczos in the $\Hr$ inner product}
+\label{sec:lanczos}
+
+Both ends of the pencil spectrum come from one machine. The operator
+$L = \Hr^{-1}(\Bt + E)$ is self-adjoint in the inner product
+$\ip{x}{y} = x^T \Hr y$:
+\begin{equation}
+  \ip{Lx}{y} \;=\; x^T (\Bt + E)^T \Hr^{-1} \Hr\, y
+  \;=\; x^T (\Bt + E)\, y \;=\; \ip{x}{Ly},
+\end{equation}
+so Lanczos applies verbatim with $\ip{\cdot}{\cdot}$ in place of the dot
+product. One iteration costs one operator apply, one oracle solve
+(applying $L$), and one $\Hr$ apply (for the norm); storing the images
+$\Hr q_j$ makes every reorthogonalization projection oracle-free. We use
+full reorthogonalization against the Krylov basis \emph{and against the
+block}: modes already in the block are invisible to the iteration, which
+is what makes every operation incremental --- nothing is ever found
+twice, and a second call continues where the first stopped. For a Ritz
+pair $(\theta, y = Q s)$ from the tridiagonal $T_m$, the standard residual
+identity holds in the $\Hr$-norm,
+\begin{equation}
+  \bigl\| L y - \theta y \bigr\|_{\Hr} \;=\; \beta_m\, |s_m|,
+  \label{eq:ritz-residual}
+\end{equation}
+so convergence is monitored for free. Two engine details found the hard
+way: on breakdown (an invariant subspace), the iteration restarts with a
+fresh random vector in the $\Hr$-orthogonal complement --- itself
+invariant, since $L$ is self-adjoint --- and a zero coupling in $T_m$
+decouples the finished block correctly; and the engine's internal seed is
+salted, because a caller who built the operator's data from the same
+innocently-chosen seed can otherwise hand the engine start vectors
+correlated with the operator (in the adversarial case, every start vector
+is an exact eigenvector and every emptiness test lies).
+
+\texttt{extend\_modes} runs this machine and caches converged
+\emph{rightmost} pairs $(\lambda_i, v_i)$ in the block; the report carries
+the first value \emph{not} cached, which is the $\lambda_{k+1}$ that
+governs two-level inner conditioning. \texttt{make\_pd} runs the same
+machine for the leftmost end, next.
+
+\section{PSD-ification: the $a_0$-tied flip}
+\label{sec:flip}
+
+Let $(\lambda_i, v_i)$ be pencil eigenpairs \eqref{eq:pencil} of the
+current operator, and write $w_i = \Hr v_i$. With a safety factor
+$\gamma \in (0,1)$ (default $\tfrac12$), we correct exactly the modes
+below the threshold $-\gamma a_0$:
+\begin{equation}
+  \Bt_{\mathrm{pd}}
+  \;=\; \Bt \;-\; c \sum_{\lambda_i < -\gamma a_0}
+        \lambda_i\, w_i w_i^T,
+  \qquad
+  c = \begin{cases} 2 & \text{(flip)}\\ 1 & \text{(relu)}, \end{cases}
+  \label{eq:flip}
+\end{equation}
+implemented as block entries --- the operator handle is never modified.
+Using $w_i w_i^T v_i = \Hr v_i (v_i^T \Hr v_i) = \Hr v_i$, each corrected
+mode moves as
+\begin{equation}
+  \lambda_i \;\longmapsto\; (1 - c)\,\lambda_i
+  \;=\; \begin{cases} -\lambda_i & \text{(flip)}\\
+                      0 & \text{(relu)}, \end{cases}
+  \label{eq:flip-move}
+\end{equation}
+and every other mode is untouched. The slightly-negative noise tail above
+the threshold is deliberately left in place --- the deployment shift
+absorbs it, and enumerating it is exactly the ill-posed operation of
+Section~\ref{sec:pencil}. What makes the operation a contract rather than
+a heuristic is the byproduct: the same Lanczos run resolves the leftmost
+\emph{surviving} pencil value $\floor \in [-\gamma a_0, 0]$, and then,
+exactly,
+\begin{equation}
+  \Bt_{\mathrm{pd}} + a\,\Hr \;\succ\; 0
+  \quad\Longleftrightarrow\quad
+  a > -\floor,
+  \qquad\text{and}\qquad
+  \Bt_{\mathrm{pd}} + a_0 \Hr \;\succeq\; (1-\gamma)\, a_0\, \Hr.
+  \label{eq:flip-contract}
+\end{equation}
+Certification requires the leftmost surviving Ritz pair to
+\emph{converge}: Ritz values interlace the true spectrum from above, so
+an unconverged leftmost estimate proves nothing. On budget exhaustion
+\texttt{make\_pd} reports uncertified with progress kept --- corrected
+modes stay in the block --- and a later call continues. Flip versus relu
+differed by at most one PCG iteration at every depth measured on the PIG
+problem; flip is the default.
+
+\section{The deviation: one coefficient matrix cannot serve both
+operators}
+\label{sec:deviation}
+
+The original plan gave the block a single coefficient matrix $C$, used
+both in the correction $E$ of \eqref{eq:P} and in the surrogate $S$ of
+\eqref{eq:M}. Working Section~\ref{sec:lanczos} exposed the flaw: the two
+deployment objects need \emph{different numbers on the same directions}.
+Two concrete contradictions, each a one-line calculation.
+
+\medskip
+\noindent
+\textbf{Contradiction 1: caching a mode must not change the operator.}
+For $M(a)$ to precondition well, the block must hold the operator's
+rightmost pencil modes: merge a converged eigenpair $(\lambda, v)$ of
+$\Bt$ with coefficient $\lambda$, so that $S$ presents it. If that same
+coefficient also enters $E$, the represented operator becomes
+$\Bt + \lambda\, \Hr v v^T \Hr$, and on the mode itself
+\begin{equation}
+  \bigl(\Bt + \lambda \Hr v v^T \Hr\bigr) v
+  \;=\; \lambda \Hr v + \lambda \Hr v
+  \;=\; 2\lambda\, \Hr v :
+  \label{eq:double-count}
+\end{equation}
+caching has \emph{doubled} the mode. The cache needs coefficient
+$\lambda$ in $S$ and $0$ in $E$.
+
+\medskip
+\noindent
+\textbf{Contradiction 2: a flipped mode has two different values.} The
+flip \eqref{eq:flip} needs coefficient $-c\lambda$ in $E$ --- that is the
+surgery that moves the operator's eigenvalue to $(1-c)\lambda$. But the
+surrogate must present the \emph{corrected} operator's content on that
+direction, which by \eqref{eq:flip-move} is $(1-c)\lambda$. With one
+matrix, either the operator is wrong (using $(1-c)\lambda$ under-corrects
+$\Bt$) or the preconditioner is wrong ($M(a)$ presents the mode at
+$-c\lambda = -2\lambda$ instead of $-\lambda$; off by exactly
+$\lambda$).
+
+\medskip
+\noindent
+The resolution is one basis, two coefficient matrices:
+\begin{equation}
+  E \;=\; (\Hr V)\, \Ccorr\, (\Hr V)^T,
+  \qquad
+  S \;=\; (\Hr V)\, \Csurr\, (\Hr V)^T,
+\end{equation}
+with $\Ccorr$ the correction added to $\Bt$ and $\Csurr$ the \emph{known
+spectral content of $\Bt + E$} --- what $M(a)$ deploys. Sharing the basis
+is right because the two matrices overlap heavily on the same directions
+(a flipped mode carries both numbers), and because the merge
+\eqref{eq:merge}--\eqref{eq:merge-coeffs} extends both matrices through
+the same $M$. Each merge states both increments explicitly:
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+contribution & $\Delta \Ccorr$ & $\Delta \Csurr$ \\
+\midrule
+cache a pencil mode $(\lambda, v)$ of $\Bt + E$ & $0$ & $\lambda$ \\
+plain correction $\Delta$ (e.g.\ deflation) & $\Delta$ & $\Delta$ \\
+flip/relu of a mode at $\lambda$ & $-c\lambda$ & $(1-c)\lambda$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+The consistency rule behind the table: whatever a merge adds to the
+operator is also known content of $\Bt + E$ and belongs in $\Csurr$;
+\emph{plus} whatever content of $\Bt$ itself the caller has learned. A
+flip pass knows the mode's $\Bt$-eigenvalue $\lambda$ from the same
+Lanczos run, so its surrogate increment is
+$\lambda + (-c\lambda) = (1-c)\lambda$ --- the table's last row is the
+first two rows composed. A deflation pass knows only its correction
+$\Delta$, so on its directions $\Csurr$ holds $\Delta$ but not the
+(unresolved) content of $\Bt$ there; that is an acknowledged
+approximation, and a later \texttt{extend\_modes} on the corrected
+operator refines the surrogate exactly where it is weakest. The
+invariants are pinned by tests: a cache-only merge leaves $P(a)$
+value-identical while moving the floor \eqref{eq:glr-floor}, and after a
+flip the surrogate presents the corrected values $-\lambda$, not
+$-2\lambda$.
+
+With the split, the certificates separate cleanly:
+$\operatorname{eig}(\Ccorr)$ feeds the positive-definiteness reasoning
+for $P(a)$ (the flip contract \eqref{eq:flip-contract} and, later, the
+warning-zone checks for $a < a_0$), while $\operatorname{eig}(\Csurr)$
+gives the exact floor \eqref{eq:glr-floor} for $M(a)$.
+
+\section{Deflation (planned: slices 8--9)}
+\label{sec:deflation}
+
+For completeness, the remaining operations and their formulas; the
+observed numbers are from the maintainer's PIG study.
+
+\medskip
+\noindent
+\emph{Free deflation.}\ The archive residuals $R = Y - \Bt Z$ are exact
+samples of the error action $(\Hd - \Bt) Z$, already paid for. In the
+build metric $M_0 = \Bt_{\mathrm{pd}} + a_0 \Hr$, compute $M_0^{-1} R$ by
+the solve path, $M_0$-orthonormalize it to $\widetilde{Q}$ via the
+Cholesky factor of the Gram matrix $R^T M_0^{-1} R$ (square-root-free),
+and form the small matrix
+\begin{equation}
+  T \;=\; \operatorname{sym}\!\Bigl(
+      (\widetilde{Q}^T R)\,
+      \bigl(\widetilde{Q}^T M_0 Z\bigr)^{+}_{\mathrm{rcond}}
+      \Bigr),
+  \label{eq:free-deflation}
+\end{equation}
+whose eigenpairs estimate the whitened error
+$M_0^{-1/2}(\Hd - \Bt_{\mathrm{pd}})M_0^{-1/2}$ on the residual subspace.
+The truncated pseudoinverse is essential: with the raw pseudoinverse the
+estimated values reached $27.7$ against a certified extreme of $3.10$ and
+the corrected operator lost definiteness. Kept modes are clamped below at
+the clamp floor (default $-0.95$) and merged as a plain correction. The
+residual \emph{subspace} is accurate (principal cosines $0.99$ against
+certified directions); the \emph{values} are the limiting factor ---
+iteration counts improved $34 \to 22$ at the best setting and no setting
+helped at $k \le 20$.
+
+\medskip
+\noindent
+\emph{Value pass.}\ If the consumer will spend $m$ fresh applications of
+$\Hd$, spend them on values, not directions: take the top-$m$ left
+singular basis $Q$ of the whitened residuals (Gram-based), compute
+$\Hd Q$, and form the exact Rayleigh matrix of the whitened error on that
+basis. The new pairs $(Q, \Hd Q)$ enter the archive as secant
+information, reusable by any later rebuild. On PIG this was decisive:
+$k{=}100$ fit plus a $50$-apply value pass gave 5/12/18/24 iterations (to
+$10^{-2}/10^{-4}/10^{-6}/10^{-8}$) against the true operator, versus
+12/26/36/45 undeflated, with zero clamp events.
+
+\section{Status}
+
+Implemented and tested through slice 5: the boundary
+(\texttt{symmetric\_op.hpp}, \texttt{hr\_oracle.hpp}), the two-matrix
+mode block \eqref{eq:blockform}/\eqref{eq:merge-coeffs}
+(\texttt{mode\_block.hpp}), the struct with the Woodbury deployment
+\eqref{eq:woodbury}/\eqref{eq:glr-floor}
+(\texttt{shifted\_operator.hpp}), and the spectral machine with
+\texttt{extend\_modes} and \texttt{make\_pd}
+\eqref{eq:flip}--\eqref{eq:flip-contract}
+(\texttt{pencil\_lanczos.hpp}). Remaining: zone semantics for $a < a_0$,
+the two-level solve, deflation \eqref{eq:free-deflation}, the value pass,
+\texttt{rebuild\_at}, the capability-gated Cholesky backend, and the
+maintainer-side validation runs. The plan of record is
+\texttt{dev/pencil-corrections-plan.md}; decisions are logged in
+\texttt{dev/design-notes.md}.
+
+\end{document}
