@@ -492,7 +492,9 @@ not code.
 9. `value_pass` (§4.4) + archive growth. **Landed 2026-08-01** (V1 and
    V2; a test pins V2 reaching past the residual span where V1
    saturates).
-10. `rebuild_at` (§5) + persistence round-trip.
+10. `rebuild_at` (§5) + persistence round-trip. **Landed 2026-08-01**
+    (`corrections/rebuild.hpp` + `fold_value_pairs`; persistence is
+    numpy arrays end to end, no bespoke format).
 11. `corrections/cholesky_backend.hpp` (§8, capability-gated) + three-way
     backend agreement test.
 12. Maintainer-side validation runs (§9) and recording of results here.

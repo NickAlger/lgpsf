@@ -137,6 +137,14 @@ to [Semantic Versioning](https://semver.org/).
   basis dimension). Estimates are clamped at `clamp_floor`, which is what
   keeps the $a \ge a_0$ zone guaranteed after deflation; value-pass pairs
   are appended to the archive as secant information for later rebuilds.
+- **`lgpsf.corrections.rebuild_at`** and **`fold_value_pairs`**:
+  re-anchor the contracts at a new build shift with no new $H_d$ access —
+  the newly opened flip window is discovered incrementally, deflation
+  re-derives from the archived residuals in the new metric, and archived
+  value-pass pairs fold back in exactly by linearity (zero new applies;
+  this is why the archive keeps them). Persistence is plain numpy arrays
+  end to end; a binding test round-trips the whole struct and rebuilds
+  the loaded copy.
 - **`Symmetrize::Weighted`**: a scale-aware symmetrization for
   `assemble_sparse` — a per-entry convex average with inverse-row-energy
   weights, so where two row fits disagree about a shared entry the weaker

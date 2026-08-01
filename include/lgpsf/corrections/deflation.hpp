@@ -381,4 +381,64 @@ inline DeflateReport value_pass( ShiftedOperator& A, const SymmetricOp& Hd,
     return report;
 }
 
+/// Fold the ARCHIVED value-pass pairs (Q, H_d Q) into the block at the
+/// current shift and corrections — zero new H_d applies. The archived
+/// basis was M0-orthonormal in the metric it was bought in; here it is
+/// re-orthonormalized in the CURRENT metric by linear combination, and
+/// H_d of the combined columns follows exactly from the stored images
+/// (linearity — this is what makes the pairs secant information rather
+/// than a stale cache). Used by `rebuild_at`; callable on its own.
+inline DeflateReport fold_value_pairs( ShiftedOperator& A,
+                                       DeflateOptions opts = {} )
+{
+    if ( !A.lambda_floor.has_value() )
+    {
+        throw std::invalid_argument(
+            "lgpsf::corrections::fold_value_pairs: the struct is "
+            "uncertified -- run make_pd first");
+    }
+    if ( A.archive.Q_vp.size() == 0 )
+    {
+        throw std::invalid_argument(
+            "lgpsf::corrections::fold_value_pairs: no archived value-pass "
+            "pairs");
+    }
+    DeflateReport report;
+    report.residuals = static_cast<int>(A.archive.Q_vp.cols());
+
+    const Eigen::MatrixXd& Q = A.archive.Q_vp;
+    const Eigen::MatrixXd& HdQ = A.archive.HdQ_vp;
+    Eigen::MatrixXd G = Q.transpose() * apply(A, Q, A.a0);
+    G = 0.5 * (G + G.transpose()).eval();
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eigen(G);
+    const double scale = eigen.eigenvalues().cwiseAbs().maxCoeff();
+    std::vector<Eigen::Index> kept;
+    for ( Eigen::Index i = eigen.eigenvalues().size() - 1; i >= 0; --i )
+    {
+        if ( eigen.eigenvalues()(i) > opts.gram_drop_tol * scale )
+        {
+            kept.push_back(i);
+        }
+    }
+    if ( kept.empty() )
+    {
+        return report;
+    }
+    Eigen::MatrixXd S(Q.cols(), static_cast<Eigen::Index>(kept.size()));
+    for ( std::size_t j = 0; j < kept.size(); ++j )
+    {
+        S.col(static_cast<Eigen::Index>(j)) =
+            eigen.eigenvectors().col(kept[j])
+            / std::sqrt(eigen.eigenvalues()(kept[j]));
+    }
+    const Eigen::MatrixXd Qb = Q * S;      // M0-orthonormal, current metric
+    const Eigen::MatrixXd HdQb = HdQ * S;  // exact, by linearity
+    report.basis = static_cast<int>(Qb.cols());
+    report.applies = 0;  // the whole point
+
+    const Eigen::MatrixXd T = Qb.transpose() * (HdQb - apply(A, Qb, 0.0));
+    detail::keep_clamp_merge(A, Qb, T, Provenance::ValuePass, opts, report);
+    return report;
+}
+
 } // end namespace lgpsf::corrections

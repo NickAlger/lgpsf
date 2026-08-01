@@ -35,6 +35,7 @@
 #include "lgpsf/corrections/mode_block.hpp"
 #include "lgpsf/corrections/deflation.hpp"
 #include "lgpsf/corrections/pencil_lanczos.hpp"
+#include "lgpsf/corrections/rebuild.hpp"
 #include "lgpsf/corrections/shifted_operator.hpp"
 #include "lgpsf/corrections/solve.hpp"
 #include "lgpsf/corrections/symmetric_op.hpp"
@@ -1339,6 +1340,8 @@ PYBIND11_MODULE(lgpsf, m)
                        &corrections::ShiftedOperator::clamp_floor)
         .def_readwrite("lambda_floor",
                        &corrections::ShiftedOperator::lambda_floor)
+        .def_readwrite("C_corr_certified",
+                       &corrections::ShiftedOperator::C_corr_certified)
         .def_property_readonly("dim", &corrections::ShiftedOperator::dim);
 
     corr.def("make_shifted_operator",
@@ -1609,6 +1612,56 @@ PYBIND11_MODULE(lgpsf, m)
              "new pairs (Q, Hd Q) are appended to the archive as secant "
              "information for any later rebuild. Requires a certified "
              "struct.");
+
+    py::class_<corrections::RebuildReport>(
+        corr, "RebuildReport", "What rebuild_at did.")
+        .def_readonly("flip", &corrections::RebuildReport::flip)
+        .def_readonly("redeflated", &corrections::RebuildReport::redeflated)
+        .def_readonly("deflate", &corrections::RebuildReport::deflate)
+        .def_readonly("refolded", &corrections::RebuildReport::refolded)
+        .def_readonly("value_fold", &corrections::RebuildReport::value_fold);
+    corr.def("fold_value_pairs",
+             []( corrections::ShiftedOperator& A, double rcond, int rank,
+                 double solve_rtol, double oracle_tol, int max_iters ) {
+                 corrections::DeflateOptions opts;
+                 opts.rcond = rcond;
+                 opts.rank = rank;
+                 opts.solve_rtol = solve_rtol;
+                 opts.oracle_tol = oracle_tol;
+                 opts.max_iters = max_iters;
+                 return corrections::fold_value_pairs(A, opts);
+             },
+             "A"_a, "rcond"_a = 3e-2, "rank"_a = -1, "solve_rtol"_a = 1e-8,
+             "oracle_tol"_a = 1e-10, "max_iters"_a = 500,
+             "Fold the ARCHIVED value-pass pairs into the block at the "
+             "current shift: re-orthonormalized in the current metric by "
+             "linear combination, Hd of the combinations exact from the "
+             "stored images. Zero new applies.");
+    corr.def("rebuild_at",
+             []( corrections::ShiftedOperator& A, double a1,
+                 corrections::FlipMode flip_mode, int max_iters,
+                 double oracle_tol, double ritz_tol, unsigned seed,
+                 double rcond, int rank, double solve_rtol ) {
+                 corrections::RebuildOptions opts;
+                 opts.flip_mode = flip_mode;
+                 opts.lanczos.max_iters = max_iters;
+                 opts.lanczos.oracle_tol = oracle_tol;
+                 opts.lanczos.ritz_tol = ritz_tol;
+                 opts.lanczos.seed = seed;
+                 opts.deflate.rcond = rcond;
+                 opts.deflate.rank = rank;
+                 opts.deflate.solve_rtol = solve_rtol;
+                 opts.deflate.oracle_tol = oracle_tol;
+                 return corrections::rebuild_at(A, a1, opts);
+             },
+             "A"_a, "a1"_a, "flip_mode"_a = corrections::FlipMode::Flip,
+             "max_iters"_a = 150, "oracle_tol"_a = 1e-10,
+             "ritz_tol"_a = 1e-9, "seed"_a = 0, "rcond"_a = 3e-2,
+             "rank"_a = -1, "solve_rtol"_a = 1e-8,
+             "Re-anchor the contracts at a new build shift with NO new Hd "
+             "access: incremental re-certification, re-deflation from the "
+             "archived residuals in the new metric, and an exact fold of "
+             "archived value pairs. Resumable if the flip budget runs out.");
 
     // ---- layout probe -----------------------------------------------------
     // Not part of the API; a permanent regression hook for the one bug this

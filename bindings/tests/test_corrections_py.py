@@ -398,3 +398,74 @@ def test_deflation_closes_the_error_the_fit_left_behind():
     assert B.archive.Q_vp.shape == (n, 3)
     # the remaining error is tiny compared with the plant it removed
     assert np.linalg.norm(Hd_B - corrected(B)) < 1e-5 * np.linalg.norm(delta)
+
+
+def test_the_whole_struct_round_trips_through_numpy_and_rebuilds(tmp_path):
+    # Persistence, the library way: everything but the operator handles is
+    # plain arrays. Save, load into a fresh struct with re-supplied
+    # handles, verify identical behavior, then rebuild_at on the loaded
+    # struct -- the archive is what makes that possible.
+    scipy = pytest.importorskip("scipy")
+    import scipy.sparse
+
+    op = synthetic_operator()
+    fit = fit_synthetic(op)
+    n = op["count"]
+    rng = np.random.default_rng(8)
+    Bs = scipy.sparse.csr_matrix(
+        lgpsf.assemble_sparse(fit.model, np.inf, lgpsf.Symmetrize.Weighted))
+    Hr = tridiag_spd(n)
+
+    A = corr.make_shifted_operator(corr.sparse_op(Bs), corr.ProbeArchive(),
+                                   corr.sparse_hr_oracle(Hr), 1e-2)
+    assert corr.make_pd(A, max_iters=4 * n).certified
+    Hd = Bs.toarray() + A.block.HrV @ A.block.C_corr @ A.block.HrV.T
+    U = rng.normal(size=(n, 2))
+    U /= np.sqrt(np.sum(U * (Hr.toarray() @ U), axis=0))
+    Hd = Hd + (Hr.toarray() @ U) @ np.diag([0.3, 0.15]) @ (Hr.toarray() @ U).T
+    archive = corr.ProbeArchive()
+    archive.Z = rng.normal(size=(n, 8))
+    archive.Y = Hd @ archive.Z
+    A.archive = archive
+    corr.value_pass(A, corr.dense_op(Hd), 2, corr.ValuePassMode.V1)
+
+    path = tmp_path / "struct.npz"
+    np.savez(path, V=A.block.V, HrV=A.block.HrV, C_corr=A.block.C_corr,
+             C_surr=A.block.C_surr,
+             tags=np.array([int(t) for t in A.block.tags]),
+             Z=A.archive.Z, Y=A.archive.Y, Q_vp=A.archive.Q_vp,
+             HdQ_vp=A.archive.HdQ_vp, a0=A.a0, gamma=A.gamma,
+             clamp_floor=A.clamp_floor, lambda_floor=A.lambda_floor,
+             C_corr_certified=A.C_corr_certified)
+
+    data = np.load(path)
+    loaded_archive = corr.ProbeArchive()
+    loaded_archive.Z = data["Z"]
+    loaded_archive.Y = data["Y"]
+    B = corr.make_shifted_operator(corr.sparse_op(Bs), loaded_archive,
+                                   corr.sparse_hr_oracle(Hr),
+                                   float(data["a0"]))
+    B.archive.Q_vp = data["Q_vp"]
+    B.archive.HdQ_vp = data["HdQ_vp"]
+    B.block.V = data["V"]
+    B.block.HrV = data["HrV"]
+    B.block.C_corr = data["C_corr"]
+    B.block.C_surr = data["C_surr"]
+    B.block.tags = [corr.Provenance(int(t)) for t in data["tags"]]
+    B.gamma = float(data["gamma"])
+    B.clamp_floor = float(data["clamp_floor"])
+    B.lambda_floor = float(data["lambda_floor"])
+    B.C_corr_certified = data["C_corr_certified"]
+    assert corr.validate(B) == []
+
+    # identical behavior, and the loaded contracts are live
+    X = rng.normal(size=(n, 2))
+    np.testing.assert_array_equal(corr.apply(B, X, 0.3), corr.apply(A, X, 0.3))
+    assert corr.classify_shift(B, 1e-2).zone == corr.Zone.Guaranteed
+
+    # and the loaded struct can re-anchor, using only the archive
+    report = corr.rebuild_at(B, 1e-3, max_iters=4 * n)
+    assert report.flip.certified
+    assert report.refolded and report.value_fold.applies == 0
+    assert B.a0 == 1e-3
+    assert corr.classify_shift(B, 1e-3).zone == corr.Zone.Guaranteed
