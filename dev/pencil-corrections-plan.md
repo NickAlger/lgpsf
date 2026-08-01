@@ -41,11 +41,12 @@ operation below touches only a physics-bounded, mesh-independent set.
 of $\tilde B + aH_r$ is only scalable in 2-D, and the fit's interesting
 regime — informative smooth directions, hence large ellipsoids, hence
 wide stencils — is sparse factorization's worst case. The foundation is
-four primitives: apply $\tilde B$ (sparse, library-owned), apply $H_r$
-(cheap), **solve $H_r$ to a tolerance** (the consumer's oracle — in
-practice Krylov preconditioned by multigrid), and rank-sized dense
-algebra. $\rho \times \rho$ dense Cholesky of capacitance matrices is
-fine; $N$-sized sparse Cholesky is an optional backend (§8).
+four primitives: apply $\tilde B$ (a caller-supplied symmetric operator —
+P4, §7), apply $H_r$ (cheap), **solve $H_r$ to a tolerance** (the
+consumer's oracle — in practice Krylov preconditioned by multigrid), and
+rank-sized dense algebra. $\rho \times \rho$ dense Cholesky of
+capacitance matrices is fine; $N$-sized sparse Cholesky is an optional
+backend (§8).
 
 **P3 — one durable struct, functions over it.** The durable data is: a
 reference to the sparse fit, the probe archive, ONE $H_r$-orthonormal
@@ -55,6 +56,30 @@ the fit's own pencil modes, flip modes) from *information* (deflation /
 value-pass modes, whose only ground truth is the probe archive).
 Correctness never depends on cache freshness; the block is extendable and
 rebuildable on demand.
+
+**P4 — the layer is operator-blind.** Decided 2026-07-31, after auditing
+every operation below: nothing in the required path reads a matrix entry.
+Pencil Lanczos, the flip, both deflations, the zone checks, and both
+solve modes need only the four primitives of P2, so the layer takes
+$\tilde B$ as an opaque *symmetric operator* — dimension plus block
+matvec — and never sees the sparse format. Four reasons: the audit says
+nothing is lost; the same layer then serves other approximation formats
+(a block-low-rank format, a dense test operator, a shell around someone
+else's code); an entry-free layer ports to distributed memory by swapping
+vector types, because its $N$-sized objects are tall-skinny blocks with
+rank-sized Gram reductions — exactly the shapes that distribute; and the
+restriction enforces operator-level thinking, with no entry tricks that
+cannot scale. Two boundary consequences. First, **symmetrization stays
+format-side**: the weighted formula of §2 is per-entry and cannot be
+composed from matvecs, so each format owns producing its symmetric
+operator (lgpsf's is `assemble_sparse` with `Symmetrize::Weighted`).
+Second, **no transpose matvec** crosses the boundary: everything here is
+symmetric, and the layer *verifies* that with a seeded stochastic check
+($x^T(By)$ vs $y^T(Bx)$, matvecs only) at construction — catching an
+as-fitted operator handed in by mistake, which the assembly layer itself
+cannot do. A cost-model corollary for the docs: GLR-mode deployment (§6)
+performs zero $\tilde B$ applies, so an expensive matvec only pays during
+builds and in two-level mode.
 
 ---
 
@@ -88,11 +113,12 @@ first implementation slice.
 
 ## 3. The durable struct
 
-Working name `ShiftedFit` (final name at implementation time). Fields:
+`ShiftedOperator` (renamed from the earlier working name `ShiftedFit` —
+it no longer holds a fit). Fields:
 
 | field | contents | durability |
 |---|---|---|
-| `fit` | reference to the assembled, symmetrized sparse $\tilde B$ | irreplaceable (with archive) |
+| `op` | owned type-erased handle to the symmetric operator $\tilde B$ (§7) | never serialized — the caller re-supplies it on load; for lgpsf, reassembly from the saved fit is bit-identical |
 | `archive` | probe pairs $(Z, Y)$, $Y = H_d Z$; QC pairs; any value-pass pairs $(Q, H_d Q)$ | irreplaceable — only trace of $H_d$ |
 | `block` | $H_r$-orthonormal vectors $V$ ($V^T H_r V = I$), symmetric coefficient matrix $C$, per-mode provenance tag (`pencil-cache` / `flip` / `deflation` / `value-pass`) | rebuildable cache + derived information |
 | scalars | $a_0$ (build shift), $\gamma$ (flip safety factor), $\lambda_{\mathrm{floor}}$ (leftmost surviving pencil eigenvalue), clamp floor | contract parameters |
@@ -282,36 +308,72 @@ obtainable from sparse applies and oracle solves alone — is the
 
 ---
 
-## 7. API boundary (C++, header-only, mirroring repo conventions)
+## 7. The operator boundary and API (C++17, header-only)
 
-The consumer supplies: probe pairs (as today), an **$H_r$ oracle**, the
-shift $a_0$, optionally `apply_Hd` (unlocks `value_pass`), optionally a
-sparse $H_r$ matrix (unlocks the Cholesky backend). Sketch:
+The layer lives in its own subdirectory and namespace, a **sibling** of
+the fit stack rather than a downstream consumer of it:
+
+```
+include/lgpsf/corrections/
+  symmetric_op.hpp      SymmetricOp + adapters + symmetry check   (bottom, peer)
+  hr_oracle.hpp         HrOracle + sparse reference adapter       (bottom, peer)
+  mode_block.hpp        needs hr_oracle
+  pencil_lanczos.hpp    needs both
+  shifted_operator.hpp  the struct of §3 + GLR-mode apply/solve
+  deflation.hpp         deflate_free + value_pass
+  cholesky_backend.hpp  optional; the only file allowed to see entries
+```
+
+C++ namespace `lgpsf::corrections`; Python `lgpsf.corrections`
+submodule. `corrections/*` includes no fit header and no fit header
+includes `corrections/*` — enforced mechanically in
+`tools/check_dependencies.py`. lgpsf's native path into the layer is one
+adapter call: `assemble_sparse(fit, tau, Symmetrize::Weighted)` wrapped
+by `sparse_op`.
+
+The two boundary types are small **type-erased classes**, not duck-typed
+templates: dispatch cost is nil at block-matvec granularity, the struct
+needs an owned storable handle, the layer compiles once rather than per
+operator type, and the Python adapter becomes trivial. Blocks are
+**columns**, $(N, m)$ — the corrections layer speaks linear algebra,
+unlike the fit layer's probes-as-rows convention; the adapters are where
+the transposition happens, documented there.
 
 ```cpp
-// hr_oracle.hpp — concept + adapters
-struct HrOracle {                    // concept, not base class
-  void apply(const VectorXd& x, VectorXd& y) const;      // y = Hr x
-  void solve(const VectorXd& b, VectorXd& x, double tol) const;
+class SymmetricOp {          // type-erased: dimension + block matvec
+  Eigen::Index dim() const;
+  Eigen::MatrixXd apply(const Eigen::Ref<const Eigen::MatrixXd>& X) const;
 };
-// adapters: SparseHrOracle (Eigen SimplicialLLT, reference/testing);
-// bindings/: PyHrOracle wrapping Python callables (consumer's MG solver).
+SymmetricOp sparse_op(Eigen::SparseMatrix<double> A);   // owns its copy
+SymmetricOp dense_op(Eigen::MatrixXd A);                // testing
+double symmetry_defect(const SymmetricOp& B, int pairs, unsigned seed);
 
-// shifted_fit.hpp — the struct of §3
-ShiftedFit make_shifted_fit(const SparseMatrix& Bsym, ProbeArchive arch,
-                            const HrOracle& hr, double a0, Options opt);
-void extend_modes(ShiftedFit& A, int n_right, double lambda_min_target);
-FlipReport make_pd(ShiftedFit& A, double gamma /*=0.5*/, FlipMode mode);
-DeflateReport deflate_free(ShiftedFit& A, double rcond, int rank,
+class HrOracle {             // type-erased: apply + tolerance solve
+  Eigen::Index dim() const;
+  Eigen::MatrixXd apply(const Eigen::Ref<const Eigen::MatrixXd>& X) const;
+  Eigen::MatrixXd solve(const Eigen::Ref<const Eigen::MatrixXd>& B,
+                        double tol) const;
+};
+HrOracle sparse_hr_oracle(Eigen::SparseMatrix<double> Hr);
+// SimplicialLLT inside: the reference/small-N adapter. The production
+// oracle is the consumer's multigrid-preconditioned Krylov solver,
+// wrapped from C++ or Python.
+
+ShiftedOperator make_shifted_operator(SymmetricOp B, ProbeArchive arch,
+                                      HrOracle hr, double a0, Options opt);
+// verifies symmetry of B at construction (seeded stochastic check)
+void extend_modes(ShiftedOperator& A, int n_right, double lambda_min_target);
+FlipReport make_pd(ShiftedOperator& A, double gamma /*=0.5*/, FlipMode mode);
+DeflateReport deflate_free(ShiftedOperator& A, double rcond, int rank,
                            double clamp /*=-0.95*/);
-DeflateReport value_pass(ShiftedFit& A, ApplyFn apply_Hd, int m,
+DeflateReport value_pass(ShiftedOperator& A, const SymmetricOp& Hd, int m,
                          double clamp, ValuePassMode mode /*=V1*/);
-void solve(const ShiftedFit& A, const VectorXd& b, VectorXd& x,
+void solve(const ShiftedOperator& A, const VectorXd& b, VectorXd& x,
            double a, SolveOpts opt);   // zones of §5; GLR or two-level
-void apply(const ShiftedFit& A, const VectorXd& x, VectorXd& y, double a);
-void rebuild_at(ShiftedFit& A, double a1);
-// serialization: save/load of {archive, block, scalars} (fit saved by
-// the existing path).
+void apply(const ShiftedOperator& A, const VectorXd& x, VectorXd& y, double a);
+void rebuild_at(ShiftedOperator& A, double a1);
+// serialization: save/load of {archive, block, scalars}; the operator is
+// never serialized -- the caller re-supplies it on load.
 ```
 
 Reports carry what the research program taught us to watch: modes touched, clamp
@@ -321,12 +383,15 @@ that PIG-scale behavior reproduces (§9).
 
 ---
 
-## 8. Cholesky backend (optional)
+## 8. Cholesky backend (optional, capability-gated)
 
-For small-$N$ / 2-D problems where sparse factorization of $\tilde
-B_{\mathrm{pd}} + aH_r$ is viable (requires the sparse $H_r$): factor per
-$a$ with a keyed cache, use it in place of the two-level inner solve, and
-attempt-Cholesky becomes an alternative exact PD certificate. This is
+The one entry-level component, and it activates only when the caller
+*additionally* supplies sparse forms of $\tilde B$ and $H_r$ — the core
+boundary of §7 never mentions entries. For small-$N$ / 2-D problems where
+sparse factorization of $\tilde B + aH_r$ is viable: factor per $a$ with
+a keyed cache (the block correction wraps the factorization by Woodbury),
+use it in place of the two-level inner solve, and attempt-Cholesky
+becomes an alternative exact PD certificate. This is
 also the *validation* backend — the maintainer's offline PIG validation
 is exactly this path, so backend-vs-oracle agreement is a built-in
 correctness test, not just a convenience.
@@ -337,7 +402,11 @@ correctness test, not just a convenience.
 
 In-repo (runs in CI, no external data): the frog-kernel synthetic
 operator is the testbed, as elsewhere in the repo. Unit properties:
-wsym exactness/symmetry and weight behavior; $H_r$-orthonormality of the
+wsym exactness/symmetry and weight behavior; **adapter equivalence** (the
+whole layer run on the same matrix wrapped by `dense_op` and `sparse_op`
+gives identical results — a mechanical format-independence check);
+`symmetry_defect` flags an as-fitted operator and passes a
+weighted-symmetrized one; $H_r$-orthonormality of the
 block under merges; Woodbury identity $M_k(a) M_k(a)^{-1} = I$ to solver
 tolerance across a sweep of $a$ with zero refactorization; flip contract
 ($\lambda_{\mathrm{floor}}$ certificate honored at the PD boundary);
@@ -384,21 +453,30 @@ not code.
 
 1. `Symmetrize::Weighted` in assembly (§2) + tests + docs. Independent.
    **Landed 2026-07-31** (see `dev/design-notes.md` for the decisions).
-2. `hr_oracle.hpp`: concept, sparse reference adapter, pybind adapter.
-3. `mode_block.hpp`: $H_r$-orthonormal block, Gram merge, congruence,
-   provenance, serialization.
-4. `shifted_fit.hpp`: struct + GLR-mode apply/solve + analytic PD
-   certificates + per-$a$ scalar arithmetic (frog-kernel tests).
-5. `pencil_lanczos.hpp`: generalized Lanczos both ends; `extend_modes`;
-   `make_pd` with $\gamma$, $\lambda_{\mathrm{floor}}$, `FlipReport`.
+2. `corrections/symmetric_op.hpp` + `corrections/hr_oracle.hpp`: the two
+   type-erased boundary classes, `sparse_op` / `dense_op` /
+   `sparse_hr_oracle` adapters, `symmetry_defect`; the
+   `lgpsf.corrections` binding submodule; the include-direction rule in
+   `tools/check_dependencies.py`.
+3. `corrections/mode_block.hpp`: $H_r$-orthonormal block, Gram merge,
+   congruence, provenance, serialization.
+4. `corrections/shifted_operator.hpp`: struct + GLR-mode apply/solve +
+   analytic PD certificates + per-$a$ scalar arithmetic (frog-kernel
+   tests).
+5. `corrections/pencil_lanczos.hpp`: generalized Lanczos both ends;
+   `extend_modes`; `make_pd` with $\gamma$, $\lambda_{\mathrm{floor}}$,
+   `FlipReport`.
 6. Zone semantics + warnings + `solve(…, a)` dispatch (§5).
 7. Two-level solve mode (§6) with the flexible-outer contract documented.
-8. `deflate_free` (§4.3).
+8. `deflate_free` (§4.3) in `corrections/deflation.hpp`.
 9. `value_pass` (§4.4) + archive growth.
 10. `rebuild_at` (§5) + persistence round-trip.
-11. Cholesky backend (§8) + three-way backend agreement test.
+11. `corrections/cholesky_backend.hpp` (§8, capability-gated) + three-way
+    backend agreement test.
 12. Maintainer-side validation runs (§9) and recording of results here.
 
 Each slice lands with tests and doc updates; bindings track the C++ per
 repo convention. Dependency direction (`tools/check_dependencies.py`)
-must keep the corrections headers strictly downstream of the fit headers.
+keeps the corrections headers a **sibling** of the fit stack:
+`corrections/*` includes no fit header and no fit header includes
+`corrections/*`.
