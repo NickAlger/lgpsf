@@ -74,8 +74,8 @@ to [Semantic Versioning](https://semver.org/).
   row's value wins instead of the mean. Exactly symmetric by construction,
   and the recommendation over `Average` when the underlying operator is
   symmetric; on rows of comparable scale the two nearly coincide. Validated
-  on a field-scale glaciology Hessian, where plain averaging let strong
-  rows' tails contaminate weak rows' signal. The rectangular-operator
+  on the Pine Island Glacier ice-sheet Hessian, where plain averaging let
+  strong rows' tails contaminate weak rows' signal. The rectangular-operator
   refusal message now says "symmetrizing" rather than "averaging", since it
   covers both policies.
 - `experiments/lm_tolerance.py` and `experiments/anisotropy_hardening.py`, with

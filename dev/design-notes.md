@@ -1667,11 +1667,10 @@ weights, `w_i^2 = 1 / (||A_i,:||^2 + (0.01 * median ||A_r,:||)^2)`.
 **Why not plain averaging.** Each row is fitted independently, so where two
 rows' supports overlap they hold two independent opinions of one entry.
 Averaging weights those opinions equally, which is right only when the rows
-have comparable scale: on the PIG Hessian, strong rows' truncation tails
-overwrote weak rows' entire signal (the "bay" contamination), and the weighted
-form fixed it — it dominated both plain averaging and rows-as-is on every
-operator metric measured. Derivation and field-scale evidence: the
-symmetrization-weighting note in the glaciology research repo. On the frog
+have comparable scale: on the Pine Island Glacier Hessian, strong rows'
+truncation tails overwrote weak rows' entire signal, and the weighted form
+fixed it — it dominated both plain averaging and rows-as-is on every
+operator metric measured there. On the frog
 kernel, whose row scales are comparable, `Weighted` and `Average` differ by ~2%
 — consistent with the claim that the weights only matter when scales differ.
 

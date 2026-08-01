@@ -802,8 +802,8 @@ def test_weighted_symmetrization_matches_the_reference_formula():
     op = synthetic_operator()
     fit = fit_synthetic(op)
 
-    # the reference implementation the method was validated with (the
-    # symmetrization-weighting note in the glaciology research repo)
+    # the scipy reference implementation the method was validated with
+    # on the Pine Island Glacier ice-sheet Hessian
     A = scipy_sparse.csr_matrix(lgpsf.assemble_sparse(fit.model, np.inf))
     rnA = np.sqrt(np.asarray(A.multiply(A).sum(axis=1)).ravel())
     w2 = 1.0 / (rnA ** 2 + (1e-2 * np.median(rnA[rnA > 0])) ** 2)

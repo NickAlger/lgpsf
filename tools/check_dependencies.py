@@ -15,7 +15,11 @@ the record.
 
 Naming a private problem in prose is FINE and deliberate -- `docs/validation.md`
 explains what PIG is so those citations resolve. What is banned is a path: an
-import, an include, or a filename that only exists on one machine.
+import, an include, or a filename that only exists on one machine. And even in
+prose, keep the reference GENERAL: cite the result ("validated on the Pine
+Island Glacier Hessian"), never a specific private artifact -- a note, a
+table, a driver script -- because a reference the reader cannot open is a dead
+end however it is phrased, and this check cannot catch the described kind.
 
 Run:  python tools/check_dependencies.py
 """
@@ -44,8 +48,8 @@ ALLOWED_EXTERNAL = {"ellipsoid_tree"}
 # distinction is a trailing slash, which is what turns a name into somewhere a
 # build could reach. For a file it is the name itself: a public reader cannot
 # open `slice38_lgpsf_operator.py`, so citing it by filename -- with or without
-# a line number -- is a dead reference dressed up as a source. Describe it
-# instead ("the slice-38 driver in the glaciology repo").
+# a line number -- is a dead reference dressed up as a source. Cite the result
+# instead ("measured on the PIG Hessian"), not the artifact behind it.
 PATTERNS = [
     (re.compile(r"(?:~|/home/[^/\s]+|/Users/[^/\s]+)/"),
      "an absolute path that exists on one machine"),

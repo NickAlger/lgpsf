@@ -3,13 +3,11 @@
 Plan for a post-fit corrections layer: the machinery that turns a fitted
 sparse operator into a deployable SPD preconditioner / proposal covariance
 for systems $H_d + a H_r$, with $H_r$ a consumer-supplied SPD
-regularization operator. Distilled from the deflation research program on
-the Pine Island Glacier (PIG) problem, recorded in the maintainer-local
-glaciology research repo: the deflation notes for the methods and
-observations, the slice-40 deflation tables for complete results, and the
-symmetrization-weighting note for the symmetrization. The design was worked
-out in a joint session 2026-07-31; this document is self-contained — a
-fresh session should be able to implement from it without the transcript.
+regularization operator. Distilled from the maintainer's deflation research program on
+the Pine Island Glacier (PIG) ice-sheet Hessian. The design was worked
+out in a joint session 2026-07-31; this document is self-contained —
+every observation that motivates a design choice is quoted inline, so a
+fresh session can implement from it without access to anything private.
 
 **Scope decision.** Three things move into the library: (1) weighted
 symmetrization, into the existing assembly path; (2) PSD-ification
@@ -77,9 +75,9 @@ $$
 
 i.e. the weak row owns the entries a strong row only grazes. Exactly
 symmetric by construction; observed insensitive to the $10^{-2}$ floor
-over two decades. Reference implementation: the slice-40 sparse-fit driver
-in the research repo (scipy, three passes over the CSR structure);
-derivation and validation in the symmetrization-weighting note there.
+over two decades on the PIG Hessian, where plain averaging let strong
+rows' tails overwrite weak rows' signal. The scipy formula the method was
+validated with is pinned in-repo by the binding test.
 
 **Change:** add `Symmetrize::Weighted` to the existing enum consumed by
 `assemble_sparse`, implemented sparsely in C++, and make it the
@@ -197,8 +195,7 @@ certified extreme of $3.10$ and the corrected operator lost definiteness.
 undeflated 34): best $k{=}200$ setting ($\mathrm{rcond} = 3\cdot10^{-2}$,
 $r \ge 35$) gave 22; U-shaped in rcond with the optimum drifting toward
 stronger truncation as $k$ shrinks; **no setting helped at $k \le 20$**.
-Ship with these caveats in the docs verbatim. Full sweep: tables file,
-Table 7.
+Ship with these caveats in the docs verbatim.
 
 ### 4.4 `value_pass` — spend $m$ true applies on the values
 
@@ -221,7 +218,7 @@ iteration, zero clamp events. At $k{=}20$, V1 saturates when $m$ reaches
 the free-basis dimension; V2 keeps improving. Equal-budget allocation
 observed: $k{=}50$ fit + 50 value applies beat a $k{=}100$ fit alone
 (30 vs 39 at $10^{-6}$). Guidance for docs (not code): fit to
-$k \sim 50$–$100$, then spend on the value pass. Tables file, Table 8.
+$k \sim 50$–$100$, then spend on the value pass.
 
 ---
 
@@ -317,7 +314,7 @@ void rebuild_at(ShiftedFit& A, double a1);
 // the existing path).
 ```
 
-Reports carry what the tables taught us to watch: modes touched, clamp
+Reports carry what the research program taught us to watch: modes touched, clamp
 events, $\lambda_{\mathrm{floor}}$, estimated remaining-error window.
 All spectral internals honor the oracle tolerance; defaults chosen so
 that PIG-scale behavior reproduces (§9).
@@ -330,9 +327,9 @@ For small-$N$ / 2-D problems where sparse factorization of $\tilde
 B_{\mathrm{pd}} + aH_r$ is viable (requires the sparse $H_r$): factor per
 $a$ with a keyed cache, use it in place of the two-level inner solve, and
 attempt-Cholesky becomes an alternative exact PD certificate. This is
-also the *validation* backend — the research offline scripts are exactly
-this path, so backend-vs-oracle agreement is a built-in correctness test,
-not just a convenience.
+also the *validation* backend — the maintainer's offline PIG validation
+is exactly this path, so backend-vs-oracle agreement is a built-in
+correctness test, not just a convenience.
 
 ---
 
@@ -347,8 +344,8 @@ tolerance across a sweep of $a$ with zero refactorization; flip contract
 zone semantics incl. warning + refusal; `rebuild_at` equivalence to a
 fresh build at $a_1$; GLR vs two-level vs Cholesky backend agreement.
 
-Maintainer-side (research repo, PIG data; acceptance numbers recorded
-here so the fresh session knows the targets):
+Maintainer-side (private PIG data; acceptance numbers recorded here so
+the implementing session knows the targets):
 
 1. **Flip-count study** — the motivating claim of P1. Dense generalized
    eigendecomposition of (weighted-sym fit, $H_r$): count Euclidean
@@ -358,10 +355,9 @@ here so the fresh session knows the targets):
    dense Euclidean flip (flip-vs-relu was already ≤ 1).
 2. **Free deflation reproduction** — $k{=}200$,
    $\mathrm{rcond}=3\cdot10^{-2}$: 34 → 22 at $10^{-6}$; no gain at
-   $k \le 20$ (tables, Table 7).
+   $k \le 20$.
 3. **Value-pass reproduction** — $k{=}100$, $m{=}50$: 5/12/18/24 against
-   the true operator (vs undeflated 12/26/36/45); zero clamps
-   (tables, §9).
+   the true operator (vs undeflated 12/26/36/45); zero clamps.
 4. **Exact-value ceiling context** — certified-correction truncations
    gave 4/9/13 at $r{=}25$ and 3/5/7 at $r{=}50$ (to
    $10^{-2}/10^{-4}/10^{-6}$); useful for judging how much of the gap a
@@ -369,8 +365,9 @@ here so the fresh session knows the targets):
 
 ## 10. Not included, and why
 
-Measured and set aside (equations and full observations in
-`deflation-notes.tex`): importance-ordered multisecant / SR-1
+Measured and set aside (the numbers quoted are from the PIG study;
+full equations and observations are in the maintainer's private
+records): importance-ordered multisecant / SR-1
 (interpolatory values; remaining-error $\lambda_{\min}$ reached $-222$,
 counts worse than no deflation nearly everywhere); Riemannian fixed-rank
 least squares (data residual falls monotonically while the fitted
