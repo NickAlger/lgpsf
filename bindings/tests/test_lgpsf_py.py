@@ -797,6 +797,32 @@ def test_matvec_agrees_with_the_assembled_sparse_operator():
     np.testing.assert_allclose(dense_sym, 0.5 * (dense + dense.T), atol=1e-14)
 
 
+def test_weighted_symmetrization_matches_the_reference_formula():
+    scipy_sparse = pytest.importorskip("scipy.sparse")
+    op = synthetic_operator()
+    fit = fit_synthetic(op)
+
+    # the reference implementation the method was validated with (the
+    # symmetrization-weighting note in the glaciology research repo)
+    A = scipy_sparse.csr_matrix(lgpsf.assemble_sparse(fit.model, np.inf))
+    rnA = np.sqrt(np.asarray(A.multiply(A).sum(axis=1)).ravel())
+    w2 = 1.0 / (rnA ** 2 + (1e-2 * np.median(rnA[rnA > 0])) ** 2)
+    D = scipy_sparse.diags(w2)
+    N = D @ A + A.T @ D
+    P = N.copy()
+    P.data = np.ones_like(P.data)
+    denom = D @ P + P @ D
+    reference = N
+    reference.data = N.data / denom.data
+
+    B = scipy_sparse.csr_matrix(
+        lgpsf.assemble_sparse(fit.model, np.inf, lgpsf.Symmetrize.Weighted))
+    assert (B != B.T).nnz == 0  # exactly symmetric, not approximately
+    scale = np.abs(reference.data).max()
+    np.testing.assert_allclose(B.toarray(), reference.toarray(),
+                               atol=1e-14 * scale)
+
+
 def test_the_deployed_operator_is_window_restricted():
     op = synthetic_operator()
     fit = fit_synthetic(op)

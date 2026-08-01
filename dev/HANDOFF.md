@@ -22,7 +22,7 @@ narrative and open items only; when a thread closes, its record moves to
 | Direction of dependence | enforced by `tools/check_dependencies.py` over docs, dev and experiments too |
 | Repo cleanup | 5 of 6 slices done — see below |
 | Fitting speed | **~4.5× faster than 0.1.0** at unchanged accuracy — see below |
-| Pencil corrections layer | **planned, not started** — full implementation plan in [`pencil-corrections-plan.md`](pencil-corrections-plan.md) (weighted sym into assembly; PSD flip + deflation as pencil operations over an $H_r$ oracle; 12 slices) |
+| Pencil corrections layer | **slice 1 of 12 landed** (`Symmetrize::Weighted`, 2026-07-31) — full implementation plan in [`pencil-corrections-plan.md`](pencil-corrections-plan.md) (PSD flip + deflation as pencil operations over an $H_r$ oracle still to come) |
 | **Not done** | **CI, cibuildwheel, M6 release infra** |
 
 ## Fitting defaults changed, 2026-07-28

@@ -283,6 +283,12 @@ TEST_CASE("the row-parallel helpers are bit-identical across thread counts")
         Eigen::MatrixXd(assemble_sparse(op, 3.0, lgpsf::Symmetrize::None, 4));
     CHECK(serial == parallel);
 
+    const Eigen::MatrixXd weighted_serial =
+        Eigen::MatrixXd(assemble_sparse(op, 3.0, lgpsf::Symmetrize::Weighted, 1));
+    const Eigen::MatrixXd weighted_parallel =
+        Eigen::MatrixXd(assemble_sparse(op, 3.0, lgpsf::Symmetrize::Weighted, 4));
+    CHECK(weighted_serial == weighted_parallel);
+
     Eigen::MatrixXd HV = test_helpers::randn_points(static_cast<int>(op.num_rows()), 3, gen);
     const Eigen::VectorXd one = lgpsf::qc_map(op, v, HV, 1);
     const Eigen::VectorXd four = lgpsf::qc_map(op, v, HV, 4);
@@ -294,6 +300,82 @@ TEST_CASE("the row-parallel helpers are bit-identical across thread counts")
             CHECK(one(rho) == four(rho));
         }
     }
+}
+
+TEST_CASE("weighted symmetrization matches the formula and is exactly symmetric")
+{
+    std::mt19937 gen(9);
+    const LGOperator op = hand_built(gen, 11, 6);
+
+    const Eigen::MatrixXd A = Eigen::MatrixXd(assemble_sparse(op, 3.0));
+    const Eigen::MatrixXd B =
+        Eigen::MatrixXd(assemble_sparse(op, 3.0, lgpsf::Symmetrize::Weighted));
+
+    // bitwise symmetric, not approximately: both orientations of an entry are
+    // the same two products summed
+    CHECK(B == Eigen::MatrixXd(B.transpose()));
+
+    // the dense formula, written out independently of the sparse implementation
+    std::vector<double> norms;
+    for ( Eigen::Index i = 0; i < A.rows(); ++i )
+    {
+        if ( A.row(i).norm() > 0.0 )
+        {
+            norms.push_back(A.row(i).norm());
+        }
+    }
+    std::sort(norms.begin(), norms.end());
+    const std::size_t half = norms.size() / 2;
+    const double median = ( norms.size() % 2 == 1 )
+                              ? norms[half]
+                              : 0.5 * (norms[half - 1] + norms[half]);
+    Eigen::VectorXd w2(A.rows());
+    for ( Eigen::Index i = 0; i < A.rows(); ++i )
+    {
+        w2(i) = 1.0 / (A.row(i).squaredNorm() + std::pow(1e-2 * median, 2));
+    }
+    Eigen::MatrixXd reference(A.rows(), A.cols());
+    for ( Eigen::Index i = 0; i < A.rows(); ++i )
+    {
+        for ( Eigen::Index j = 0; j < A.cols(); ++j )
+        {
+            reference(i, j) =
+                (w2(i) * A(i, j) + w2(j) * A(j, i)) / (w2(i) + w2(j));
+        }
+    }
+    CHECK((B - reference).cwiseAbs().maxCoeff()
+          < 1e-14 * reference.cwiseAbs().maxCoeff());
+
+    // rectangular operators are refused, same as Average
+    LGOperator rect = op;
+    rect.spike = false;
+    rect.x_rows = Eigen::MatrixXd(op.x_cols);
+    CHECK_THROWS_AS(assemble_sparse(rect, 3.0, lgpsf::Symmetrize::Weighted),
+                    std::invalid_argument);
+}
+
+TEST_CASE("weighted symmetrization lets the weak row own the disagreement")
+{
+    // Row 0 is weak (entries ~1e-3), row 1 strong (~1); row 1 grazes row 0 at
+    // entry (1,0) with a value 250x row 0's own scale. Plain averaging would
+    // drag the reconciled entry to ~0.25; the inverse-row-energy weights leave
+    // it within ~0.1% of the weak row's opinion.
+    std::vector<Eigen::Triplet<double>> entries = {
+        {0, 0, 1e-3}, {0, 1, 2e-3}, {1, 0, 0.5}, {1, 1, 1.0}, {2, 2, 0.1}};
+    Eigen::SparseMatrix<double> A(3, 3);
+    A.setFromTriplets(entries.begin(), entries.end());
+
+    const Eigen::MatrixXd B =
+        Eigen::MatrixXd(lgpsf::detail::weighted_symmetrize(A));
+    CHECK(B == Eigen::MatrixXd(B.transpose()));
+    CHECK(std::abs(B(0, 1) - 2e-3) < 1e-5);
+
+    // an already-symmetric matrix is a fixed point (up to roundoff)
+    const Eigen::SparseMatrix<double> S =
+        0.5 * (Eigen::SparseMatrix<double>(A)
+               + Eigen::SparseMatrix<double>(A.transpose()));
+    CHECK(Eigen::MatrixXd(lgpsf::detail::weighted_symmetrize(S))
+              .isApprox(Eigen::MatrixXd(S), 1e-14));
 }
 
 TEST_CASE("an expansion decodes and evaluates on its own")

@@ -100,20 +100,27 @@ def main():
     # ---- 4. symmetry is an assembly POLICY, and it is yours to get right --
     plain = lgpsf.assemble_sparse(model, 6.0, lgpsf.Symmetrize.None_)
     averaged = lgpsf.assemble_sparse(model, 6.0, lgpsf.Symmetrize.Average)
+    weighted = lgpsf.assemble_sparse(model, 6.0, lgpsf.Symmetrize.Weighted)
     error_of = lambda M: (np.linalg.norm(np.asarray(M.todense()) - problem["H"])
                           / truth_norm)
     truth_asymmetry = (np.abs(problem["H"] - problem["H"].T).max()
                        / np.abs(problem["H"]).max())
-    print(f"\nSymmetrize.None_   error {error_of(plain):.4f}")
-    print(f"Symmetrize.Average error {error_of(averaged):.4f}")
-    print(f"\nAveraging made it {error_of(averaged) / error_of(plain):.0f}x WORSE, "
-          "and correctly so: this operator is\nnot symmetric "
+    print(f"\nSymmetrize.None_    error {error_of(plain):.4f}")
+    print(f"Symmetrize.Average  error {error_of(averaged):.4f}")
+    print(f"Symmetrize.Weighted error {error_of(weighted):.4f}")
+    print(f"\nSymmetrizing made it {error_of(averaged) / error_of(plain):.0f}x "
+          "WORSE, and correctly so: this operator is\nnot symmetric "
           f"(max|H - H^T| / max|H| = {truth_asymmetry:.2f}), because the frog "
-          "kernel's shape\nis anchored at the target. `Symmetrize.Average` is "
+          "kernel's shape\nis anchored at the target. Both symmetrizers are "
           "for operators you KNOW\nare symmetric -- a Gauss-Newton Hessian, "
-          "say -- where it cancels the noise\nin the two independent row fits. "
-          "It is an assembly-time choice that does\nnot touch the fit, so it "
-          "cannot warn you when it is the wrong one.")
+          "say -- where reconciling the two\nindependent row fits cancels "
+          "their noise. `Weighted` is the recommendation\nthere: where the "
+          "rows disagree about a shared entry, it sides with the row\nwhose "
+          "scale the entry actually matters to, instead of letting a strong "
+          "row's\ntail overwrite a weak row's signal. When row scales are "
+          "comparable, as on\nthis kernel, the two differ little. Either is "
+          "an assembly-time choice that\ndoes not touch the fit, so neither "
+          "can warn you when symmetry itself is\nwrong.")
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ fitted operator is 225 x 900, 225 rows carrying a model
 relative Frobenius error: 0.0390  (23385 nonzeros, 11.5% dense)
 matvec maps ((3, 900)) -> ((3, 225)) -- column space in, row space out
 
-Symmetrize.Average is refused: lgpsf::assemble_sparse: averaging needs the square dof context
+Symmetrize.Average is refused: lgpsf::assemble_sparse: symmetrizing needs the square dof context
 
 A square problem is the special case where x_rows is omitted and the two
 mass vectors happen to be equal. Nothing in the fit assumes it.

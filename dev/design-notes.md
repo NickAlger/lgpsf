@@ -1657,3 +1657,33 @@ error. Two separate reasons, and both generalize:
 Even after fixing (1) the frog reports 1.14x where the real operator reports
 2x. **A synthetic problem is a good check on whether something is broken and a
 bad one on whether something is unnecessary.**
+
+## Weighted symmetrization: the weak row owns the disagreement (2026-07-31)
+
+First slice of [`pencil-corrections-plan.md`](pencil-corrections-plan.md).
+`Symmetrize::Weighted` is the per-entry convex average with inverse-row-energy
+weights, `w_i^2 = 1 / (||A_i,:||^2 + (0.01 * median ||A_r,:||)^2)`.
+
+**Why not plain averaging.** Each row is fitted independently, so where two
+rows' supports overlap they hold two independent opinions of one entry.
+Averaging weights those opinions equally, which is right only when the rows
+have comparable scale: on the PIG Hessian, strong rows' truncation tails
+overwrote weak rows' entire signal (the "bay" contamination), and the weighted
+form fixed it — it dominated both plain averaging and rows-as-is on every
+operator metric measured. Derivation and field-scale evidence: the
+symmetrization-weighting note in the glaciology research repo. On the frog
+kernel, whose row scales are comparable, `Weighted` and `Average` differ by ~2%
+— consistent with the claim that the weights only matter when scales differ.
+
+**Decisions.**
+- The `0.01` relative floor is hardcoded, not a parameter: the result was flat
+  over two decades of the floor in the PIG study, so a knob would be noise.
+- The median is over rows with any stored entries (unmodeled rows are skipped),
+  midpoint-of-two convention, matching the `np.median` reference the method was
+  validated with. The binding test pins C++-vs-scipy agreement to 1e-14.
+- Exact symmetry is BY CONSTRUCTION, not by tolerance: both orientations of an
+  entry are the same two products summed, so they round identically, and the
+  C++ test checks `B == B^T` bitwise.
+- Implemented as a post-pass on the assembled matrix (`detail::
+  weighted_symmetrize`), not inside the row loop: the weights need every row's
+  norm, so it is inherently a whole-matrix operation.

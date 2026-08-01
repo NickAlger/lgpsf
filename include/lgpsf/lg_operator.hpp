@@ -272,6 +272,86 @@ inline Eigen::VectorXd deployed_smooth(
     return values;
 }
 
+/// The scale-aware symmetrization behind `Symmetrize::Weighted`: a per-entry
+/// convex average with inverse-row-energy weights,
+///
+///   B_ij = (w_i^2 A_ij + w_j^2 A_ji) / (w_i^2 + w_j^2),
+///   w_i^2 = 1 / (||A_i,:||^2 + (0.01 * median_r ||A_r,:||)^2),
+///
+/// the median over rows with any stored entries. The weak row owns the entries
+/// a strong row only grazes; plain averaging instead lets the strong row's
+/// tail overwrite the weak row's signal wherever their supports overlap. The
+/// 0.01 floor only referees rows of near-identical scale, and the result is
+/// insensitive to it over two decades.
+///
+/// Exactly symmetric by construction: entries (i, j) and (j, i) are the same
+/// two products summed, so they round identically.
+inline Eigen::SparseMatrix<double> weighted_symmetrize(
+    const Eigen::SparseMatrix<double>& A )
+{
+    const Eigen::Index n = A.rows();
+    Eigen::VectorXd row_energy = Eigen::VectorXd::Zero(n);
+    for ( int outer = 0; outer < A.outerSize(); ++outer )
+    {
+        for ( Eigen::SparseMatrix<double>::InnerIterator it(A, outer); it; ++it )
+        {
+            row_energy(it.row()) += it.value() * it.value();
+        }
+    }
+
+    std::vector<double> norms;
+    for ( Eigen::Index i = 0; i < n; ++i )
+    {
+        if ( row_energy(i) > 0.0 )
+        {
+            norms.push_back(std::sqrt(row_energy(i)));
+        }
+    }
+    if ( norms.empty() )
+    {
+        return A;
+    }
+    // median = the midpoint of the two middle order statistics (np.median)
+    std::sort(norms.begin(), norms.end());
+    const std::size_t half = norms.size() / 2;
+    const double median = ( norms.size() % 2 == 1 )
+                              ? norms[half]
+                              : 0.5 * (norms[half - 1] + norms[half]);
+    const double floor2 = (1e-2 * median) * (1e-2 * median);
+
+    Eigen::VectorXd w2(n);
+    for ( Eigen::Index i = 0; i < n; ++i )
+    {
+        w2(i) = 1.0 / (row_energy(i) + floor2);
+    }
+
+    // Each stored A_ij contributes the SAME product w_i^2 A_ij to the
+    // numerators of both B_ij and B_ji; duplicate triplets sum.
+    std::vector<Eigen::Triplet<double>> numerator;
+    numerator.reserve(2 * static_cast<std::size_t>(A.nonZeros()));
+    for ( int outer = 0; outer < A.outerSize(); ++outer )
+    {
+        for ( Eigen::SparseMatrix<double>::InnerIterator it(A, outer); it; ++it )
+        {
+            const double product = w2(it.row()) * it.value();
+            numerator.emplace_back(static_cast<int>(it.row()),
+                                   static_cast<int>(it.col()), product);
+            numerator.emplace_back(static_cast<int>(it.col()),
+                                   static_cast<int>(it.row()), product);
+        }
+    }
+    Eigen::SparseMatrix<double> B(n, n);
+    B.setFromTriplets(numerator.begin(), numerator.end());
+    for ( int outer = 0; outer < B.outerSize(); ++outer )
+    {
+        for ( Eigen::SparseMatrix<double>::InnerIterator it(B, outer); it; ++it )
+        {
+            it.valueRef() /= w2(it.row()) + w2(it.col());
+        }
+    }
+    return B;
+}
+
 } // end namespace detail
 
 /// [smooth] Phi~(rho, x) at arbitrary query points, RESTRICTED TO THE FIT
@@ -509,7 +589,11 @@ inline EllipsoidField ellipsoid_field( const LGOperator& fit )
 enum class Symmetrize
 {
     None,    ///< Rows exactly as fitted.
-    Average  ///< (A + A^T) / 2; square dof context only.
+    Average, ///< (A + A^T) / 2; square dof context only.
+    Weighted ///< Per-entry convex average with inverse-row-energy weights, so
+             ///< the weak row owns the entries a strong row only grazes. The
+             ///< recommendation when a symmetric operator is wanted; square
+             ///< dof context only. Formula: `detail::weighted_symmetrize`.
 };
 
 /// [both] Sparse decompression of the DEPLOYED operator.
@@ -526,9 +610,11 @@ enum class Symmetrize
 /// @param tau         Support radius in standard deviations of the fitted
 ///                    kernel. Smaller is sparser and less accurate. No default
 ///                    -- this is a deployment decision.
-/// @param symmetrize  `Average` gives (A + A^T)/2. Only correct when the
-///                    operator really is symmetric, and only legal in the
-///                    square dof context.
+/// @param symmetrize  `Average` gives (A + A^T)/2; `Weighted` reconciles
+///                    disagreeing rows by inverse row energy and is the better
+///                    choice when the two rows' scales differ. Only correct
+///                    when the operator really is symmetric, and only legal in
+///                    the square dof context.
 /// @param num_threads 0 lets the implementation choose.
 /// @return            The assembled matrix, (R, K).
 /// @throws std::invalid_argument if @p tau is not positive, or if averaging is
@@ -542,11 +628,11 @@ inline Eigen::SparseMatrix<double> assemble_sparse(
         throw std::invalid_argument(
             "lgpsf::assemble_sparse: tau must be positive, got " + std::to_string(tau));
     }
-    if ( symmetrize == Symmetrize::Average
+    if ( symmetrize != Symmetrize::None
          && (fit.x_rows || fit.num_rows() != fit.num_cols()) )
     {
         throw std::invalid_argument(
-            "lgpsf::assemble_sparse: averaging needs the square dof context");
+            "lgpsf::assemble_sparse: symmetrizing needs the square dof context");
     }
 
     Eigen::SparseMatrix<double> assembled(fit.num_rows(), fit.num_cols());
@@ -633,6 +719,10 @@ inline Eigen::SparseMatrix<double> assemble_sparse(
     {
         assembled = 0.5 * (Eigen::SparseMatrix<double>(assembled)
                            + Eigen::SparseMatrix<double>(assembled.transpose()));
+    }
+    else if ( symmetrize == Symmetrize::Weighted )
+    {
+        assembled = detail::weighted_symmetrize(assembled);
     }
     assembled.makeCompressed();
     return assembled;

@@ -832,7 +832,11 @@ PYBIND11_MODULE(lgpsf, m)
                           "What assemble_sparse does about symmetry. An "
                           "ASSEMBLY POLICY, not a fit property.")
         .value("None_", Symmetrize::None, "Rows exactly as fitted.")
-        .value("Average", Symmetrize::Average, "(A + A^T) / 2; square context only.");
+        .value("Average", Symmetrize::Average, "(A + A^T) / 2; square context only.")
+        .value("Weighted", Symmetrize::Weighted,
+               "Convex average with inverse-row-energy weights -- the weak row "
+               "owns the entries a strong row only grazes. The recommendation "
+               "when a symmetric operator is wanted; square context only.");
 
     py::class_<OperatorFitConfig>(m, "OperatorFitConfig")
         .def(py::init<>())

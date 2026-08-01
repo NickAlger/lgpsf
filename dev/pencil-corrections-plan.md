@@ -386,6 +386,7 @@ not code.
 ## 11. Implementation slices (ordered, reviewable)
 
 1. `Symmetrize::Weighted` in assembly (§2) + tests + docs. Independent.
+   **Landed 2026-07-31** (see `dev/design-notes.md` for the decisions).
 2. `hr_oracle.hpp`: concept, sparse reference adapter, pybind adapter.
 3. `mode_block.hpp`: $H_r$-orthonormal block, Gram merge, congruence,
    provenance, serialization.

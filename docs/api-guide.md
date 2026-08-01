@@ -59,6 +59,13 @@ involved — see
 [`examples/deploying_a_fit.py`](../examples/deploying_a_fit.py) and
 [`examples/operator_diagnostics.py`](../examples/operator_diagnostics.py).
 
+`assemble_sparse` takes a `Symmetrize` policy: `None_` (rows exactly as
+fitted), `Average`, or `Weighted` — the recommendation when the underlying
+operator is symmetric, because it reconciles disagreeing rows by inverse row
+energy instead of letting a strong row overwrite a weak one. Symmetrizing an
+operator that is not symmetric makes it worse, and the library cannot tell —
+see the example.
+
 Rows and columns need not be the same points: pass `x_rows` for a rectangular
 operator ([`examples/rectangular_operator.py`](../examples/rectangular_operator.py)).
 

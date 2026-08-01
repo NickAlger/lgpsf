@@ -68,6 +68,16 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`Symmetrize::Weighted`**: a scale-aware symmetrization for
+  `assemble_sparse` — a per-entry convex average with inverse-row-energy
+  weights, so where two row fits disagree about a shared entry the weaker
+  row's value wins instead of the mean. Exactly symmetric by construction,
+  and the recommendation over `Average` when the underlying operator is
+  symmetric; on rows of comparable scale the two nearly coincide. Validated
+  on a field-scale glaciology Hessian, where plain averaging let strong
+  rows' tails contaminate weak rows' signal. The rectangular-operator
+  refusal message now says "symmetrizing" rather than "averaging", since it
+  covers both policies.
 - `experiments/lm_tolerance.py` and `experiments/anisotropy_hardening.py`, with
   their write-ups.
 
