@@ -1237,14 +1237,17 @@ PYBIND11_MODULE(lgpsf, m)
 
     py::class_<corrections::ModeBlock>(
         corr, "ModeBlock",
-        "The H_r-orthonormal mode block: the correction "
-        "E = (Hr V) C (Hr V)^T with V^T Hr V = I and a provenance tag per "
-        "column. Plain data -- persist it with numpy (V, HrV, C, tags), the "
-        "library convention.")
+        "The H_r-orthonormal mode block: one basis V (V^T Hr V = I, a "
+        "provenance tag per column) with TWO coefficient matrices over it -- "
+        "C_corr, the correction E = (Hr V) C_corr (Hr V)^T added to the "
+        "operator, and C_surr, the KNOWN spectral content of B + E that the "
+        "GLR deployment M(a) = a Hr + (Hr V) C_surr (Hr V)^T presents. Plain "
+        "data -- persist with numpy (V, HrV, C_corr, C_surr, tags).")
         .def(py::init<>())
         .def_readwrite("V", &corrections::ModeBlock::V)
         .def_readwrite("HrV", &corrections::ModeBlock::HrV)
-        .def_readwrite("C", &corrections::ModeBlock::C)
+        .def_readwrite("C_corr", &corrections::ModeBlock::C_corr)
+        .def_readwrite("C_surr", &corrections::ModeBlock::C_surr)
         .def_readwrite("tags", &corrections::ModeBlock::tags)
         .def_property_readonly("dim", &corrections::ModeBlock::dim)
         .def_property_readonly("rank", &corrections::ModeBlock::rank);
@@ -1267,26 +1270,39 @@ PYBIND11_MODULE(lgpsf, m)
              "means consistent.");
     corr.def("apply_correction", &corrections::apply_correction,
              "block"_a, "X"_a,
-             "E X = (Hr V) C (Hr V)^T X for (N, m) columns X. No oracle "
-             "involved.");
-    corr.def("pencil_eigenvalues", &corrections::pencil_eigenvalues,
+             "E X = (Hr V) C_corr (Hr V)^T X for (N, m) columns X. No "
+             "oracle involved.");
+    corr.def("apply_surrogate", &corrections::apply_surrogate,
+             "block"_a, "X"_a,
+             "S X = (Hr V) C_surr (Hr V)^T X -- the low-rank part of the "
+             "GLR deployment operator M(a).");
+    corr.def("correction_eigenvalues", &corrections::correction_eigenvalues,
              "block"_a,
-             "The block's pencil eigenvalues against H_r -- exactly eig(C), "
-             "ascending, because V is H_r-orthonormal.");
+             "Pencil eigenvalues of the CORRECTION against H_r -- exactly "
+             "eig(C_corr), ascending. Feeds the PD certificates for "
+             "B + E + a Hr.");
+    corr.def("surrogate_eigenvalues", &corrections::surrogate_eigenvalues,
+             "block"_a,
+             "Pencil eigenvalues of the SURROGATE against H_r -- exactly "
+             "eig(C_surr), ascending. Feeds the PD certificate for M(a).");
     corr.def("merge",
              []( corrections::ModeBlock& block,
                  const corrections::HrOracle& hr,
-                 const Eigen::MatrixXd& V_new, const Eigen::MatrixXd& C_new,
-                 corrections::Provenance tag, double drop_tol )
-             { return corrections::merge(block, hr, V_new, C_new, tag,
-                                         drop_tol); },
-             "block"_a, "hr"_a, "V_new"_a, "C_new"_a, "tag"_a,
+                 const Eigen::MatrixXd& V_new, const Eigen::MatrixXd& Cc_new,
+                 const Eigen::MatrixXd& Cs_new, corrections::Provenance tag,
+                 double drop_tol )
+             { return corrections::merge(block, hr, V_new, Cc_new, Cs_new,
+                                         tag, drop_tol); },
+             "block"_a, "hr"_a, "V_new"_a, "Cc_new"_a, "Cs_new"_a, "tag"_a,
              "drop_tol"_a = 1e-14,
-             "Fold the contribution (Hr V_new) C_new (Hr V_new)^T into the "
-             "block. Existing columns are never modified; the in-span part "
-             "of a candidate folds into coefficients, the rest becomes new "
-             "H_r-orthonormal columns tagged with `tag`. Costs q oracle "
-             "APPLIES (no solves) + rank-sized dense algebra.");
+             "Fold a contribution into the block: on the directions V_new, "
+             "add Cc_new to the operator correction and Cs_new to the "
+             "surrogate content (cache extension: Cc_new = 0; plain "
+             "correction: Cs_new = Cc_new; flip: -c*lambda and "
+             "(1-c)*lambda). Existing columns are never modified; the "
+             "in-span part of a candidate folds into coefficients, the rest "
+             "becomes new H_r-orthonormal columns tagged with `tag`. Costs "
+             "q oracle APPLIES (no solves) + rank-sized dense algebra.");
 
     py::class_<corrections::ProbeArchive>(
         corr, "ProbeArchive",

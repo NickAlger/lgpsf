@@ -1717,3 +1717,31 @@ operation and stays format-side). Consequences worth remembering:
 
 Full reasoning: [`pencil-corrections-plan.md`](pencil-corrections-plan.md),
 P4 and §7.
+
+## The block carries two coefficient matrices, not one (2026-08-01)
+
+Working the pencil-Lanczos slice exposed a bookkeeping flaw in the plan: the
+mode block's single coefficient matrix cannot serve both deployment objects.
+The struct represents the corrected operator $P_0 = B + E$; the GLR
+preconditioner is $M(a) = aH_r + S$ with $S$ the known spectral content of
+$P_0$. Two concrete contradictions force $E \ne S$:
+
+- Caching $P_0$'s rightmost pencil modes (which is what makes $M$ a good
+  preconditioner) must not change $P_0$ itself — their correction
+  coefficient is zero while their surrogate coefficient is their eigenvalue.
+- A flipped mode's correction is $-c\lambda$ (that is the surgery on $B$),
+  but its surrogate coefficient must be the CORRECTED eigenvalue
+  $(1-c)\lambda$ — with one matrix, either the operator or the
+  preconditioner is wrong by $\lambda$.
+
+So `ModeBlock` holds one $H_r$-orthonormal basis with `C_corr` and `C_surr`,
+and `merge` takes both increments explicitly: a cache extension passes
+$(0, \lambda)$, a plain correction passes $(\Delta, \Delta)$, a flip passes
+$(-c\lambda, (1-c)\lambda)$. The consistency rule: whatever a merge adds to
+the operator is also known content of $P_0$ and goes into `C_surr`, plus any
+content of $B$ itself the caller has learned (a flip knows the mode's
+$B$-eigenvalue from the same Lanczos run; a deflation knows only its
+correction, and a later cache extension refines the surrogate there).
+
+The invariant is pinned by a test: a cache-only merge leaves `apply`
+value-identical while moving the GLR floor.

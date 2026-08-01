@@ -20,7 +20,8 @@ using lgpsf::corrections::Provenance;
 using lgpsf::corrections::apply_correction;
 using lgpsf::corrections::empty_block;
 using lgpsf::corrections::merge;
-using lgpsf::corrections::pencil_eigenvalues;
+using lgpsf::corrections::apply_surrogate;
+using lgpsf::corrections::correction_eigenvalues;
 using lgpsf::corrections::sparse_hr_oracle;
 
 namespace {
@@ -72,7 +73,7 @@ TEST_CASE("a merged contribution is represented exactly")
 
     const Eigen::MatrixXd V_new = test_helpers::randn_points(n, 5, gen);
     const Eigen::MatrixXd C_new = random_symmetric(5, gen);
-    const auto report = merge(block, oracle, V_new, C_new,
+    const auto report = merge(block, oracle, V_new, C_new, C_new,
                               Provenance::Deflation);
     CHECK(report.requested == 5);
     CHECK(report.added == 5);
@@ -106,8 +107,8 @@ TEST_CASE("merging the same directions twice adds coefficients, not columns")
     const Eigen::MatrixXd C2 = random_symmetric(4, gen);
 
     ModeBlock block = empty_block(n);
-    merge(block, oracle, V1, C1, Provenance::Flip);
-    const auto second = merge(block, oracle, V1, C2, Provenance::Deflation);
+    merge(block, oracle, V1, C1, C1, Provenance::Flip);
+    const auto second = merge(block, oracle, V1, C2, C2, Provenance::Deflation);
     CHECK(second.requested == 4);
     CHECK(second.added == 0);
     CHECK(block.rank() == 4);
@@ -131,7 +132,7 @@ TEST_CASE("overlapping candidates split into folded and added parts")
     const Eigen::MatrixXd V1 = test_helpers::randn_points(n, 3, gen);
     const Eigen::MatrixXd C1 = random_symmetric(3, gen);
     ModeBlock block = empty_block(n);
-    merge(block, oracle, V1, C1, Provenance::PencilCache);
+    merge(block, oracle, V1, C1, C1, Provenance::PencilCache);
 
     // one candidate inside span(V1), two genuinely new
     Eigen::MatrixXd V2(n, 3);
@@ -140,7 +141,7 @@ TEST_CASE("overlapping candidates split into folded and added parts")
     V2.col(2) = test_helpers::randn_points(n, 1, gen).col(0);
     const Eigen::MatrixXd C2 = random_symmetric(3, gen);
 
-    const auto report = merge(block, oracle, V2, C2, Provenance::ValuePass);
+    const auto report = merge(block, oracle, V2, C2, C2, Provenance::ValuePass);
     CHECK(report.requested == 3);
     CHECK(report.added == 2);
     CHECK(block.rank() == 5);
@@ -164,11 +165,12 @@ TEST_CASE("the block's pencil eigenvalues are exact eigenpairs against H_r")
 
     ModeBlock block = empty_block(n);
     merge(block, oracle, test_helpers::randn_points(n, 4, gen),
-          random_symmetric(4, gen), Provenance::Flip);
+          random_symmetric(4, gen), Eigen::MatrixXd::Zero(4, 4),
+          Provenance::Flip);
 
     // E (V u_i) = theta_i H_r (V u_i) for every eigenpair (theta_i, u_i) of C
-    const Eigen::VectorXd theta = pencil_eigenvalues(block);
-    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eigen(block.C);
+    const Eigen::VectorXd theta = correction_eigenvalues(block);
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eigen(block.C_corr);
     for ( int i = 0; i < 4; ++i )
     {
         const Eigen::VectorXd v = block.V * eigen.eigenvectors().col(i);
@@ -186,7 +188,8 @@ TEST_CASE("validate catches structural damage")
     const HrOracle oracle = sparse_hr_oracle(spd_sparse(n));
     ModeBlock good = empty_block(n);
     merge(good, oracle, test_helpers::randn_points(n, 2, gen),
-          random_symmetric(2, gen), Provenance::Deflation);
+          random_symmetric(2, gen), random_symmetric(2, gen),
+          Provenance::Deflation);
     REQUIRE(lgpsf::corrections::validate(good).empty());
 
     ModeBlock wrong_hrv = good;
@@ -194,7 +197,7 @@ TEST_CASE("validate catches structural damage")
     CHECK(!lgpsf::corrections::validate(wrong_hrv).empty());
 
     ModeBlock asym = good;
-    asym.C(0, 1) += 1e-13;
+    asym.C_corr(0, 1) += 1e-13;
     CHECK(!lgpsf::corrections::validate(asym).empty());
 
     ModeBlock short_tags = good;
@@ -203,9 +206,11 @@ TEST_CASE("validate catches structural damage")
 
     // misuse of merge is refused
     CHECK_THROWS_AS(merge(good, oracle, Eigen::MatrixXd::Zero(n + 1, 1),
+                          Eigen::MatrixXd::Zero(1, 1),
                           Eigen::MatrixXd::Zero(1, 1), Provenance::Flip),
                     std::invalid_argument);
     CHECK_THROWS_AS(merge(good, oracle, Eigen::MatrixXd::Zero(n, 2),
+                          Eigen::MatrixXd::Zero(1, 1),
                           Eigen::MatrixXd::Zero(1, 1), Provenance::Flip),
                     std::invalid_argument);
 }

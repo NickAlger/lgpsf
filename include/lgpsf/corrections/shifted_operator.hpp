@@ -9,17 +9,20 @@
 ///
 /// A `ShiftedOperator` represents
 ///
-///   P(a)  =  B + E + a H_r,      E = (H_r V) C (H_r V)^T  (the mode block),
+///   P(a)  =  B + E + a H_r,     E = (H_r V) C_corr (H_r V)^T  (the block's
+///                               correction content),
 ///
 /// for a symmetric operator B, a consumer-supplied SPD H_r, and a
 /// caller-supplied shift `a` — the struct carries the BUILD shift `a0` but
 /// every operation takes `a` as an argument (varying regularization is the
 /// normal case, not the exception). The GLR deployment object is
 ///
-///   M(a)  =  a H_r + E,
+///   M(a)  =  a H_r + S,         S = (H_r V) C_surr (H_r V)^T  (the block's
+///                               surrogate content: the known spectral
+///                               content of B + E),
 ///
 /// whose inverse closes over the H_r oracle analytically BECAUSE V is
-/// H_r-orthonormal: with C = U diag(theta) U^T,
+/// H_r-orthonormal: with C_surr = U diag(theta) U^T,
 ///
 ///   M(a)^{-1} x = (1/a) H_r^{-1} x
 ///                 - V U diag(theta_i / (a (a + theta_i))) U^T V^T x,
@@ -205,23 +208,24 @@ inline Eigen::MatrixXd apply( const ShiftedOperator& A,
     return result;
 }
 
-/// The GLR deployment operator's action: M(a) X = a H_r X + E X.
+/// The GLR deployment operator's action: M(a) X = a H_r X + S X, with S the
+/// block's SURROGATE content (the known spectral content of B + E).
 inline Eigen::MatrixXd glr_apply( const ShiftedOperator& A,
                                   const Eigen::Ref<const Eigen::MatrixXd>& X,
                                   double a )
 {
-    return a * A.hr.apply(X) + apply_correction(A.block, X);
+    return a * A.hr.apply(X) + apply_surrogate(A.block, X);
 }
 
 /// The exact PD floor of M(a): M(a) > 0 iff a > glr_pd_floor(A). Analytic —
-/// the block's pencil eigenvalues against H_r are eig(C) exactly.
+/// the surrogate's pencil eigenvalues against H_r are eig(C_surr) exactly.
 inline double glr_pd_floor( const ShiftedOperator& A )
 {
     if ( A.block.rank() == 0 )
     {
         return 0.0;
     }
-    return std::max(0.0, -pencil_eigenvalues(A.block).minCoeff());
+    return std::max(0.0, -surrogate_eigenvalues(A.block).minCoeff());
 }
 
 /// M(a)^{-1} B_rhs by the diagonal-capacitance Woodbury formula (file
@@ -247,7 +251,7 @@ inline Eigen::MatrixXd glr_solve( const ShiftedOperator& A,
     Eigen::MatrixXd result = A.hr.solve(B_rhs, oracle_tol) / a;
     if ( A.block.rank() > 0 )
     {
-        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eigen(A.block.C);
+        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eigen(A.block.C_surr);
         const Eigen::VectorXd& theta = eigen.eigenvalues();
         const Eigen::MatrixXd& U = eigen.eigenvectors();
         Eigen::MatrixXd P = U.transpose() * (A.block.V.transpose() * B_rhs);

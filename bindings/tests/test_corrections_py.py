@@ -137,7 +137,8 @@ def test_mode_block_merge_represents_the_contribution():
     V_new = rng.normal(size=(n, 4))
     C_new = rng.normal(size=(4, 4))
     C_new = 0.5 * (C_new + C_new.T)
-    report = corr.merge(block, oracle, V_new, C_new, corr.Provenance.Flip)
+    report = corr.merge(block, oracle, V_new, C_new, C_new,
+                        corr.Provenance.Flip)
     assert (report.requested, report.added) == (4, 4)
     assert corr.validate(block) == []
     assert list(block.tags) == [corr.Provenance.Flip] * 4
@@ -151,8 +152,8 @@ def test_mode_block_merge_represents_the_contribution():
                                atol=1e-11 * np.abs(expected @ X).max())
 
     # pencil eigenvalues are eig(C), ascending
-    np.testing.assert_allclose(corr.pencil_eigenvalues(block),
-                               np.sort(np.linalg.eigvalsh(block.C)),
+    np.testing.assert_allclose(corr.correction_eigenvalues(block),
+                               np.sort(np.linalg.eigvalsh(block.C_corr)),
                                atol=1e-13)
 
 
@@ -162,18 +163,20 @@ def test_mode_block_round_trips_through_numpy(tmp_path):
     rng = np.random.default_rng(4)
     oracle = corr.sparse_hr_oracle(tridiag_spd(n))
     block = corr.empty_block(n)
-    corr.merge(block, oracle, rng.normal(size=(n, 3)), np.eye(3),
+    corr.merge(block, oracle, rng.normal(size=(n, 3)), np.eye(3), np.eye(3),
                corr.Provenance.Deflation)
 
     path = tmp_path / "block.npz"
-    np.savez(path, V=block.V, HrV=block.HrV, C=block.C,
+    np.savez(path, V=block.V, HrV=block.HrV, C_corr=block.C_corr,
+             C_surr=block.C_surr,
              tags=np.array([int(t) for t in block.tags]))
 
     data = np.load(path)
     loaded = corr.ModeBlock()
     loaded.V = data["V"]
     loaded.HrV = data["HrV"]
-    loaded.C = data["C"]
+    loaded.C_corr = data["C_corr"]
+    loaded.C_surr = data["C_surr"]
     loaded.tags = [corr.Provenance(int(t)) for t in data["tags"]]
     assert corr.validate(loaded) == []
     assert list(loaded.tags) == list(block.tags)
@@ -210,10 +213,11 @@ def test_the_full_pipeline_reaches_a_working_woodbury_solve():
     # fill the block with mixed-sign modes and sweep the shift: one build,
     # every a above the certified floor, no refactorization anywhere
     corr.merge(A.block, A.hr, rng.normal(size=(n, 3)),
-               np.diag([-0.2, 0.4, 1.0]), corr.Provenance.PencilCache)
+               np.diag([-0.2, 0.4, 1.0]), np.diag([-0.2, 0.4, 1.0]),
+               corr.Provenance.PencilCache)
     floor = corr.glr_pd_floor(A)
     Hrd = Hr.toarray()
-    Ed = A.block.HrV @ A.block.C @ A.block.HrV.T
+    Ed = A.block.HrV @ A.block.C_surr @ A.block.HrV.T
     X = rng.normal(size=(n, 2))
     for a in [1.1 * floor, 3.0 * floor, 50.0 * floor]:
         expected = np.linalg.solve(a * Hrd + Ed, X)

@@ -4,25 +4,41 @@
 
 /// @file
 /// @brief The H_r-orthonormal mode block: ONE low-rank object holding every
-/// spectral correction the layer makes.
+/// spectral correction the layer makes, in two coefficient matrices over one
+/// shared basis.
 ///
-/// The block represents the symmetric low-rank correction
+/// The block holds an H_r-orthonormal basis V (V^T H_r V = I, a provenance
+/// tag per column) and TWO symmetric coefficient matrices over it, because
+/// the layer deploys two different operators:
 ///
-///   E  =  (H_r V) C (H_r V)^T,        V^T H_r V = I,
+///   correction   E      = (H_r V) C_corr (H_r V)^T   — added to B, so the
+///                          struct represents  P0 = B + E;
+///   surrogate    S      = (H_r V) C_surr (H_r V)^T   — the KNOWN spectral
+///                          content of P0 on span(V), deployed as
+///                          M(a) = a H_r + S, the GLR preconditioner.
 ///
-/// with a provenance tag per column of V. Flip modes, cached pencil modes,
-/// deflation modes and value-pass modes are all THE SAME KIND of object —
-/// H_r-orthonormal directions with a symmetric coefficient matrix — so they
-/// live in one block and are merged by H_r-Gram orthonormalization rather
-/// than accumulating as separate terms.
+/// One matrix cannot serve both roles. Two concrete failures force the
+/// split: caching P0's rightmost pencil modes (for M) must NOT change P0 —
+/// their correction coefficient is zero while their surrogate coefficient is
+/// their eigenvalue; and a flipped mode needs -c*lambda in the correction
+/// (that is the surgery on B) but its CORRECTED eigenvalue
+/// (1-c)*lambda in the surrogate (that is what M must present).
+///
+/// The consistency rule callers maintain: whenever a merge changes the
+/// operator (C_corr += Delta on span(V)), the same Delta is known content of
+/// P0 and belongs in C_surr too — plus whatever content of B itself the
+/// caller has learned (a flip pass knows the mode's B-eigenvalue from the
+/// same Lanczos run; a deflation pass knows only its correction, and a later
+/// cache extension can refine the surrogate there). `merge` therefore takes
+/// both increments explicitly.
 ///
 /// Why H_r-orthonormal: with W = H_r V, the shifted operator
-/// M(a) = a H_r + W C W^T inverts by Woodbury with W^T H_r^{-1} W = I, so the
-/// capacitance is diagonal in the eigenbasis of C and changing `a` costs
-/// scalar arithmetic (see the plan, §3; the Woodbury lives with the
-/// deployable struct, not here). The block's pencil eigenvalues against H_r
-/// are exactly `eig(C)` — which is what makes the layer's PD certificates
-/// analytic instead of iterative.
+/// M(a) = a H_r + W C_surr W^T inverts by Woodbury with W^T H_r^{-1} W = I,
+/// so the capacitance is diagonal in the eigenbasis of C_surr and changing
+/// `a` costs scalar arithmetic (the Woodbury lives with the deployable
+/// struct, not here). The block's pencil eigenvalues against H_r are exactly
+/// the eigenvalues of its coefficient matrices — which is what makes the
+/// layer's PD certificates analytic instead of iterative.
 ///
 /// Both V and H_r V are stored. Every application and every Gram needs
 /// H_r V; storing it keeps those exactly consistent with merge-time
@@ -62,7 +78,8 @@ struct ModeBlock
 {
     Eigen::MatrixXd V;             ///< (N, rho), H_r-orthonormal columns
     Eigen::MatrixXd HrV;           ///< (N, rho), H_r V
-    Eigen::MatrixXd C;             ///< (rho, rho), symmetric coefficients
+    Eigen::MatrixXd C_corr;        ///< (rho, rho) sym: correction to B
+    Eigen::MatrixXd C_surr;        ///< (rho, rho) sym: known content of B + E
     std::vector<Provenance> tags;  ///< per column of V
 
     Eigen::Index dim() const { return V.rows(); }
@@ -81,7 +98,8 @@ inline ModeBlock empty_block( Eigen::Index dim )
     ModeBlock block;
     block.V = Eigen::MatrixXd(dim, 0);
     block.HrV = Eigen::MatrixXd(dim, 0);
-    block.C = Eigen::MatrixXd(0, 0);
+    block.C_corr = Eigen::MatrixXd(0, 0);
+    block.C_surr = Eigen::MatrixXd(0, 0);
     return block;
 }
 
@@ -100,34 +118,41 @@ inline std::vector<std::string> validate( const ModeBlock& block )
     {
         issues.push_back("HrV shape does not match V");
     }
-    if ( block.C.rows() != block.V.cols() || block.C.cols() != block.V.cols() )
+    for ( const auto* C : {&block.C_corr, &block.C_surr} )
     {
-        issues.push_back("C is not (rank, rank)");
-    }
-    if ( block.C != block.C.transpose() )
-    {
-        issues.push_back("C is not exactly symmetric (merge keeps it so)");
+        const char* name = ( C == &block.C_corr ) ? "C_corr" : "C_surr";
+        if ( C->rows() != block.V.cols() || C->cols() != block.V.cols() )
+        {
+            issues.push_back(std::string(name) + " is not (rank, rank)");
+        }
+        else if ( *C != C->transpose() )
+        {
+            issues.push_back(std::string(name)
+                             + " is not exactly symmetric (merge keeps it so)");
+        }
     }
     if ( static_cast<Eigen::Index>(block.tags.size()) != block.V.cols() )
     {
         issues.push_back("tags does not have one entry per column of V");
     }
-    if ( !block.V.allFinite() || !block.HrV.allFinite() || !block.C.allFinite() )
+    if ( !block.V.allFinite() || !block.HrV.allFinite()
+         || !block.C_corr.allFinite() || !block.C_surr.allFinite() )
     {
         issues.push_back("non-finite values present");
     }
     return issues;
 }
 
-/// The correction's action: E X = (H_r V) C (H_r V)^T X for `(N, m)` columns
-/// X. O(N rho m); no oracle involved.
-inline Eigen::MatrixXd apply_correction(
-    const ModeBlock& block, const Eigen::Ref<const Eigen::MatrixXd>& X )
+namespace detail {
+
+inline Eigen::MatrixXd apply_block_matrix(
+    const ModeBlock& block, const Eigen::MatrixXd& C,
+    const Eigen::Ref<const Eigen::MatrixXd>& X, const char* where )
 {
     if ( X.rows() != block.dim() )
     {
         throw std::invalid_argument(
-            "lgpsf::corrections::apply_correction: block has "
+            std::string("lgpsf::corrections::") + where + ": block has "
             + std::to_string(X.rows()) + " rows, block dim is "
             + std::to_string(block.dim()) + " (vectors are COLUMNS here)");
     }
@@ -135,20 +160,50 @@ inline Eigen::MatrixXd apply_correction(
     {
         return Eigen::MatrixXd::Zero(X.rows(), X.cols());
     }
-    return block.HrV * (block.C * (block.HrV.transpose() * X));
+    return block.HrV * (C * (block.HrV.transpose() * X));
 }
 
-/// The block's pencil eigenvalues against H_r — exactly `eig(C)`, ascending,
-/// because V is H_r-orthonormal. The analytic ingredient of every PD
-/// certificate in the layer.
-inline Eigen::VectorXd pencil_eigenvalues( const ModeBlock& block )
+inline Eigen::VectorXd coefficient_eigenvalues( const Eigen::MatrixXd& C )
 {
-    if ( block.rank() == 0 )
+    if ( C.rows() == 0 )
     {
         return Eigen::VectorXd(0);
     }
-    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eigen(block.C);
-    return eigen.eigenvalues();
+    return Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd>(C).eigenvalues();
+}
+
+} // end namespace detail
+
+/// The correction's action: E X = (H_r V) C_corr (H_r V)^T X for `(N, m)`
+/// columns X. O(N rho m); no oracle involved.
+inline Eigen::MatrixXd apply_correction(
+    const ModeBlock& block, const Eigen::Ref<const Eigen::MatrixXd>& X )
+{
+    return detail::apply_block_matrix(block, block.C_corr, X,
+                                      "apply_correction");
+}
+
+/// The surrogate's action: S X = (H_r V) C_surr (H_r V)^T X — the low-rank
+/// part of the GLR deployment operator M(a) = a H_r + S.
+inline Eigen::MatrixXd apply_surrogate(
+    const ModeBlock& block, const Eigen::Ref<const Eigen::MatrixXd>& X )
+{
+    return detail::apply_block_matrix(block, block.C_surr, X,
+                                      "apply_surrogate");
+}
+
+/// Pencil eigenvalues of the CORRECTION against H_r — exactly
+/// `eig(C_corr)`, ascending. Feeds the PD certificates for B + E + a H_r.
+inline Eigen::VectorXd correction_eigenvalues( const ModeBlock& block )
+{
+    return detail::coefficient_eigenvalues(block.C_corr);
+}
+
+/// Pencil eigenvalues of the SURROGATE against H_r — exactly
+/// `eig(C_surr)`, ascending. Feeds the PD certificate for M(a).
+inline Eigen::VectorXd surrogate_eigenvalues( const ModeBlock& block )
+{
+    return detail::coefficient_eigenvalues(block.C_surr);
 }
 
 /// What `merge` did.
@@ -160,7 +215,11 @@ struct MergeReport
                                    ///< dropped directions (0 if none dropped)
 };
 
-/// Fold the contribution  (H_r V_new) C_new (H_r V_new)^T  into the block.
+/// Fold a contribution into the block: on the candidate directions V_new,
+/// add `Cc_new` to the operator correction and `Cs_new` to the surrogate
+/// content (see the file comment for who passes what — a pure cache
+/// extension passes Cc_new = 0; a pure correction with no learned content
+/// passes Cs_new = Cc_new; a flip passes -c*lambda and (1-c)*lambda).
 ///
 /// Existing columns are NEVER modified — new directions are orthonormalized
 /// AGAINST the block (two Gram-Schmidt passes, rank-sized Grams, H_r applies
@@ -176,12 +235,14 @@ struct MergeReport
 /// @param block    Updated in place.
 /// @param hr       The H_r oracle (applies only).
 /// @param V_new    (N, q) candidate directions; need not be orthonormal.
-/// @param C_new    (q, q) coefficients; symmetrized on entry.
+/// @param Cc_new   (q, q) correction coefficients; symmetrized on entry.
+/// @param Cs_new   (q, q) surrogate coefficients; symmetrized on entry.
 /// @param tag      Provenance for every column this merge appends.
 /// @param drop_tol Relative SQUARED-norm floor for keeping a direction.
 inline MergeReport merge( ModeBlock& block, const HrOracle& hr,
                           const Eigen::Ref<const Eigen::MatrixXd>& V_new,
-                          const Eigen::Ref<const Eigen::MatrixXd>& C_new,
+                          const Eigen::Ref<const Eigen::MatrixXd>& Cc_new,
+                          const Eigen::Ref<const Eigen::MatrixXd>& Cs_new,
                           Provenance tag, double drop_tol = 1e-14 )
 {
     if ( V_new.rows() != block.dim() || hr.dim() != block.dim() )
@@ -192,11 +253,12 @@ inline MergeReport merge( ModeBlock& block, const HrOracle& hr,
             + std::to_string(V_new.rows()) + " rows) and oracle ("
             + std::to_string(hr.dim()) + ")");
     }
-    if ( C_new.rows() != V_new.cols() || C_new.cols() != V_new.cols() )
+    if ( Cc_new.rows() != V_new.cols() || Cc_new.cols() != V_new.cols()
+         || Cs_new.rows() != V_new.cols() || Cs_new.cols() != V_new.cols() )
     {
         throw std::invalid_argument(
-            "lgpsf::corrections::merge: C_new must be (q, q) for q candidate "
-            "columns");
+            "lgpsf::corrections::merge: Cc_new and Cs_new must be (q, q) for "
+            "q candidate columns");
     }
     if ( !(drop_tol > 0.0) )
     {
@@ -210,7 +272,8 @@ inline MergeReport merge( ModeBlock& block, const HrOracle& hr,
         return report;
     }
 
-    const Eigen::MatrixXd Cn = 0.5 * (C_new + C_new.transpose());
+    const Eigen::MatrixXd Cc = 0.5 * (Cc_new + Cc_new.transpose());
+    const Eigen::MatrixXd Cs = 0.5 * (Cs_new + Cs_new.transpose());
     const Eigen::Index p = block.rank();
     const Eigen::Index q = V_new.cols();
 
@@ -299,15 +362,21 @@ inline MergeReport merge( ModeBlock& block, const HrOracle& hr,
     // exact coefficients of the candidates on the FINAL new columns
     const Eigen::MatrixXd B = V_add.transpose() * HrVnew;  // (r, q)
 
-    // extended coefficient matrix: the candidates' contribution lands on
-    // [existing, added] through M = [A; B]
+    // extended coefficient matrices: the candidates' contribution lands on
+    // [existing, added] through M = [A; B], identically for both matrices
     Eigen::MatrixXd M(p + r, q);
     M.topRows(p) = A;
     M.bottomRows(r) = B;
-    Eigen::MatrixXd C_ext = Eigen::MatrixXd::Zero(p + r, p + r);
-    C_ext.topLeftCorner(p, p) = block.C;
-    C_ext += M * Cn * M.transpose();
-    C_ext = 0.5 * (C_ext + C_ext.transpose()).eval();
+    const auto extend = [&]( const Eigen::MatrixXd& C_old,
+                             const Eigen::MatrixXd& C_inc ) {
+        Eigen::MatrixXd C_ext = Eigen::MatrixXd::Zero(p + r, p + r);
+        C_ext.topLeftCorner(p, p) = C_old;
+        C_ext += M * C_inc * M.transpose();
+        C_ext = 0.5 * (C_ext + C_ext.transpose()).eval();
+        return C_ext;
+    };
+    Eigen::MatrixXd Cc_ext = extend(block.C_corr, Cc);
+    Eigen::MatrixXd Cs_ext = extend(block.C_surr, Cs);
 
     Eigen::MatrixXd V_ext(block.dim(), p + r);
     V_ext.leftCols(p) = block.V;
@@ -318,7 +387,8 @@ inline MergeReport merge( ModeBlock& block, const HrOracle& hr,
 
     block.V = std::move(V_ext);
     block.HrV = std::move(HrV_ext);
-    block.C = std::move(C_ext);
+    block.C_corr = std::move(Cc_ext);
+    block.C_surr = std::move(Cs_ext);
     block.tags.insert(block.tags.end(), static_cast<std::size_t>(r), tag);
     return report;
 }

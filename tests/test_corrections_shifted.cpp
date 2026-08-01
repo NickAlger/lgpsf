@@ -69,7 +69,7 @@ ShiftedOperator built_example( int n, std::mt19937& gen )
         sparse_hr_oracle(spd_sparse(n)), 1e-4);
     Eigen::MatrixXd C_new = Eigen::MatrixXd::Zero(4, 4);
     C_new.diagonal() << -0.3, -0.05, 0.8, 2.0;
-    merge(A.block, A.hr, test_helpers::randn_points(n, 4, gen), C_new,
+    merge(A.block, A.hr, test_helpers::randn_points(n, 4, gen), C_new, C_new,
           Provenance::PencilCache);
     return A;
 }
@@ -127,7 +127,7 @@ TEST_CASE("apply is B + E + a Hr, densely")
     const Eigen::MatrixXd V_new = test_helpers::randn_points(n, 3, gen);
     Eigen::MatrixXd C_new = Eigen::MatrixXd::Zero(3, 3);
     C_new.diagonal() << -0.4, 0.7, 1.5;
-    merge(A.block, A.hr, V_new, C_new, Provenance::Flip);
+    merge(A.block, A.hr, V_new, C_new, C_new, Provenance::Flip);
 
     const Eigen::MatrixXd Ed = Hrd * V_new * C_new * V_new.transpose() * Hrd;
     const Eigen::MatrixXd X = test_helpers::randn_points(n, 3, gen);
@@ -161,7 +161,7 @@ TEST_CASE("the Woodbury inverse is exact at every shift, no refactorization")
     // ...and the solve matches a dense factorization of M(a) outright
     const Eigen::MatrixXd Hrd = Eigen::MatrixXd(spd_sparse(n));
     const Eigen::MatrixXd Ed =
-        A.block.HrV * A.block.C * A.block.HrV.transpose();
+        A.block.HrV * A.block.C_surr * A.block.HrV.transpose();
     const double a = 2.0 * floor;
     const Eigen::MatrixXd dense_solution =
         (a * Hrd + Ed).ldlt().solve(Eigen::MatrixXd(X));
@@ -180,7 +180,7 @@ TEST_CASE("the analytic PD certificate agrees with dense truth")
     // dense M(a) changes definiteness exactly at the certified floor
     const Eigen::MatrixXd Hrd = Eigen::MatrixXd(spd_sparse(n));
     const Eigen::MatrixXd Ed =
-        A.block.HrV * A.block.C * A.block.HrV.transpose();
+        A.block.HrV * A.block.C_surr * A.block.HrV.transpose();
     const auto min_eig = [&]( double a ) {
         return Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd>(a * Hrd + Ed)
             .eigenvalues()
@@ -212,4 +212,32 @@ TEST_CASE("an empty block degenerates to pure prior preconditioning")
         Hrd.ldlt().solve(Eigen::MatrixXd(X)) / a;
     CHECK((glr_solve(A, X, a) - expected).cwiseAbs().maxCoeff()
           < 1e-9 * expected.cwiseAbs().maxCoeff());
+}
+
+TEST_CASE("extending the cache never changes the operator")
+{
+    // The reason the block carries TWO coefficient matrices: caching the
+    // operator's own spectral content (for the GLR surrogate) must leave the
+    // represented operator B + E bitwise alone, while still moving the
+    // surrogate and its PD floor.
+    std::mt19937 gen(5);
+    const int n = 30;
+    ShiftedOperator A = make_shifted_operator(
+        dense_op(symmetric_matrix(n, gen)), ProbeArchive{},
+        sparse_hr_oracle(spd_sparse(n)), 1e-4);
+
+    const Eigen::MatrixXd X = test_helpers::randn_points(n, 3, gen);
+    const Eigen::MatrixXd before = apply(A, X, 0.3);
+    REQUIRE(glr_pd_floor(A) == 0.0);
+
+    // a cache-only merge: zero correction, spectral content in the surrogate
+    Eigen::MatrixXd lambdas = Eigen::MatrixXd::Zero(3, 3);
+    lambdas.diagonal() << -0.2, 1.0, 4.0;
+    merge(A.block, A.hr, test_helpers::randn_points(n, 3, gen),
+          Eigen::MatrixXd::Zero(3, 3), lambdas, Provenance::PencilCache);
+
+    CHECK(apply(A, X, 0.3) == before);      // the operator: bitwise unmoved
+    CHECK(glr_pd_floor(A) > 0.0);           // the surrogate: moved
+    CHECK(lgpsf::corrections::correction_eigenvalues(A.block).cwiseAbs()
+              .maxCoeff() < 1e-12);
 }
