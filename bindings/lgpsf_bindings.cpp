@@ -32,6 +32,7 @@
 #include <pybind11/stl.h>
 
 #include "lgpsf/corrections/hr_oracle.hpp"
+#include "lgpsf/corrections/mode_block.hpp"
 #include "lgpsf/corrections/symmetric_op.hpp"
 #include "lgpsf/ellipsoid_transform.hpp"
 #include "lgpsf/exceptions.hpp"
@@ -1222,6 +1223,69 @@ PYBIND11_MODULE(lgpsf, m)
              "Reference oracle: sparse SPD H_r factored once "
              "(SimplicialLLT), exact solves. The testing / small-N path -- "
              "production oracles wrap the consumer's own solver.");
+
+    py::enum_<corrections::Provenance>(
+        corr, "Provenance",
+        "Where a block column came from. PencilCache and Flip are cache "
+        "(recomputable from the operator + oracle); Deflation and ValuePass "
+        "carry information whose only ground truth is the probe archive.")
+        .value("PencilCache", corrections::Provenance::PencilCache)
+        .value("Flip", corrections::Provenance::Flip)
+        .value("Deflation", corrections::Provenance::Deflation)
+        .value("ValuePass", corrections::Provenance::ValuePass);
+
+    py::class_<corrections::ModeBlock>(
+        corr, "ModeBlock",
+        "The H_r-orthonormal mode block: the correction "
+        "E = (Hr V) C (Hr V)^T with V^T Hr V = I and a provenance tag per "
+        "column. Plain data -- persist it with numpy (V, HrV, C, tags), the "
+        "library convention.")
+        .def(py::init<>())
+        .def_readwrite("V", &corrections::ModeBlock::V)
+        .def_readwrite("HrV", &corrections::ModeBlock::HrV)
+        .def_readwrite("C", &corrections::ModeBlock::C)
+        .def_readwrite("tags", &corrections::ModeBlock::tags)
+        .def_property_readonly("dim", &corrections::ModeBlock::dim)
+        .def_property_readonly("rank", &corrections::ModeBlock::rank);
+
+    py::class_<corrections::MergeReport>(corr, "MergeReport",
+                                         "What one merge did.")
+        .def_readonly("requested", &corrections::MergeReport::requested)
+        .def_readonly("added", &corrections::MergeReport::added)
+        .def_readonly("largest_dropped",
+                      &corrections::MergeReport::largest_dropped);
+
+    corr.def("empty_block", &corrections::empty_block, "dim"_a,
+             "A block with no modes yet, over vectors of the given "
+             "dimension.");
+    corr.def("validate",
+             []( const corrections::ModeBlock& block )
+             { return corrections::validate(block); },
+             "block"_a,
+             "Structural consistency, reported rather than thrown; empty "
+             "means consistent.");
+    corr.def("apply_correction", &corrections::apply_correction,
+             "block"_a, "X"_a,
+             "E X = (Hr V) C (Hr V)^T X for (N, m) columns X. No oracle "
+             "involved.");
+    corr.def("pencil_eigenvalues", &corrections::pencil_eigenvalues,
+             "block"_a,
+             "The block's pencil eigenvalues against H_r -- exactly eig(C), "
+             "ascending, because V is H_r-orthonormal.");
+    corr.def("merge",
+             []( corrections::ModeBlock& block,
+                 const corrections::HrOracle& hr,
+                 const Eigen::MatrixXd& V_new, const Eigen::MatrixXd& C_new,
+                 corrections::Provenance tag, double drop_tol )
+             { return corrections::merge(block, hr, V_new, C_new, tag,
+                                         drop_tol); },
+             "block"_a, "hr"_a, "V_new"_a, "C_new"_a, "tag"_a,
+             "drop_tol"_a = 1e-14,
+             "Fold the contribution (Hr V_new) C_new (Hr V_new)^T into the "
+             "block. Existing columns are never modified; the in-span part "
+             "of a candidate folds into coefficients, the rest becomes new "
+             "H_r-orthonormal columns tagged with `tag`. Costs q oracle "
+             "APPLIES (no solves) + rank-sized dense algebra.");
 
     // ---- layout probe -----------------------------------------------------
     // Not part of the API; a permanent regression hook for the one bug this

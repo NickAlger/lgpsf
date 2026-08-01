@@ -115,3 +115,69 @@ def test_an_oracle_from_python_callables_is_a_first_class_citizen():
     X = rng.normal(size=(n, 2))
     np.testing.assert_allclose(oracle.solve(oracle.apply(X), 1e-8), X,
                                atol=1e-14)
+
+
+def tridiag_spd(n):
+    scipy_sparse = pytest.importorskip("scipy.sparse")
+    main = 2.5 + 0.01 * np.arange(n)
+    return scipy_sparse.diags([-np.ones(n - 1), main, -np.ones(n - 1)],
+                              [-1, 0, 1], format="csc")
+
+
+def test_mode_block_merge_represents_the_contribution():
+    n = 30
+    rng = np.random.default_rng(3)
+    Hr = tridiag_spd(n)
+    Hrd = Hr.toarray()
+    oracle = corr.sparse_hr_oracle(Hr)
+
+    block = corr.empty_block(n)
+    assert block.rank == 0 and block.dim == n
+
+    V_new = rng.normal(size=(n, 4))
+    C_new = rng.normal(size=(4, 4))
+    C_new = 0.5 * (C_new + C_new.T)
+    report = corr.merge(block, oracle, V_new, C_new, corr.Provenance.Flip)
+    assert (report.requested, report.added) == (4, 4)
+    assert corr.validate(block) == []
+    assert list(block.tags) == [corr.Provenance.Flip] * 4
+
+    # the invariant and the represented correction, against dense truth
+    np.testing.assert_allclose(block.V.T @ Hrd @ block.V, np.eye(4),
+                               atol=1e-12)
+    expected = Hrd @ V_new @ C_new @ V_new.T @ Hrd
+    X = rng.normal(size=(n, 3))
+    np.testing.assert_allclose(corr.apply_correction(block, X), expected @ X,
+                               atol=1e-11 * np.abs(expected @ X).max())
+
+    # pencil eigenvalues are eig(C), ascending
+    np.testing.assert_allclose(corr.pencil_eigenvalues(block),
+                               np.sort(np.linalg.eigvalsh(block.C)),
+                               atol=1e-13)
+
+
+def test_mode_block_round_trips_through_numpy(tmp_path):
+    # Persistence is the library convention: the struct is plain arrays.
+    n = 25
+    rng = np.random.default_rng(4)
+    oracle = corr.sparse_hr_oracle(tridiag_spd(n))
+    block = corr.empty_block(n)
+    corr.merge(block, oracle, rng.normal(size=(n, 3)), np.eye(3),
+               corr.Provenance.Deflation)
+
+    path = tmp_path / "block.npz"
+    np.savez(path, V=block.V, HrV=block.HrV, C=block.C,
+             tags=np.array([int(t) for t in block.tags]))
+
+    data = np.load(path)
+    loaded = corr.ModeBlock()
+    loaded.V = data["V"]
+    loaded.HrV = data["HrV"]
+    loaded.C = data["C"]
+    loaded.tags = [corr.Provenance(int(t)) for t in data["tags"]]
+    assert corr.validate(loaded) == []
+    assert list(loaded.tags) == list(block.tags)
+
+    X = rng.normal(size=(n, 2))
+    np.testing.assert_array_equal(corr.apply_correction(loaded, X),
+                                  corr.apply_correction(block, X))

@@ -459,7 +459,9 @@ not code.
    `lgpsf.corrections` binding submodule; the include-direction rule in
    `tools/check_dependencies.py`. **Landed 2026-08-01.**
 3. `corrections/mode_block.hpp`: $H_r$-orthonormal block, Gram merge,
-   congruence, provenance, serialization.
+   congruence, provenance, serialization. **Landed 2026-08-01** (plain
+   public arrays, numpy persistence per library convention — no bespoke
+   format; both $V$ and $H_r V$ stored).
 4. `corrections/shifted_operator.hpp`: struct + GLR-mode apply/solve +
    analytic PD certificates + per-$a$ scalar arithmetic (frog-kernel
    tests).

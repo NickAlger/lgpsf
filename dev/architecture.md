@@ -69,6 +69,7 @@ linear-algebra convention, deliberately not the fit layers' probes-as-rows.
 |---|---|
 | `corrections/symmetric_op.hpp` | `SymmetricOp`, the operator boundary: dimension + block matvec, type-erased so the durable structs can OWN their handle. `sparse_op` / `dense_op` adapters (by value — a handle cannot dangle), and `symmetry_defect`: a seeded stochastic symmetry measurement from matvecs alone, which catches an unsymmetrized operator handed across the boundary. |
 | `corrections/hr_oracle.hpp` | `HrOracle`: apply $H_r$, and solve with it to a requested relative tolerance. The consumer's scalable solver (Krylov + multigrid) wraps in from C++ or Python; `sparse_hr_oracle` (SimplicialLLT, exact) is the reference adapter for tests and small $N$. |
+| `corrections/mode_block.hpp` | `ModeBlock`: the ONE low-rank object holding every spectral correction — $E = (H_r V) C (H_r V)^T$ with $V^T H_r V = I$ and a provenance tag per column. `merge` folds a new contribution in by two-pass $H_r$-Gram orthonormalization ($q$ oracle APPLIES, no solves): existing columns are never modified, the in-span part of a candidate lands in coefficients. `pencil_eigenvalues` = `eig(C)` exactly, the analytic ingredient of the PD certificates. Plain data; persist from Python with numpy. |
 
 Further headers land per the plan's slice list.
 

@@ -79,6 +79,14 @@ to [Semantic Versioning](https://semver.org/).
   sparse assemblies, other approximation formats, and matrix-free shells;
   `tools/check_dependencies.py` now enforces the no-crossing-includes rule
   in both directions. Blocks are `(N, m)` columns in this layer.
+- **`lgpsf.corrections.ModeBlock`**: the $H_r$-orthonormal mode block — one
+  low-rank object holding every spectral correction as
+  $E = (H_r V) C (H_r V)^T$ with a provenance tag per column
+  (`PencilCache` / `Flip` / `Deflation` / `ValuePass`). `merge` folds in a
+  contribution by $H_r$-Gram orthonormalization without ever modifying
+  existing columns (merging the same directions twice adds coefficients,
+  not columns); `apply_correction` and `pencil_eigenvalues` (= `eig(C)`,
+  exactly) read it. Plain public arrays; persist with numpy.
 - **`Symmetrize::Weighted`**: a scale-aware symmetrization for
   `assemble_sparse` — a per-entry convex average with inverse-row-energy
   weights, so where two row fits disagree about a shared entry the weaker
