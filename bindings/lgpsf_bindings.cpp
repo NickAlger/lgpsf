@@ -33,6 +33,7 @@
 
 #include "lgpsf/corrections/hr_oracle.hpp"
 #include "lgpsf/corrections/mode_block.hpp"
+#include "lgpsf/corrections/deflation.hpp"
 #include "lgpsf/corrections/pencil_lanczos.hpp"
 #include "lgpsf/corrections/shifted_operator.hpp"
 #include "lgpsf/corrections/solve.hpp"
@@ -1540,6 +1541,74 @@ PYBIND11_MODULE(lgpsf, m)
              "oracle_tol"_a = 1e-10, "rtol"_a = 1e-8, "max_iters"_a = 500,
              "Solve at shift a, zone-checked: refused shifts raise, warned "
              "shifts proceed and say so in the returned ZoneReport.");
+
+    py::enum_<corrections::ValuePassMode>(
+        corr, "ValuePassMode",
+        "V1: exact Rayleigh on the top of the residual basis (saturates at "
+        "its dimension). V2: half the budget refines the basis through the "
+        "true error first, and keeps improving past that point.")
+        .value("V1", corrections::ValuePassMode::V1)
+        .value("V2", corrections::ValuePassMode::V2);
+    py::class_<corrections::DeflateReport>(
+        corr, "DeflateReport", "What a deflation pass did.")
+        .def_readonly("residuals", &corrections::DeflateReport::residuals)
+        .def_readonly("basis", &corrections::DeflateReport::basis)
+        .def_readonly("applies", &corrections::DeflateReport::applies)
+        .def_readonly("kept", &corrections::DeflateReport::kept)
+        .def_readonly("clamped", &corrections::DeflateReport::clamped)
+        .def_readonly("added", &corrections::DeflateReport::added)
+        .def_readonly("theta_min", &corrections::DeflateReport::theta_min)
+        .def_readonly("theta_max", &corrections::DeflateReport::theta_max);
+
+    const auto deflate_options = []( double rcond, int rank,
+                                     double solve_rtol, double oracle_tol,
+                                     int max_iters ) {
+        corrections::DeflateOptions opts;
+        opts.rcond = rcond;
+        opts.rank = rank;
+        opts.solve_rtol = solve_rtol;
+        opts.oracle_tol = oracle_tol;
+        opts.max_iters = max_iters;
+        return opts;
+    };
+    corr.def("deflate_free",
+             [deflate_options]( corrections::ShiftedOperator& A, double rcond,
+                                int rank, double solve_rtol,
+                                double oracle_tol, int max_iters ) {
+                 return corrections::deflate_free(
+                     A, deflate_options(rcond, rank, solve_rtol, oracle_tol,
+                                        max_iters));
+             },
+             "A"_a, "rcond"_a = 3e-2, "rank"_a = -1, "solve_rtol"_a = 1e-8,
+             "oracle_tol"_a = 1e-10, "max_iters"_a = 500,
+             "Free-residual Rayleigh-Ritz deflation: zero extra operator "
+             "access -- the archive residuals are exact samples of the "
+             "error action, already paid for. The rcond truncation is "
+             "essential (the raw pseudoinverse lost definiteness on the "
+             "PIG study). Helped at large probe counts, not at all at "
+             "k <= 20; if fresh applies are affordable, value_pass "
+             "dominates. Requires a certified struct (run make_pd first).");
+    corr.def("value_pass",
+             [deflate_options]( corrections::ShiftedOperator& A,
+                                const corrections::SymmetricOp& Hd, int m,
+                                corrections::ValuePassMode mode, double rcond,
+                                int rank, double solve_rtol,
+                                double oracle_tol, int max_iters ) {
+                 return corrections::value_pass(
+                     A, Hd, m, mode,
+                     deflate_options(rcond, rank, solve_rtol, oracle_tol,
+                                     max_iters));
+             },
+             "A"_a, "Hd"_a, "m"_a,
+             "mode"_a = corrections::ValuePassMode::V1, "rcond"_a = 3e-2,
+             "rank"_a = -1, "solve_rtol"_a = 1e-8, "oracle_tol"_a = 1e-10,
+             "max_iters"_a = 500,
+             "Spend m TRUE applications of Hd on eigenvalue estimates: the "
+             "basis is free (top of the residual basis), the applies buy "
+             "the exact Rayleigh matrix of the whitened error there. The "
+             "new pairs (Q, Hd Q) are appended to the archive as secant "
+             "information for any later rebuild. Requires a certified "
+             "struct.");
 
     // ---- layout probe -----------------------------------------------------
     // Not part of the API; a permanent regression hook for the one bug this

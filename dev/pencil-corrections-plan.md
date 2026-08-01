@@ -486,7 +486,12 @@ not code.
    **Landed 2026-08-01** (inner PCG in `corrections/solve.hpp`;
    nonpositive curvature throws rather than converging wrong).
 8. `deflate_free` (§4.3) in `corrections/deflation.hpp`.
-9. `value_pass` (§4.4) + archive growth.
+   **Landed 2026-08-01** (residuals taken against the CURRENT corrected
+   operator; requires a certified struct; exact-recovery test on a
+   planted low-rank error).
+9. `value_pass` (§4.4) + archive growth. **Landed 2026-08-01** (V1 and
+   V2; a test pins V2 reaching past the residual span where V1
+   saturates).
 10. `rebuild_at` (§5) + persistence round-trip.
 11. `corrections/cholesky_backend.hpp` (§8, capability-gated) + three-way
     backend agreement test.

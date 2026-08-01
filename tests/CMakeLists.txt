@@ -17,7 +17,8 @@ add_executable(lgpsf_tests
     test_corrections_mode_block.cpp
     test_corrections_shifted.cpp
     test_corrections_pencil.cpp
-    test_corrections_solve.cpp)
+    test_corrections_solve.cpp
+    test_corrections_deflation.cpp)
 target_link_libraries(lgpsf_tests PRIVATE lgpsf::lgpsf)
 target_include_directories(lgpsf_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty)
 target_compile_options(lgpsf_tests PRIVATE

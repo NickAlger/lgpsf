@@ -335,3 +335,66 @@ def test_zones_and_both_solve_modes_on_the_real_fit():
     assert two.iterations > 0
     np.testing.assert_allclose(two.X, np.linalg.solve(P0d + mid * Hrd, b),
                                atol=1e-6 * np.abs(two.X).max())
+
+
+def test_deflation_closes_the_error_the_fit_left_behind():
+    # Pipeline test with EXACT truth: certify the real fit, then declare the
+    # true operator to be the certified fit plus a planted low-rank error.
+    # Free deflation must recover the plant from archived residuals alone;
+    # the value pass must recover it from true applies.
+    scipy = pytest.importorskip("scipy")
+    import scipy.sparse
+
+    op = synthetic_operator()
+    fit = fit_synthetic(op)
+    n = op["count"]
+    rng = np.random.default_rng(7)
+
+    Bs = scipy.sparse.csr_matrix(
+        lgpsf.assemble_sparse(fit.model, np.inf, lgpsf.Symmetrize.Weighted))
+    Hr = tridiag_spd(n)
+    Hrd = Hr.toarray()
+    A = corr.make_shifted_operator(corr.sparse_op(Bs), corr.ProbeArchive(),
+                                   corr.sparse_hr_oracle(Hr), 1e-2)
+    assert corr.make_pd(A, max_iters=4 * n).certified
+
+    def corrected(struct):
+        return Bs.toarray() + struct.block.HrV @ struct.block.C_corr \
+            @ struct.block.HrV.T
+
+    # the plant: rank-3, positive, on Hr-normalized random directions
+    U = rng.normal(size=(n, 3))
+    U /= np.sqrt(np.sum(U * (Hrd @ U), axis=0))
+    delta = (Hrd @ U) @ np.diag([0.3, 0.2, 0.1]) @ (Hrd @ U).T
+    Hd = corrected(A) + delta
+
+    Z = rng.normal(size=(n, 12))
+    archive = corr.ProbeArchive()
+    archive.Z = Z
+    archive.Y = Hd @ Z
+    A.archive = archive
+
+    def err(struct):
+        return np.linalg.norm(Hd - corrected(struct)) / np.linalg.norm(Hd)
+
+    before = err(A)
+    assert before > 1e-4
+
+    free = corr.deflate_free(A, rcond=1e-6)
+    assert (free.applies, free.kept, free.clamped) == (0, 3, 0)
+    assert err(A) < 1e-5 * before  # exact data, exact recovery
+
+    # value pass on a fresh struct over the same plant
+    B = corr.make_shifted_operator(corr.sparse_op(Bs), archive,
+                                   corr.sparse_hr_oracle(Hr), 1e-2)
+    assert corr.make_pd(B, max_iters=4 * n).certified
+    Hd_B = corrected(B) + delta
+    archive_B = corr.ProbeArchive()
+    archive_B.Z = Z
+    archive_B.Y = Hd_B @ Z
+    B.archive = archive_B
+    vp = corr.value_pass(B, corr.dense_op(Hd_B), 3, corr.ValuePassMode.V1)
+    assert vp.applies == 3 and vp.kept == 3
+    assert B.archive.Q_vp.shape == (n, 3)
+    # the remaining error is tiny compared with the plant it removed
+    assert np.linalg.norm(Hd_B - corrected(B)) < 1e-5 * np.linalg.norm(delta)

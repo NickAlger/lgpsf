@@ -127,6 +127,16 @@ to [Semantic Versioning](https://semver.org/).
   required when wrapping it). An indefinite operator on a warned shift
   reveals itself as a nonpositive-curvature error rather than a silently
   wrong answer.
+- **`lgpsf.corrections` deflation**: `deflate_free` (regularized
+  Rayleigh–Ritz on the archive residuals — exact samples of the error
+  action, already paid for; zero extra operator access; the rcond
+  truncation is essential and the PIG caveats ship in the docstring) and
+  `value_pass` (spend $m$ true $H_d$ applies on the exact Rayleigh matrix
+  of the whitened error over the free residual basis; V2 spends half the
+  budget on one power step and keeps improving where V1 saturates at the
+  basis dimension). Estimates are clamped at `clamp_floor`, which is what
+  keeps the $a \ge a_0$ zone guaranteed after deflation; value-pass pairs
+  are appended to the archive as secant information for later rebuilds.
 - **`Symmetrize::Weighted`**: a scale-aware symmetrization for
   `assemble_sparse` — a per-entry convex average with inverse-row-energy
   weights, so where two row fits disagree about a shared entry the weaker
