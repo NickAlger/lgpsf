@@ -51,6 +51,27 @@ validated, applied and assembled without ever including `operator_fit.hpp`.
 | `operator_fit.hpp` | `fit_operator`, row-parallel, with the always-on baseline guard and CSR fit windows. Window shape is one continuous `window_aspect_cap`. All windows from ONE dual-tree descent. |
 | `exceptions.hpp` | `InfeasibleParameters` means "no basis exists at this point in parameter space" and the fitting core catches it, scoring the worst finite cost. Caller errors stay `std::invalid_argument`. |
 
+## The corrections layer (`corrections/`)
+
+A **sibling** of everything above, not a level of it. `include/lgpsf/corrections/`
+is operator-blind machinery for turning a symmetric operator approximation plus
+a regularization operator into a deployable SPD preconditioner — pencil
+operations, PSD-ification, deflation
+([`pencil-corrections-plan.md`](pencil-corrections-plan.md) is the layer's
+plan of record). Nothing in it reads a matrix entry: it builds against Eigen
+and its own headers only, and no fit header may include it —
+`tools/check_dependencies.py` enforces both directions mechanically.
+Namespace `lgpsf::corrections`; Python `lgpsf.corrections` submodule; not in
+the `lgpsf.hpp` umbrella. **Blocks are columns**, `(N, m)` — the
+linear-algebra convention, deliberately not the fit layers' probes-as-rows.
+
+| header | what it provides |
+|---|---|
+| `corrections/symmetric_op.hpp` | `SymmetricOp`, the operator boundary: dimension + block matvec, type-erased so the durable structs can OWN their handle. `sparse_op` / `dense_op` adapters (by value — a handle cannot dangle), and `symmetry_defect`: a seeded stochastic symmetry measurement from matvecs alone, which catches an unsymmetrized operator handed across the boundary. |
+| `corrections/hr_oracle.hpp` | `HrOracle`: apply $H_r$, and solve with it to a requested relative tolerance. The consumer's scalable solver (Krylov + multigrid) wraps in from C++ or Python; `sparse_hr_oracle` (SimplicialLLT, exact) is the reference adapter for tests and small $N$. |
+
+Further headers land per the plan's slice list.
+
 ## House rules
 
 - `#pragma once`, SPDX, and the "Part of lgpsf" preamble on every header.

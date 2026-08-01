@@ -62,6 +62,30 @@ PATTERNS = [
 
 SKIP_SUFFIXES = {".png", ".pdf", ".pyc", ".so"}
 
+# The corrections layer (include/lgpsf/corrections/) is a SIBLING of the fit
+# stack, not a downstream consumer: it is operator-blind, so it must build
+# against nothing but Eigen and its own headers -- and nothing in the fit
+# stack may reach into it either. See dev/pencil-corrections-plan.md, P4.
+LGPSF_INCLUDE = re.compile(r'#include\s+"lgpsf/([^"]+)"')
+
+
+def sibling_problems():
+    root = REPO / "include" / "lgpsf"
+    for path in sorted(root.rglob("*.hpp")):
+        rel = path.relative_to(root).as_posix()
+        in_corrections = rel.startswith("corrections/")
+        for number, line in enumerate(path.read_text().splitlines(), start=1):
+            match = LGPSF_INCLUDE.search(line)
+            if not match:
+                continue
+            target_in_corrections = match.group(1).startswith("corrections/")
+            if in_corrections and not target_in_corrections:
+                yield (f"include/lgpsf/{rel}:{number}: a corrections header "
+                       f"includes a fit header\n    {line.strip()}")
+            if not in_corrections and target_in_corrections:
+                yield (f"include/lgpsf/{rel}:{number}: a fit header includes "
+                       f"a corrections header\n    {line.strip()}")
+
 
 def offending_lines(path):
     try:
@@ -100,7 +124,17 @@ def main():
               "docs/validation.md. A PATH is not.", file=sys.stderr)
         return 1
 
-    print(f"ok: no private dependencies in {', '.join(SHIPPED)}")
+    crossings = list(sibling_problems())
+    if crossings:
+        print("The corrections layer and the fit stack are SIBLINGS; "
+              f"found {len(crossings)} crossing include(s):\n",
+              file=sys.stderr)
+        for crossing in crossings:
+            print(crossing, file=sys.stderr)
+        return 1
+
+    print(f"ok: no private dependencies in {', '.join(SHIPPED)}; "
+          "corrections/fit sibling rule holds")
     return 0
 
 

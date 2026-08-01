@@ -68,6 +68,17 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`lgpsf.corrections`**: the operator boundary of the new corrections
+  layer — `SymmetricOp` (a symmetric operator as dimension + block matvec,
+  type-erased), `HrOracle` (apply the regularization operator and solve
+  with it to a requested tolerance), `sparse_op` / `dense_op` /
+  `sparse_hr_oracle` adapters, and `symmetry_defect`, a seeded stochastic
+  symmetry measurement that flags an unsymmetrized operator from matvecs
+  alone. The layer lives at `include/lgpsf/corrections/` as a sibling of
+  the fit stack — it reads no matrix entries, so the same machinery serves
+  sparse assemblies, other approximation formats, and matrix-free shells;
+  `tools/check_dependencies.py` now enforces the no-crossing-includes rule
+  in both directions. Blocks are `(N, m)` columns in this layer.
 - **`Symmetrize::Weighted`**: a scale-aware symmetrization for
   `assemble_sparse` — a per-entry convex average with inverse-row-energy
   weights, so where two row fits disagree about a shared entry the weaker

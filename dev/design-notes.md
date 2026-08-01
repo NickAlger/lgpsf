@@ -1686,3 +1686,34 @@ kernel, whose row scales are comparable, `Weighted` and `Average` differ by ~2%
 - Implemented as a post-pass on the assembled matrix (`detail::
   weighted_symmetrize`), not inside the row loop: the weights need every row's
   norm, so it is inherently a whole-matrix operation.
+
+## The corrections layer is operator-blind, and a sibling (2026-08-01)
+
+The pencil corrections layer (`include/lgpsf/corrections/`) consumes the
+operator it corrects through a type-erased boundary — `SymmetricOp`, a
+dimension plus a block matvec — and never reads a matrix entry. Decided after
+auditing every planned operation: nothing in the required path needs entries
+(the one entry-level algorithm, weighted symmetrization, is an ASSEMBLY
+operation and stays format-side). Consequences worth remembering:
+
+- **No transpose matvec exists at the boundary, on purpose.** Everything
+  crossing it is symmetric; the layer measures compliance with
+  `symmetry_defect` (matvecs only) instead of trusting the producer — which
+  catches the one misuse assembly cannot warn about, an as-fitted operator
+  handed across by mistake.
+- **Sibling, not downstream:** `corrections/*` includes no fit header and no
+  fit header includes `corrections/*`; `check_dependencies.py` enforces both
+  directions (and a planted violation was verified to be caught). The
+  corrections umbrella position also means it is NOT in `lgpsf.hpp`.
+- **Type erasure over templates** for `SymmetricOp`/`HrOracle`: dispatch is
+  amortized over (N x m) blocks, the durable structs need owned handles that
+  cannot dangle (adapters take their matrix BY VALUE), and the layer compiles
+  once — relevant in a repo whose heaviest TU peaks at 2.8 GB.
+- **Blocks are columns** `(N, m)` in this layer, the linear-algebra
+  convention; the fit layers keep probes-as-rows. Adapters are where the
+  transposition belongs, and both boundary classes validate shapes on BOTH
+  sides (caller blocks and callable results), so a rows-convention block
+  fails loudly instead of transposing silently.
+
+Full reasoning: [`pencil-corrections-plan.md`](pencil-corrections-plan.md),
+P4 and §7.

@@ -457,7 +457,7 @@ not code.
    type-erased boundary classes, `sparse_op` / `dense_op` /
    `sparse_hr_oracle` adapters, `symmetry_defect`; the
    `lgpsf.corrections` binding submodule; the include-direction rule in
-   `tools/check_dependencies.py`.
+   `tools/check_dependencies.py`. **Landed 2026-08-01.**
 3. `corrections/mode_block.hpp`: $H_r$-orthonormal block, Gram merge,
    congruence, provenance, serialization.
 4. `corrections/shifted_operator.hpp`: struct + GLR-mode apply/solve +

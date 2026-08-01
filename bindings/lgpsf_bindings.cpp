@@ -31,6 +31,8 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include "lgpsf/corrections/hr_oracle.hpp"
+#include "lgpsf/corrections/symmetric_op.hpp"
 #include "lgpsf/ellipsoid_transform.hpp"
 #include "lgpsf/exceptions.hpp"
 #include "lgpsf/harmonic_polynomials.hpp"
@@ -1134,6 +1136,92 @@ PYBIND11_MODULE(lgpsf, m)
 
     m.def("concatenate_rows", &concatenate_rows, "parts"_a,
           "Merge operators covering disjoint row ranges.");
+
+    // ---- corrections: the operator-blind layer ----------------------------
+    // NOTE the convention change: blocks here are (N, m), one vector per
+    // COLUMN -- the linear-algebra convention of lgpsf::corrections -- not
+    // the (N, K) point-batch convention documented at the top of this file
+    // and not the fit layer's probes-as-rows. The boundary is exactly where
+    // that transposition belongs.
+    py::module_ corr = m.def_submodule(
+        "corrections",
+        "Operator-blind corrections layer: pencil operations over a "
+        "SymmetricOp + HrOracle boundary. Nothing in it reads a matrix "
+        "entry. Blocks are (N, m), one vector per COLUMN.");
+
+    py::class_<corrections::SymmetricOp>(
+        corr, "SymmetricOp",
+        "A symmetric linear operator: dimension plus block matvec. Build "
+        "from a Python callable taking and returning (N, m) arrays -- e.g. "
+        "a PETSc or multigrid apply -- or use sparse_op / dense_op. "
+        "Symmetry is the producer's responsibility; measure it with "
+        "symmetry_defect.")
+        .def(py::init([]( Eigen::Index dim, py::function apply ) {
+                 return corrections::SymmetricOp(
+                     dim,
+                     [apply]( const Eigen::Ref<const Eigen::MatrixXd>& X )
+                         -> Eigen::MatrixXd {
+                         return apply(Eigen::MatrixXd(X))
+                             .cast<Eigen::MatrixXd>();
+                     });
+             }),
+             "dim"_a, "apply"_a)
+        .def_property_readonly("dim", &corrections::SymmetricOp::dim)
+        .def("apply", &corrections::SymmetricOp::apply, "X"_a,
+             "Apply to (N, m) columns; returns (N, m).");
+
+    corr.def("sparse_op",
+             []( const Eigen::SparseMatrix<double>& A )
+             { return corrections::sparse_op(A); },
+             "A"_a,
+             "Wrap a sparse matrix (the handle owns a copy). For an lgpsf "
+             "fit, assemble with Symmetrize.Weighted first.");
+    corr.def("dense_op",
+             []( const Eigen::MatrixXd& A )
+             { return corrections::dense_op(A); },
+             "A"_a, "Wrap a dense matrix (owns a copy); mainly for testing.");
+    corr.def("symmetry_defect", &corrections::symmetry_defect,
+             "op"_a, "pairs"_a = 8, "seed"_a = 0,
+             "Largest relative asymmetry of the bilinear form over seeded "
+             "Gaussian pairs, from matvecs alone (two block applies). "
+             "Symmetric operators measure at rounding level; an "
+             "unsymmetrized row fit measures orders of magnitude above.");
+
+    py::class_<corrections::HrOracle>(
+        corr, "HrOracle",
+        "The regularization operator H_r: apply, and solve to a relative "
+        "tolerance. In production, wrap your own solver (typically Krylov "
+        "preconditioned by multigrid); tol is an accuracy request an oracle "
+        "may exceed but must not miss.")
+        .def(py::init([]( Eigen::Index dim, py::function apply,
+                          py::function solve ) {
+                 return corrections::HrOracle(
+                     dim,
+                     [apply]( const Eigen::Ref<const Eigen::MatrixXd>& X )
+                         -> Eigen::MatrixXd {
+                         return apply(Eigen::MatrixXd(X))
+                             .cast<Eigen::MatrixXd>();
+                     },
+                     [solve]( const Eigen::Ref<const Eigen::MatrixXd>& B,
+                              double tol ) -> Eigen::MatrixXd {
+                         return solve(Eigen::MatrixXd(B), tol)
+                             .cast<Eigen::MatrixXd>();
+                     });
+             }),
+             "dim"_a, "apply"_a, "solve"_a)
+        .def_property_readonly("dim", &corrections::HrOracle::dim)
+        .def("apply", &corrections::HrOracle::apply, "X"_a,
+             "H_r X for (N, m) columns X.")
+        .def("solve", &corrections::HrOracle::solve, "B"_a, "tol"_a,
+             "H_r^{-1} B to relative tolerance tol, (N, m) columns.");
+
+    corr.def("sparse_hr_oracle",
+             []( const Eigen::SparseMatrix<double>& Hr )
+             { return corrections::sparse_hr_oracle(Hr); },
+             "Hr"_a,
+             "Reference oracle: sparse SPD H_r factored once "
+             "(SimplicialLLT), exact solves. The testing / small-N path -- "
+             "production oracles wrap the consumer's own solver.");
 
     // ---- layout probe -----------------------------------------------------
     // Not part of the API; a permanent regression hook for the one bug this

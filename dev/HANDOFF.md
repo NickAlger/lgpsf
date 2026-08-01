@@ -22,7 +22,7 @@ narrative and open items only; when a thread closes, its record moves to
 | Direction of dependence | enforced by `tools/check_dependencies.py` over docs, dev and experiments too |
 | Repo cleanup | 5 of 6 slices done — see below |
 | Fitting speed | **~4.5× faster than 0.1.0** at unchanged accuracy — see below |
-| Pencil corrections layer | **slice 1 of 12 landed** (`Symmetrize::Weighted`, 2026-07-31) — full implementation plan in [`pencil-corrections-plan.md`](pencil-corrections-plan.md); remaining layer is operator-blind (matvec-only over a `SymmetricOp` + $H_r$ oracle boundary) in `include/lgpsf/corrections/`, a sibling of the fit stack |
+| Pencil corrections layer | **slices 1–2 of 12 landed** (`Symmetrize::Weighted` 2026-07-31; the `SymmetricOp`/`HrOracle` boundary 2026-08-01) — full implementation plan in [`pencil-corrections-plan.md`](pencil-corrections-plan.md); the layer is operator-blind (matvec-only) in `include/lgpsf/corrections/`, a sibling of the fit stack |
 | **Not done** | **CI, cibuildwheel, M6 release infra** |
 
 ## Fitting defaults changed, 2026-07-28
