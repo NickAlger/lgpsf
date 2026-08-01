@@ -87,6 +87,15 @@ to [Semantic Versioning](https://semver.org/).
   existing columns (merging the same directions twice adds coefficients,
   not columns); `apply_correction` and `pencil_eigenvalues` (= `eig(C)`,
   exactly) read it. Plain public arrays; persist with numpy.
+- **`lgpsf.corrections.ShiftedOperator`**: the durable struct — operator
+  handle, $H_r$ oracle, `ProbeArchive` (every trace of the true operator),
+  one mode block, and the contract scalars. `make_shifted_operator`
+  verifies symmetry at the door (an as-fitted operator is refused with the
+  measured defect). GLR deployment ships with it: `glr_solve` applies
+  $M(a)^{-1} = (aH_r + E)^{-1}$ by a diagonal-capacitance Woodbury — one
+  oracle solve plus $O(N\rho)$ per column, exact at every shift $a$ above
+  the analytic `glr_pd_floor`, with zero refactorization across an
+  $a$-sweep.
 - **`Symmetrize::Weighted`**: a scale-aware symmetrization for
   `assemble_sparse` — a per-entry convex average with inverse-row-energy
   weights, so where two row fits disagree about a shared entry the weaker

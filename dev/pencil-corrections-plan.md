@@ -464,7 +464,10 @@ not code.
    format; both $V$ and $H_r V$ stored).
 4. `corrections/shifted_operator.hpp`: struct + GLR-mode apply/solve +
    analytic PD certificates + per-$a$ scalar arithmetic (frog-kernel
-   tests).
+   tests). **Landed 2026-08-01** (`eig(C)` recomputed per solve call —
+   microseconds against an oracle solve, and it cannot go stale against
+   the caller-visible block; `BuildOptions` symmetry gate at
+   construction).
 5. `corrections/pencil_lanczos.hpp`: generalized Lanczos both ends;
    `extend_modes`; `make_pd` with $\gamma$, $\lambda_{\mathrm{floor}}$,
    `FlipReport`.

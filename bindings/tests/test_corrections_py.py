@@ -181,3 +181,45 @@ def test_mode_block_round_trips_through_numpy(tmp_path):
     X = rng.normal(size=(n, 2))
     np.testing.assert_array_equal(corr.apply_correction(loaded, X),
                                   corr.apply_correction(block, X))
+
+
+def test_the_full_pipeline_reaches_a_working_woodbury_solve():
+    # fit -> weighted assembly -> boundary -> struct -> exact shifted inverse,
+    # checked against scipy dense truth at several shifts with one build.
+    scipy_sparse = pytest.importorskip("scipy.sparse")
+    op = synthetic_operator()
+    fit = fit_synthetic(op)
+    n = op["count"]
+    rng = np.random.default_rng(5)
+
+    B = corr.sparse_op(scipy_sparse.csr_matrix(
+        lgpsf.assemble_sparse(fit.model, np.inf, lgpsf.Symmetrize.Weighted)))
+    Hr = tridiag_spd(n)
+    A = corr.make_shifted_operator(B, corr.ProbeArchive(),
+                                   corr.sparse_hr_oracle(Hr), 1e-4)
+    assert corr.validate(A) == []
+    assert A.a0 == 1e-4 and A.lambda_floor is None
+
+    # an as-fitted operator is refused at the door
+    with pytest.raises(ValueError, match="not symmetric"):
+        corr.make_shifted_operator(
+            corr.sparse_op(scipy_sparse.csr_matrix(
+                lgpsf.assemble_sparse(fit.model, np.inf))),
+            corr.ProbeArchive(), corr.sparse_hr_oracle(Hr), 1e-4)
+
+    # fill the block with mixed-sign modes and sweep the shift: one build,
+    # every a above the certified floor, no refactorization anywhere
+    corr.merge(A.block, A.hr, rng.normal(size=(n, 3)),
+               np.diag([-0.2, 0.4, 1.0]), corr.Provenance.PencilCache)
+    floor = corr.glr_pd_floor(A)
+    Hrd = Hr.toarray()
+    Ed = A.block.HrV @ A.block.C @ A.block.HrV.T
+    X = rng.normal(size=(n, 2))
+    for a in [1.1 * floor, 3.0 * floor, 50.0 * floor]:
+        expected = np.linalg.solve(a * Hrd + Ed, X)
+        np.testing.assert_allclose(corr.glr_solve(A, X, a), expected,
+                                   atol=1e-9 * np.abs(expected).max())
+
+    # below the floor the certificate refuses, with the floor in the message
+    with pytest.raises(ValueError):
+        corr.glr_solve(A, X, 0.9 * floor)

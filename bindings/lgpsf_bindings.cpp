@@ -33,6 +33,7 @@
 
 #include "lgpsf/corrections/hr_oracle.hpp"
 #include "lgpsf/corrections/mode_block.hpp"
+#include "lgpsf/corrections/shifted_operator.hpp"
 #include "lgpsf/corrections/symmetric_op.hpp"
 #include "lgpsf/ellipsoid_transform.hpp"
 #include "lgpsf/exceptions.hpp"
@@ -1286,6 +1287,92 @@ PYBIND11_MODULE(lgpsf, m)
              "of a candidate folds into coefficients, the rest becomes new "
              "H_r-orthonormal columns tagged with `tag`. Costs q oracle "
              "APPLIES (no solves) + rank-sized dense algebra.");
+
+    py::class_<corrections::ProbeArchive>(
+        corr, "ProbeArchive",
+        "Every trace of the true operator the consumer ever paid for: probe "
+        "pairs (Z, Y = Hd Z), held-out QC pairs, value-pass pairs. Columns "
+        "convention (N, k); empty members mean absent. Plain arrays -- "
+        "persist with numpy.")
+        .def(py::init<>())
+        .def_readwrite("Z", &corrections::ProbeArchive::Z)
+        .def_readwrite("Y", &corrections::ProbeArchive::Y)
+        .def_readwrite("Z_qc", &corrections::ProbeArchive::Z_qc)
+        .def_readwrite("Y_qc", &corrections::ProbeArchive::Y_qc)
+        .def_readwrite("Q_vp", &corrections::ProbeArchive::Q_vp)
+        .def_readwrite("HdQ_vp", &corrections::ProbeArchive::HdQ_vp);
+
+    py::class_<corrections::ShiftedOperator>(
+        corr, "ShiftedOperator",
+        "The durable struct: operator handle, oracle, archive, ONE mode "
+        "block, and the contract scalars (a0, gamma, clamp_floor, "
+        "lambda_floor). It represents B + E + a Hr for a CALLER-supplied a; "
+        "build with make_shifted_operator (the checked path). Everything "
+        "but op/hr persists as arrays; the operator and oracle are "
+        "re-supplied on load, never serialized.")
+        .def_readwrite("op", &corrections::ShiftedOperator::op)
+        .def_readwrite("hr", &corrections::ShiftedOperator::hr)
+        .def_readwrite("archive", &corrections::ShiftedOperator::archive)
+        .def_readwrite("block", &corrections::ShiftedOperator::block)
+        .def_readwrite("a0", &corrections::ShiftedOperator::a0)
+        .def_readwrite("gamma", &corrections::ShiftedOperator::gamma)
+        .def_readwrite("clamp_floor",
+                       &corrections::ShiftedOperator::clamp_floor)
+        .def_readwrite("lambda_floor",
+                       &corrections::ShiftedOperator::lambda_floor)
+        .def_property_readonly("dim", &corrections::ShiftedOperator::dim);
+
+    corr.def("make_shifted_operator",
+             []( corrections::SymmetricOp op,
+                 corrections::ProbeArchive archive, corrections::HrOracle hr,
+                 double a0, double symmetry_tol, int symmetry_pairs,
+                 unsigned symmetry_seed ) {
+                 corrections::BuildOptions opts;
+                 opts.symmetry_tol = symmetry_tol;
+                 opts.symmetry_pairs = symmetry_pairs;
+                 opts.symmetry_seed = symmetry_seed;
+                 return corrections::make_shifted_operator(
+                     std::move(op), std::move(archive), std::move(hr), a0,
+                     opts);
+             },
+             "op"_a, "archive"_a, "hr"_a, "a0"_a, "symmetry_tol"_a = 1e-8,
+             "symmetry_pairs"_a = 8, "symmetry_seed"_a = 0,
+             "Build the struct, verifying the operator's symmetry (seeded "
+             "stochastic check) and the dimensional consistency of every "
+             "member. The block starts empty.");
+    corr.def("validate",
+             []( const corrections::ShiftedOperator& A )
+             { return corrections::validate(A); },
+             "A"_a,
+             "Structural consistency across the members; empty means "
+             "consistent.");
+    corr.def("apply",
+             []( const corrections::ShiftedOperator& A,
+                 const Eigen::MatrixXd& X, double a )
+             { return corrections::apply(A, X, a); },
+             "A"_a, "X"_a, "a"_a,
+             "(B + E + a Hr) X for (N, m) columns X. a = 0 is legal here; "
+             "definiteness is a property of the solve paths, not of "
+             "applying.");
+    corr.def("glr_apply",
+             []( const corrections::ShiftedOperator& A,
+                 const Eigen::MatrixXd& X, double a )
+             { return corrections::glr_apply(A, X, a); },
+             "A"_a, "X"_a, "a"_a,
+             "The GLR deployment operator M(a) X = a Hr X + E X.");
+    corr.def("glr_pd_floor", &corrections::glr_pd_floor, "A"_a,
+             "The exact PD floor of M(a): positive definite iff a exceeds "
+             "this. Analytic, from the block's pencil eigenvalues.");
+    corr.def("glr_solve",
+             []( const corrections::ShiftedOperator& A,
+                 const Eigen::MatrixXd& B_rhs, double a, double oracle_tol )
+             { return corrections::glr_solve(A, B_rhs, a, oracle_tol); },
+             "A"_a, "B"_a, "a"_a, "oracle_tol"_a = 1e-10,
+             "M(a)^{-1} B by the diagonal-capacitance Woodbury formula: one "
+             "oracle solve + O(N rho) per column, valid at EVERY a above "
+             "glr_pd_floor with zero refactorization -- re-shift freely in "
+             "an L-curve sweep. Raises if a is at or below the certified "
+             "floor.");
 
     // ---- layout probe -----------------------------------------------------
     // Not part of the API; a permanent regression hook for the one bug this
