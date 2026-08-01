@@ -227,3 +227,60 @@ def test_the_full_pipeline_reaches_a_working_woodbury_solve():
     # below the floor the certificate refuses, with the floor in the message
     with pytest.raises(ValueError):
         corr.glr_solve(A, X, 0.9 * floor)
+
+
+def test_make_pd_certifies_the_real_fit_against_dense_truth():
+    # The whole point of the layer, end to end on a REAL fitted operator:
+    # find the fit's negative pencil modes, flip the ones below -gamma*a0,
+    # and certify the exact PD floor -- all checked against scipy's dense
+    # generalized eigensolver.
+    scipy = pytest.importorskip("scipy")
+    import scipy.linalg
+    import scipy.sparse
+
+    op = synthetic_operator()
+    fit = fit_synthetic(op)
+    n = op["count"]
+    Bs = scipy.sparse.csr_matrix(
+        lgpsf.assemble_sparse(fit.model, np.inf, lgpsf.Symmetrize.Weighted))
+    Hr = tridiag_spd(n)
+    Bd, Hrd = Bs.toarray(), Hr.toarray()
+
+    pencil = scipy.linalg.eigh(Bd, Hrd, eigvals_only=True)
+    assert pencil.min() < 0  # independently-fitted rows do go negative
+
+    # choose a0 so the threshold -gamma*a0 bisects the negative range:
+    # everything below half the most negative value gets flipped
+    gamma = 0.5
+    a0 = -pencil.min() / gamma * 0.5
+    threshold = -gamma * a0
+    expected_flips = int((pencil < threshold).sum())
+    assert expected_flips >= 1
+
+    A = corr.make_shifted_operator(corr.sparse_op(Bs), corr.ProbeArchive(),
+                                   corr.sparse_hr_oracle(Hr), a0)
+    report = corr.make_pd(A, gamma=gamma, max_iters=4 * n)
+    assert report.certified
+    assert report.flipped == expected_flips
+    assert A.lambda_floor is not None
+
+    # the floor is the leftmost SURVIVING pencil value, exactly
+    survivors = np.concatenate([pencil[pencil >= threshold],
+                                -report.flipped_values])
+    np.testing.assert_allclose(report.lambda_floor, survivors.min(),
+                               rtol=1e-6)
+
+    # dense truth for the corrected operator: flipped modes reflected,
+    # everything else in place
+    P0d = Bd + A.block.HrV @ A.block.C_corr @ A.block.HrV.T
+    corrected = scipy.linalg.eigh(P0d, Hrd, eigvals_only=True)
+    expected = np.sort(np.where(pencil < threshold, -pencil, pencil))
+    np.testing.assert_allclose(corrected, expected,
+                               atol=1e-8 * np.abs(pencil).max())
+
+    # and the certified contract holds on both sides of the floor
+    def min_eig(a):
+        return scipy.linalg.eigh(P0d + a * Hrd, Hrd,
+                                 eigvals_only=True).min()
+    assert min_eig(2.0 * -report.lambda_floor) > 0
+    assert min_eig(0.5 * -report.lambda_floor) < 0

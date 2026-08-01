@@ -1745,3 +1745,31 @@ correction, and a later cache extension refines the surrogate there).
 
 The invariant is pinned by a test: a cache-only merge leaves `apply`
 value-identical while moving the GLR floor.
+
+## Pencil Lanczos: restart in the complement, and a salted seed (2026-08-01)
+
+Two things the first implementation got wrong, found by a test that was
+accidentally adversarial:
+
+- **Stop-on-breakdown under-delivers.** When Lanczos hits an invariant
+  subspace, the right move is a fresh random start in the H_r-orthogonal
+  complement (invariant too, for a self-adjoint operator): a ZERO coupling in
+  the tridiagonal T decouples the finished block correctly, and the residual
+  bound stays valid because a finished block's Ritz pairs have vanishing last
+  components. Declaring the complement empty takes three consecutive
+  deflated-to-nothing random vectors, relative to their pre-deflation norms.
+- **The engine's internal seed is salted** (`seed ^ 0x9E3779B9`). The test
+  built its operator from `mt19937(0)` and the engine drew start vectors from
+  `mt19937(0)` too — making every start vector EXACTLY an eigenvector (the
+  test's basis was triangularly derived from the same stream), every sweep a
+  one-step breakdown, and every emptiness test a lie. A caller who builds
+  data from the same innocently-chosen seed (everyone uses 0) must never
+  hand the engine correlated start vectors; the salt makes stream identity
+  impossible by construction, and the test that found the bug now exercises
+  the restart path as a matter of course.
+
+Also recorded: certification in `make_pd` requires the leftmost surviving
+Ritz pair to CONVERGE (interlacing means an unconverged leftmost estimate
+certifies nothing), and on tight clusters near zero that can require
+exhausting the deflated space — which is why `make_pd` is resumable rather
+than throwing on budget exhaustion.

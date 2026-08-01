@@ -103,6 +103,19 @@ to [Semantic Versioning](https://semver.org/).
   oracle solve plus $O(N\rho)$ per column, exact at every shift $a$ above
   the analytic `glr_pd_floor`, with zero refactorization across an
   $a$-sweep.
+- **`lgpsf.corrections` pencil operations**: `pencil_sweep` (deflated
+  $H_r$-Lanczos on the pencil $(B+E, H_r)$; one operator apply + one
+  oracle solve per iteration; modes already in the block are invisible,
+  so every operation is incremental), `extend_modes` (cache rightmost
+  pencil modes for the GLR surrogate — never changes the operator), and
+  `make_pd` (flip or relu of every pencil mode below the $a_0$-tied
+  threshold $-\gamma a_0$, recording the exact data-dependent contract
+  $B + E + aH_r \succ 0 \iff a > -\lambda_{\mathrm{floor}}$ with
+  $\lambda_{\mathrm{floor}}$ the leftmost surviving pencil value;
+  resumable on budget exhaustion). The Euclidean counterparts of these
+  operations are ill-posed under mesh refinement — the pencil's spectrum
+  accumulates at 0 with only physics-determined modes away from it, which
+  is the design principle the whole layer is built on.
 - **`Symmetrize::Weighted`**: a scale-aware symmetrization for
   `assemble_sparse` — a per-entry convex average with inverse-row-energy
   weights, so where two row fits disagree about a shared entry the weaker

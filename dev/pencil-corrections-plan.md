@@ -470,7 +470,10 @@ not code.
    construction).
 5. `corrections/pencil_lanczos.hpp`: generalized Lanczos both ends;
    `extend_modes`; `make_pd` with $\gamma$, $\lambda_{\mathrm{floor}}$,
-   `FlipReport`.
+   `FlipReport`. **Landed 2026-08-01** (restart-in-complement on
+   breakdown; salted internal seed; `make_pd` resumable, certifies only
+   on a CONVERGED leftmost survivor; leftmost discovery belongs to
+   `make_pd` alone — run it before caching leftmost modes).
 6. Zone semantics + warnings + `solve(…, a)` dispatch (§5).
 7. Two-level solve mode (§6) with the flexible-outer contract documented.
 8. `deflate_free` (§4.3) in `corrections/deflation.hpp`.

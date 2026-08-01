@@ -33,6 +33,7 @@
 
 #include "lgpsf/corrections/hr_oracle.hpp"
 #include "lgpsf/corrections/mode_block.hpp"
+#include "lgpsf/corrections/pencil_lanczos.hpp"
 #include "lgpsf/corrections/shifted_operator.hpp"
 #include "lgpsf/corrections/symmetric_op.hpp"
 #include "lgpsf/ellipsoid_transform.hpp"
@@ -1389,6 +1390,102 @@ PYBIND11_MODULE(lgpsf, m)
              "glr_pd_floor with zero refactorization -- re-shift freely in "
              "an L-curve sweep. Raises if a is at or below the certified "
              "floor.");
+
+    py::enum_<corrections::FlipMode>(corr, "FlipMode",
+                                     "flip: lambda -> -lambda (c = 2); "
+                                     "relu: lambda -> 0 (c = 1).")
+        .value("Flip", corrections::FlipMode::Flip)
+        .value("Relu", corrections::FlipMode::Relu);
+
+    py::class_<corrections::PencilSweep>(
+        corr, "PencilSweep",
+        "One deflated Lanczos run on the pencil (B + E, Hr): all Ritz "
+        "pairs (ascending), residual bounds, and how far the run got.")
+        .def_readonly("values", &corrections::PencilSweep::values)
+        .def_readonly("vectors", &corrections::PencilSweep::vectors)
+        .def_readonly("residuals", &corrections::PencilSweep::residuals)
+        .def_readonly("scale", &corrections::PencilSweep::scale)
+        .def_readonly("iterations", &corrections::PencilSweep::iterations)
+        .def_readonly("exhausted", &corrections::PencilSweep::exhausted);
+
+    py::class_<corrections::ExtendReport>(corr, "ExtendReport",
+                                          "What extend_modes did.")
+        .def_readonly("added", &corrections::ExtendReport::added)
+        .def_readonly("next_value", &corrections::ExtendReport::next_value)
+        .def_readonly("leftmost_estimate",
+                      &corrections::ExtendReport::leftmost_estimate)
+        .def_readonly("iterations", &corrections::ExtendReport::iterations);
+
+    py::class_<corrections::FlipReport>(
+        corr, "FlipReport",
+        "What make_pd did, and whether the exact PD contract is certified.")
+        .def_readonly("flipped", &corrections::FlipReport::flipped)
+        .def_readonly("certified", &corrections::FlipReport::certified)
+        .def_readonly("lambda_floor", &corrections::FlipReport::lambda_floor)
+        .def_readonly("leftmost_before",
+                      &corrections::FlipReport::leftmost_before)
+        .def_readonly("iterations", &corrections::FlipReport::iterations)
+        .def_readonly("flipped_values",
+                      &corrections::FlipReport::flipped_values);
+
+    const auto lanczos_options = []( int max_iters, double oracle_tol,
+                                     double ritz_tol, unsigned seed ) {
+        corrections::LanczosOptions opts;
+        opts.max_iters = max_iters;
+        opts.oracle_tol = oracle_tol;
+        opts.ritz_tol = ritz_tol;
+        opts.seed = seed;
+        return opts;
+    };
+    corr.def("pencil_sweep",
+             [lanczos_options]( const corrections::ShiftedOperator& A,
+                                int max_iters, double oracle_tol,
+                                double ritz_tol, unsigned seed ) {
+                 return corrections::pencil_sweep(
+                     A, lanczos_options(max_iters, oracle_tol, ritz_tol,
+                                        seed));
+             },
+             "A"_a, "max_iters"_a = 150, "oracle_tol"_a = 1e-10,
+             "ritz_tol"_a = 1e-9, "seed"_a = 0,
+             "One deflated Hr-Lanczos run on the pencil (B + E, Hr); does "
+             "not touch the struct. Each iteration costs one operator apply "
+             "+ one oracle solve; modes already in the block are invisible.");
+    corr.def("extend_modes",
+             [lanczos_options]( corrections::ShiftedOperator& A, int n_right,
+                                double lambda_min_target, int max_iters,
+                                double oracle_tol, double ritz_tol,
+                                unsigned seed ) {
+                 return corrections::extend_modes(
+                     A, n_right, lambda_min_target,
+                     lanczos_options(max_iters, oracle_tol, ritz_tol, seed));
+             },
+             "A"_a, "n_right"_a, "lambda_min_target"_a = 0.0,
+             "max_iters"_a = 150, "oracle_tol"_a = 1e-10, "ritz_tol"_a = 1e-9,
+             "seed"_a = 0,
+             "Cache rightmost pencil modes into the block (surrogate content "
+             "only -- extending the cache never changes the operator). Stops "
+             "at n_right modes or the first converged value at or below "
+             "lambda_min_target. Incremental: repeated calls deepen the "
+             "cache.");
+    corr.def("make_pd",
+             [lanczos_options]( corrections::ShiftedOperator& A, double gamma,
+                                corrections::FlipMode mode, int max_iters,
+                                double oracle_tol, double ritz_tol,
+                                unsigned seed ) {
+                 return corrections::make_pd(
+                     A, gamma, mode,
+                     lanczos_options(max_iters, oracle_tol, ritz_tol, seed));
+             },
+             "A"_a, "gamma"_a = 0.5,
+             "mode"_a = corrections::FlipMode::Flip, "max_iters"_a = 150,
+             "oracle_tol"_a = 1e-10, "ritz_tol"_a = 1e-9, "seed"_a = 0,
+             "Correct every pencil mode of B + E below -gamma*a0 (flip or "
+             "relu) as block entries; the operator handle is never "
+             "modified. On success records the EXACT contract: "
+             "B + E + a Hr > 0 iff a > -lambda_floor, with lambda_floor the "
+             "leftmost surviving pencil value. Uncertified on budget "
+             "exhaustion -- progress persists, call again. Run BEFORE "
+             "caching leftmost modes with extend_modes.");
 
     // ---- layout probe -----------------------------------------------------
     // Not part of the API; a permanent regression hook for the one bug this
