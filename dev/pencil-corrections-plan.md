@@ -496,7 +496,9 @@ not code.
     (`corrections/rebuild.hpp` + `fold_value_pairs`; persistence is
     numpy arrays end to end, no bespoke format).
 11. `corrections/cholesky_backend.hpp` (§8, capability-gated) + three-way
-    backend agreement test.
+    backend agreement test. **Landed 2026-08-01** (construction verifies
+    the supplied matrices against the operator handles; the per-shift
+    cache follows the block's rank).
 12. Maintainer-side validation runs (§9) and recording of results here.
 
 Each slice lands with tests and doc updates; bindings track the C++ per

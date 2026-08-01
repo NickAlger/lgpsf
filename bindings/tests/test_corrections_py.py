@@ -469,3 +469,39 @@ def test_the_whole_struct_round_trips_through_numpy_and_rebuilds(tmp_path):
     assert report.refolded and report.value_fold.applies == 0
     assert B.a0 == 1e-3
     assert corr.classify_shift(B, 1e-3).zone == corr.Zone.Guaranteed
+
+
+def test_the_cholesky_backend_agrees_with_the_iterative_stack():
+    scipy = pytest.importorskip("scipy")
+    import scipy.sparse
+
+    op = synthetic_operator()
+    fit = fit_synthetic(op)
+    n = op["count"]
+    rng = np.random.default_rng(9)
+    Bs = scipy.sparse.csr_matrix(
+        lgpsf.assemble_sparse(fit.model, np.inf, lgpsf.Symmetrize.Weighted))
+    Hr = tridiag_spd(n)
+    A = corr.make_shifted_operator(corr.sparse_op(Bs), corr.ProbeArchive(),
+                                   corr.sparse_hr_oracle(Hr), 1e-2)
+    assert corr.make_pd(A, max_iters=4 * n).certified
+
+    backend = corr.make_cholesky_backend(Bs, Hr, A)
+    with pytest.raises(ValueError):
+        corr.make_cholesky_backend(2.0 * Bs, Hr, A)  # not the operator
+
+    b = rng.normal(size=(n, 1))
+    a = 5e-2
+    direct = corr.cholesky_solve(backend, A, b, a)
+    iterative = corr.solve(A, b, a, mode=corr.SolveMode.TwoLevel,
+                           rtol=1e-12).X
+    P0 = Bs.toarray() + A.block.HrV @ A.block.C_corr @ A.block.HrV.T
+    dense = np.linalg.solve(P0 + a * Hr.toarray(), b)
+    np.testing.assert_allclose(direct, dense, atol=1e-9 * np.abs(dense).max())
+    np.testing.assert_allclose(iterative, dense,
+                               atol=1e-7 * np.abs(dense).max())
+
+    # the raw pencil's exact PD certificate, against the certified floor of
+    # the CORRECTED operator: the raw floor can only be worse (more
+    # negative), so PD of the raw pencil implies a above the raw floor
+    assert not corr.sparse_part_pd(backend, 1e-12)

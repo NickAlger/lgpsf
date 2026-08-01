@@ -145,6 +145,15 @@ to [Semantic Versioning](https://semver.org/).
   this is why the archive keeps them). Persistence is plain numpy arrays
   end to end; a binding test round-trips the whole struct and rebuilds
   the loaded copy.
+- **`lgpsf.corrections` Cholesky backend** (optional, capability-gated —
+  the one component allowed to see matrix entries): activates only when
+  sparse forms of $B$ and $H_r$ are additionally supplied, and both are
+  verified stochastically against the struct's own operator handles
+  before being trusted. `cholesky_solve` factors $B + aH_r$ per shift and
+  wraps the block correction by Woodbury; `sparse_part_pd` reads the
+  exact PD certificate of the raw sparse pencil off the LDLT inertia.
+  Where factorization is viable (small $N$ / 2-D) this is both a fast
+  exact solve and an independent check on the whole iterative stack.
 - **`Symmetrize::Weighted`**: a scale-aware symmetrization for
   `assemble_sparse` — a per-entry convex average with inverse-row-energy
   weights, so where two row fits disagree about a shared entry the weaker

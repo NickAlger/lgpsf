@@ -33,6 +33,7 @@
 
 #include "lgpsf/corrections/hr_oracle.hpp"
 #include "lgpsf/corrections/mode_block.hpp"
+#include "lgpsf/corrections/cholesky_backend.hpp"
 #include "lgpsf/corrections/deflation.hpp"
 #include "lgpsf/corrections/pencil_lanczos.hpp"
 #include "lgpsf/corrections/rebuild.hpp"
@@ -1662,6 +1663,40 @@ PYBIND11_MODULE(lgpsf, m)
              "access: incremental re-certification, re-deflation from the "
              "archived residuals in the new metric, and an exact fold of "
              "archived value pairs. Resumable if the flip budget runs out.");
+
+    py::class_<corrections::CholeskyBackend>(
+        corr, "CholeskyBackend",
+        "The optional entry-level backend: sparse B and Hr plus a per-shift "
+        "factorization cache. Only viable where sparse factorization is "
+        "(small N / 2-D); the required path never needs it.")
+        .def_readonly("B_sparse", &corrections::CholeskyBackend::B_sparse)
+        .def_readonly("Hr_sparse", &corrections::CholeskyBackend::Hr_sparse);
+    corr.def("make_cholesky_backend",
+             []( const Eigen::SparseMatrix<double>& B_sparse,
+                 const Eigen::SparseMatrix<double>& Hr_sparse,
+                 const corrections::ShiftedOperator& A, int check_cols,
+                 double check_tol, unsigned seed ) {
+                 return corrections::make_cholesky_backend(
+                     B_sparse, Hr_sparse, A, check_cols, check_tol, seed);
+             },
+             "B_sparse"_a, "Hr_sparse"_a, "A"_a, "check_cols"_a = 4,
+             "check_tol"_a = 1e-10, "seed"_a = 0,
+             "Build the backend; both matrices are verified stochastically "
+             "against the struct's operator handles, and a mismatch is "
+             "refused rather than silently trusted.");
+    corr.def("cholesky_solve",
+             []( const corrections::CholeskyBackend& backend,
+                 const corrections::ShiftedOperator& A,
+                 const Eigen::MatrixXd& B_rhs, double a )
+             { return corrections::cholesky_solve(backend, A, B_rhs, a); },
+             "backend"_a, "A"_a, "B"_a, "a"_a,
+             "Direct solve of B + E + a Hr: sparse LDLT of the sparse part, "
+             "block correction wrapped by Woodbury. The reference the "
+             "iterative paths can be checked against.");
+    corr.def("sparse_part_pd", &corrections::sparse_part_pd,
+             "backend"_a, "a"_a,
+             "Exact PD certificate for the RAW sparse pencil B + a Hr at "
+             "this shift, read off the LDLT inertia.");
 
     // ---- layout probe -----------------------------------------------------
     // Not part of the API; a permanent regression hook for the one bug this
