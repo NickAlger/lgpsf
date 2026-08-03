@@ -1,0 +1,16 @@
+\begin{verbatim}
+# One certified operator struct from the fit and its probe archive.
+# make_pd flips the few pencil modes below the build threshold (an
+# Hr-solve currency -- no PDE solves) and certifies a floor: the
+# shifts a at which B + E + a Hr is provably positive definite. The
+# value pass then spends a small budget of TRUE Hessian applies
+# pricing the error the fit left behind.
+archive = corr.ProbeArchive()
+archive.Z, archive.Y = V.T.copy(), HV.T.copy()
+A = corr.make_shifted_operator(corr.sparse_op(B), archive,
+                               corr.sparse_hr_oracle(problem["Hr"]), A0)
+report = corr.make_pd(A, max_iters=3000)
+assert report.certified
+Hd_op = corr.SymmetricOp(problem["count"], problem["apply_Hd"])
+corr.value_pass(A, Hd_op, VP_APPLIES, corr.ValuePassMode.V2)
+\end{verbatim}

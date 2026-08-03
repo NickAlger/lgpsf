@@ -176,9 +176,10 @@ def lean_fit(problem, num_probes=30):
     return B_sparse, V.T.copy(), HV.T.copy()   # pairs in COLUMNS convention
 
 
-def pcg(apply_A, solve_P, b, maxit=300, rtol=1e-12):
+def pcg(apply_A, solve_P, b, maxit=300, rtol=1e-12, return_solution=False):
     """Textbook preconditioned CG, recording the relative residual history --
-    the examples' referee for "how good is this preconditioner"."""
+    the examples' referee for "how good is this preconditioner". With
+    `return_solution` it also returns the iterate (the tutorial's consumer)."""
     x = np.zeros_like(b)
     r = b.copy()
     z = solve_P(r)
@@ -197,6 +198,8 @@ def pcg(apply_A, solve_P, b, maxit=300, rtol=1e-12):
         rz_next = r @ z
         p_dir = z + (rz_next / rz) * p_dir
         rz = rz_next
+    if return_solution:
+        return x, np.array(history)
     return np.array(history)
 
 

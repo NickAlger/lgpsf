@@ -1,0 +1,15 @@
+\begin{verbatim}
+# The whole sweep runs on the one build: changing the shift is scalar
+# arithmetic, zero refactorization. Each solve is outer PCG on the
+# TRUE operator (one PDE-based Hessian apply per iteration) with the
+# corrected struct as the preconditioner. When the diagnostic tail
+# crosses below the certified floor the solve is REFUSED, and
+# rebuild_at re-anchors every contract from the archive: new flips
+# cost Hr-solves only, and the value-pass pairs refold in exactly,
+# with zero new PDE solves.
+for a in SWEEP:
+    if corr.classify_shift(A, a).zone == corr.Zone.Refused:
+        report = corr.rebuild_at(A, SWEEP.min(), max_iters=3000)
+    u, iterations = solve_at(a)
+    record(a, u, iterations)
+\end{verbatim}

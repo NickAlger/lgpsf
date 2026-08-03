@@ -11,6 +11,7 @@ Stages map to the paper's items and run independently:
 
     python make_figures.py --items problem,psfs     # slice 1: items 1-4
     python make_figures.py --items fit              # slice 2: item 5 + QC
+    python make_figures.py --items lcurve,recon     # slice 3: items 6-7
 
 Environment: numpy + scipy + matplotlib for the early items (the `tttt`
 env on the maintainer's machine); the fitting items additionally need the
@@ -30,8 +31,8 @@ import scipy.sparse as sp
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "..", "examples"))
-from heat_inversion import (build_problem, conductivity, probes,  # noqa: E402
-                            regions)
+from heat_inversion import (build_problem, conductivity, pcg,  # noqa: E402
+                            probes, regions)
 
 FIG = os.path.join(HERE, "figures")
 CACHE = os.path.join(HERE, "cache")
@@ -40,6 +41,11 @@ NOISE = 0.015          # relative noise on the observed final-time field
 SEED = 20260803
 KS = (10, 20, 50, 150)  # the probe-budget ladder (items 5 and 8)
 QC_SEED = 101           # held-out probes: never the fitter's seed
+
+FIT_K = 50              # the paper's canonical probe budget
+VP_APPLIES = 30         # value-pass budget on top of the fit
+A0 = 1e-5               # build shift: the smallest a we ANTICIPATE needing
+SWEEP = np.logspace(-2, -7, 11)   # top-down; the tail below A0 is diagnostic
 
 
 def problem_instance():
@@ -279,6 +285,160 @@ def item_fit(problem):
     print("wrote snippets/qc_table.tex")
 
 
+def corrected_operator(problem):
+    """The paper's canonical build on the k = FIT_K fit: certify positive
+    definiteness at A0, then spend VP_APPLIES true Hessian applies pricing
+    the fit's residual error. Returns the struct and the module handle."""
+    import lgpsf
+    corr = lgpsf.corrections
+    B, V, HV = fitted_operator(problem, FIT_K)
+    B = sp.csc_matrix(B)
+
+    # snippet:build
+    # One certified operator struct from the fit and its probe archive.
+    # make_pd flips the few pencil modes below the build threshold (an
+    # Hr-solve currency -- no PDE solves) and certifies a floor: the
+    # shifts a at which B + E + a Hr is provably positive definite. The
+    # value pass then spends a small budget of TRUE Hessian applies
+    # pricing the error the fit left behind.
+    archive = corr.ProbeArchive()
+    archive.Z, archive.Y = V.T.copy(), HV.T.copy()
+    A = corr.make_shifted_operator(corr.sparse_op(B), archive,
+                                   corr.sparse_hr_oracle(problem["Hr"]), A0)
+    report = corr.make_pd(A, max_iters=3000)
+    assert report.certified
+    Hd_op = corr.SymmetricOp(problem["count"], problem["apply_Hd"])
+    corr.value_pass(A, Hd_op, VP_APPLIES, corr.ValuePassMode.V2)
+    # end snippet
+
+    print(f"build at a0 = {A0:.0e}: {report.flipped} flips, certified "
+          f"floor {-A.lambda_floor:.2e}, block rank {A.block.rank}")
+    return A, corr
+
+
+def regularization_sweep(problem):
+    """Items 6-7 compute: the a-sweep on ONE build, cached to disk."""
+    path = os.path.join(CACHE, "sweep.npz")
+    if os.path.exists(path):
+        return dict(np.load(path))
+
+    A, corr = corrected_operator(problem)
+    data, Hr = problem["data"], problem["Hr"]
+    rhs = problem["spacing"] ** 2 * problem["propagate"](data)
+    target = problem["noise_level"] * np.sqrt(problem["count"])
+    floor_before = -A.lambda_floor
+
+    rows, solutions = [], []
+
+    def solve_at(a):
+        u, history = pcg(lambda v: problem["apply_Hd"](v) + a * (Hr @ v),
+                         lambda r: corr.solve(A, r[:, None], a,
+                                              mode=corr.SolveMode.TwoLevel,
+                                              rtol=1e-10).X.ravel(),
+                         rhs, rtol=1e-10, return_solution=True)
+        return u, len(history) - 1
+
+    def record(a, u, iterations):
+        mis = np.linalg.norm(problem["propagate"](u) - data)
+        semi = np.sqrt(u @ (Hr @ u))
+        rows.append((a, iterations, mis, semi))
+        solutions.append(u)
+        print(f"  a {a:.2e}  its {iterations:3d}  misfit {mis:.4e}  "
+              f"seminorm {semi:.4f}")
+
+    # snippet:sweep
+    # The whole sweep runs on the one build: changing the shift is scalar
+    # arithmetic, zero refactorization. Each solve is outer PCG on the
+    # TRUE operator (one PDE-based Hessian apply per iteration) with the
+    # corrected struct as the preconditioner. When the diagnostic tail
+    # crosses below the certified floor the solve is REFUSED, and
+    # rebuild_at re-anchors every contract from the archive: new flips
+    # cost Hr-solves only, and the value-pass pairs refold in exactly,
+    # with zero new PDE solves.
+    for a in SWEEP:
+        if corr.classify_shift(A, a).zone == corr.Zone.Refused:
+            report = corr.rebuild_at(A, SWEEP.min(), max_iters=3000)
+        u, iterations = solve_at(a)
+        record(a, u, iterations)
+    # end snippet
+
+    rebuild_flips = report.flip.flipped if "report" in locals() else 0
+    print(f"rebuild_at({SWEEP.min():.0e}): {rebuild_flips} new flips, "
+          f"floor {floor_before:.2e} -> {-A.lambda_floor:.2e}, value pairs "
+          "refolded with 0 new PDE solves")
+
+    a_grid, its, mis, semi = (np.array([r[c] for r in rows])
+                              for c in range(4))
+    # the discrepancy-principle corner: interpolate the crossing, solve it
+    j = int(np.argmax(mis[::-1] >= target))          # sweep is descending
+    hi, lo = len(mis) - j - 1, len(mis) - j
+    frac = (np.log(target / mis[lo])
+            / np.log(mis[hi] / mis[lo]))
+    a_star = float(np.exp(np.log(a_grid[lo])
+                          + frac * np.log(a_grid[hi] / a_grid[lo])))
+    u_star, its_star = solve_at(a_star)
+
+    rebuilt_from = (int(np.argmax(a_grid <= floor_before))
+                    if (a_grid <= floor_before).any() else len(a_grid))
+    os.makedirs(CACHE, exist_ok=True)
+    blob = dict(a=a_grid, its=its, misfit=mis, seminorm=semi,
+                target=target, a_star=a_star, u_star=u_star,
+                its_star=its_star,
+                mis_star=np.linalg.norm(problem["propagate"](u_star) - data),
+                semi_star=np.sqrt(u_star @ (Hr @ u_star)),
+                rebuilt_from=rebuilt_from, rebuild_flips=rebuild_flips,
+                floor_before=floor_before, floor_after=-A.lambda_floor,
+                u_small=solutions[-1], u_large=solutions[1])
+    np.savez_compressed(path, **blob)
+    return blob
+
+
+def item_lcurve(problem):
+    """Item 6: the L-curve from the one-build sweep, corner marked."""
+    S = regularization_sweep(problem)
+    a, mis, semi = S["a"], S["misfit"], S["seminorm"]
+    split = int(S["rebuilt_from"])
+
+    fig, ax = plt.subplots(figsize=(5.6, 4.4))
+    ax.loglog(mis, semi, "-", color="0.8", zorder=1)
+    ax.loglog(mis[:split], semi[:split], "o", color="C0", zorder=2,
+              label="solves on the corner-anchored build")
+    ax.loglog(mis[split:], semi[split:], "s", color="C1", zorder=2,
+              label=f"after rebuild_at({SWEEP.min():.0e})")
+    ax.loglog(S["mis_star"], S["semi_star"], "k*", markersize=15, zorder=3,
+              label=f"discrepancy corner, a* = {S['a_star']:.1e}")
+    ax.axvline(S["target"], color="0.5", linestyle="--", linewidth=1)
+    for j in (0, len(a) - 1):
+        ax.annotate(f"a = {a[j]:.0e}", (mis[j], semi[j]), fontsize=8,
+                    textcoords="offset points", xytext=(6, -4))
+    ax.set_xlabel(r"data misfit  $\|Au_0 - d\|$")
+    ax.set_ylabel(r"regularity  $|u_0|_{H_r}$")
+    ax.legend(fontsize=8, loc="upper right")
+    fig.tight_layout()
+    fig.savefig(os.path.join(FIG, "lcurve.png"), dpi=180)
+    plt.close(fig)
+    print("wrote figures/lcurve.png")
+
+
+def item_recon(problem):
+    """Item 7: reconstructions at too-small / corner / too-large shifts."""
+    S = regularization_sweep(problem)
+    panels = [
+        ("true $u_0$", problem["u0"]),
+        (f"$a = ${SWEEP.min():.0e}  (too small)", S["u_small"]),
+        (f"$a^* = ${S['a_star']:.1e}  (discrepancy)", S["u_star"]),
+        (f"$a = ${SWEEP[1]:.0e}  (too large)", S["u_large"]),
+    ]
+    fig, axes = plt.subplots(1, 4, figsize=(13.6, 3.2))
+    for ax, (title, u) in zip(axes, panels):
+        field(ax, u, title, cmap="RdBu_r",
+              vmax=np.abs(problem["u0"]).max())
+    fig.tight_layout()
+    fig.savefig(os.path.join(FIG, "recon.png"), dpi=180)
+    plt.close(fig)
+    print("wrote figures/recon.png")
+
+
 def extract_snippets():
     """Write snippets/<name>.tex from the markers in this file."""
     out = os.path.join(HERE, "snippets")
@@ -304,12 +464,13 @@ def extract_snippets():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--items", default="problem,psfs,fit")
+    parser.add_argument("--items", default="problem,psfs,fit,lcurve,recon")
     args = parser.parse_args()
     os.makedirs(FIG, exist_ok=True)
 
     problem = problem_instance()
-    stages = {"problem": item_problem, "psfs": item_psfs, "fit": item_fit}
+    stages = {"problem": item_problem, "psfs": item_psfs, "fit": item_fit,
+              "lcurve": item_lcurve, "recon": item_recon}
     for item in args.items.split(","):
         stages[item](problem)
     extract_snippets()
