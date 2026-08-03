@@ -108,3 +108,6 @@ build-py/
 # which is where the committed copies live. Running an example locally drops
 # its own copy here; that one is scratch.
 examples/*.png
+
+# Heat-pipeline fit cache: regenerable, machine-local
+docs/heat-pipeline/cache/

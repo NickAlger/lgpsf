@@ -1,0 +1,14 @@
+\begin{verbatim}
+# The fitter's entire budget: k random probes and their Hessian
+# applies. Each response costs one H_d application (two PDE solves);
+# nothing else about H_d is ever observed.
+import lgpsf
+V, HV = probes(problem, k)
+config = lgpsf.OperatorFitConfig()
+config.tau_window = 3.0
+config.row.mode_policy = lgpsf.ShellLadder([0, 1, 2, 3, 4])
+config.row.target_score = None
+fit = lgpsf.fit_operator(problem["x"], problem["mass"], problem["mass"],
+                         V, HV, problem["sigma"], config=config)
+B = lgpsf.assemble_sparse(fit.model, 6.0, lgpsf.Symmetrize.Weighted)
+\end{verbatim}

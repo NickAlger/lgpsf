@@ -1,0 +1,9 @@
+\begin{verbatim}
+# Held-out quality control: score the assembled operator's rows
+# against probes the fitter never saw (the same referee the library
+# uses internally, applied to the deployed object).
+V_qc, HV_qc = probes(problem, 30, seed=QC_SEED)
+def qc_scores(B):
+    residual = np.linalg.norm(B @ V_qc.T - HV_qc.T, axis=1)
+    return residual / np.linalg.norm(HV_qc.T, axis=1)
+\end{verbatim}
