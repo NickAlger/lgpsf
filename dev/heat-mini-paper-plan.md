@@ -148,9 +148,7 @@ build (compiler-flag reproducibility, as with docgen).
   same variants as the item-8 curves, so the table and the figures
   cross-reference.
 
-## Remaining question
-
-- Fig 8b's spectrum convention: singular values of the one-sided
-  preconditioned operator for all three curves (recommended, for
-  within-panel comparability), or singular values for the as-fitted
-  curve only with eigenvalues for the symmetric two?
+- **Fig 8b convention (decided 2026-08-03): singular values of the
+  one-sided preconditioned operator for ALL THREE curves**, with the
+  caption note about symmetric similarity. No questions remain — the
+  plan is fully specified; implementation starts at slice 1.
