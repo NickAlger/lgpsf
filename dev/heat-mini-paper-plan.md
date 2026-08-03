@@ -71,12 +71,39 @@ Numbers refer to the maintainer's outline.
 7. **Reconstructions at three a's** (figure: too small / L-corner /
    too large; noise-overfit vs right vs oversmoothed). Same solves as
    item 6 — no new computation.
-8. **Spectra at the optimal a** (figure: sorted eigenvalues of the
-   prior-preconditioned system `1 + lambda_i/a` vs ours, log scale;
-   curves for k in {10, 20, 50, 150} and, at fixed k, for the correction
-   ladder: flip-only → +free deflation → +value-pass m → +deep GLR
-   cache). Dense computation at n = 1024. This is the "why it works"
-   figure: clustering at 1 is what items 9–10 harvest.
+8. **Spectra at the optimal a — a three-figure progression** (maintainer
+   design, 2026-08-03). Everything is the preconditioned system at the
+   L-corner `a`; sorted spectrum on a log axis, one curve per variant,
+   flat-at-1 is the goal the eye should learn to want.
+   - **Fig 8a, the k-ladder:** regularization preconditioning first
+     (`1 + lambda_i/a`, a huge range — the problem statement), then the
+     certified wsym fit at k = 10 / 20 / 50 / 150: the spectrum tightens
+     around 1 and compresses further as k grows. One axes, five curves.
+   - **Fig 8b, the symmetrization ladder** at one fixed k (proposal:
+     k = 50): as-fitted (no symmetrization), `Average`, `Weighted`. For
+     the nonsymmetric as-fitted preconditioner the spectrum must be
+     SINGULAR VALUES of the one-sided preconditioned operator
+     `(B_asis + a Hr)^{-1} (Hd + a Hr)`; for comparability the proposal
+     is to plot singular values of the one-sided operator for ALL THREE
+     curves in this panel, with a caption note that for the two
+     symmetric variants these tell the same story as the eigenvalues in
+     the neighboring panels (they agree up to symmetric similarity, not
+     entry-for-entry) — TO CONFIRM with the maintainer; the alternative
+     is mixed sigma/eig curves in one panel. Policy note: the as-fitted
+     variant admits no pencil flip (certification requires symmetry), so
+     its curve is the raw LU-solved operator — which is part of the
+     lesson.
+   - **Fig 8c, the deflation ladder** at the same fixed k: flip-only,
+     + free deflation, + value pass (m = 30): deflation tamps the TAILS
+     of the spectrum while the bulk stays put.
+   - *Empirical risk, flagged honestly:* on this problem the examples
+     measured `Average` and `Weighted` near parity in aggregate error
+     (the weighted win is on the weak-row tail), so Fig 8b's compression
+     may be subtle at n = 1024; if the bulk spectra tie, the honest
+     telling is the tail + the per-variant flip counts, and the caption
+     says so. The free-deflation curve may also WORSEN the tail at lean
+     k (the examples' finding) — also worth showing rather than hiding,
+     with the value-pass curve as the resolution.
 9. **PCG convergence curves** (figure: relative residual vs iteration,
    prior-preconditioned vs the fitted preconditioners of item 8; the
    spectra and the curves should visibly correspond — close the loop in
@@ -108,18 +135,22 @@ build (compiler-flag reproducibility, as with docgen).
 6. Polish pass against the writing-style notes; regenerate everything
    from scratch once, commit.
 
-## Open questions for the maintainer
+## Decisions (maintainer, 2026-08-03)
 
-- Grid 32 vs 48 (48 doubles figure fidelity; dense spectra at n = 2304
-  are still fine, but the fit ladder run gets slower — minutes, not
-  seconds).
-- Noise level / whether to show the noisy data image itself as part of
-  item 1.
-- Does item 8 include the two-level mode as a separate curve, or is the
-  correction ladder (flip → free → value-pass → cache) enough?
-- Title, and whether it doubles as a citable "software tutorial" artifact
-  (affects whether it gets an abstract and a reproducibility footnote
-  with pinned versions).
-- Any appetite for a closing "what this cost" table (probe applies,
-  Hr-solves, wall-clock per stage) — cheap to produce from the reports,
-  and very much in the house style.
+- **Grid 32** to start; revisit upward only if the figures need it.
+- **Show the noisy data** as part of item 1 (alongside the true IC).
+- **Item 8 is the three-figure progression above** (k-ladder /
+  symmetrization ladder / deflation ladder); no two-level curve.
+- **Title: "LGPSF Heat Inverse Problem Tutorial".**
+- **Closing cost table**: one row per build, columns = number of probes
+  used (fit k, plus value-pass applies where applicable) and the
+  preconditioned CONDITION NUMBER achieved at the L-corner `a` — the
+  same variants as the item-8 curves, so the table and the figures
+  cross-reference.
+
+## Remaining question
+
+- Fig 8b's spectrum convention: singular values of the one-sided
+  preconditioned operator for all three curves (recommended, for
+  within-panel comparability), or singular values for the as-fitted
+  curve only with eigenvalues for the symmetric two?
