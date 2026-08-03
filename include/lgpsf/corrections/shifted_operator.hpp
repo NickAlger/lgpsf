@@ -234,12 +234,38 @@ inline double glr_pd_floor( const ShiftedOperator& A )
     return std::max(0.0, -surrogate_eigenvalues(A.block).minCoeff());
 }
 
+namespace detail {
+
+inline Eigen::MatrixXd glr_woodbury(
+    const ShiftedOperator& A, const Eigen::Ref<const Eigen::MatrixXd>& B_rhs,
+    double a, double oracle_tol, bool absolute )
+{
+    Eigen::MatrixXd result = A.hr.solve(B_rhs, oracle_tol) / a;
+    if ( A.block.rank() > 0 )
+    {
+        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eigen(A.block.C_surr);
+        const Eigen::MatrixXd& U = eigen.eigenvectors();
+        Eigen::MatrixXd P = U.transpose() * (A.block.V.transpose() * B_rhs);
+        for ( Eigen::Index i = 0; i < eigen.eigenvalues().size(); ++i )
+        {
+            const double theta = absolute ? std::abs(eigen.eigenvalues()(i))
+                                          : eigen.eigenvalues()(i);
+            P.row(i) *= theta / (a * (a + theta));
+        }
+        result.noalias() -= A.block.V * (U * P);
+    }
+    return result;
+}
+
+} // end namespace detail
+
 /// M(a)^{-1} B_rhs by the diagonal-capacitance Woodbury formula (file
 /// comment): one oracle solve at `oracle_tol` plus O(N rho) per column.
 /// Valid at EVERY a above the analytic floor with zero refactorization —
 /// an L-curve sweep re-calls this with different `a` and pays nothing new.
 /// @throws std::domain_error if a is at or below `glr_pd_floor` — the
 ///         message carries the floor, which is the number the caller needs.
+///         For PRECONDITIONING below that floor, use `glr_precondition`.
 inline Eigen::MatrixXd glr_solve( const ShiftedOperator& A,
                                   const Eigen::Ref<const Eigen::MatrixXd>& B_rhs,
                                   double a, double oracle_tol = 1e-10 )
@@ -252,22 +278,32 @@ inline Eigen::MatrixXd glr_solve( const ShiftedOperator& A,
             "a = " + std::to_string(a) + "; the certified floor is "
             + std::to_string(floor)
             + " (a must exceed it). Analytic certificate from the block's "
-              "pencil eigenvalues.");
+              "pencil eigenvalues. For preconditioning at this shift, use "
+              "glr_precondition (|theta| variant).");
     }
-    Eigen::MatrixXd result = A.hr.solve(B_rhs, oracle_tol) / a;
-    if ( A.block.rank() > 0 )
+    return detail::glr_woodbury(A, B_rhs, a, oracle_tol, false);
+}
+
+/// The PRECONDITIONER variant of the GLR Woodbury: apply
+/// (a H_r + |S|)^{-1}, with |S| the surrogate content with its eigenvalues
+/// replaced by their magnitudes. Positive definite for EVERY a > 0, so it
+/// preconditions at shifts where M(a) itself is indefinite — which happens
+/// legitimately once deflation stores trustworthy NEGATIVE error modes and
+/// a drops below their magnitude. Using |theta| is the production choice
+/// validated at field scale (a preconditioner needs the right curvature
+/// MAGNITUDE; a sign flip on a few error modes costs little). Coincides
+/// with `glr_solve` exactly when the surrogate is PSD.
+inline Eigen::MatrixXd glr_precondition(
+    const ShiftedOperator& A, const Eigen::Ref<const Eigen::MatrixXd>& B_rhs,
+    double a, double oracle_tol = 1e-10 )
+{
+    if ( !(a > 0.0) )
     {
-        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eigen(A.block.C_surr);
-        const Eigen::VectorXd& theta = eigen.eigenvalues();
-        const Eigen::MatrixXd& U = eigen.eigenvectors();
-        Eigen::MatrixXd P = U.transpose() * (A.block.V.transpose() * B_rhs);
-        for ( Eigen::Index i = 0; i < theta.size(); ++i )
-        {
-            P.row(i) *= theta(i) / (a * (a + theta(i)));
-        }
-        result.noalias() -= A.block.V * (U * P);
+        throw std::domain_error(
+            "lgpsf::corrections::glr_precondition: a must be positive, got "
+            + std::to_string(a));
     }
-    return result;
+    return detail::glr_woodbury(A, B_rhs, a, oracle_tol, true);
 }
 
 } // end namespace lgpsf::corrections

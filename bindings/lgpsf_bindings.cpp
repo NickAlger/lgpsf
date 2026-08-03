@@ -1396,6 +1396,18 @@ PYBIND11_MODULE(lgpsf, m)
              "glr_pd_floor with zero refactorization -- re-shift freely in "
              "an L-curve sweep. Raises if a is at or below the certified "
              "floor.");
+    corr.def("glr_precondition",
+             []( const corrections::ShiftedOperator& A,
+                 const Eigen::MatrixXd& B_rhs, double a, double oracle_tol )
+             { return corrections::glr_precondition(A, B_rhs, a,
+                                                    oracle_tol); },
+             "A"_a, "B"_a, "a"_a, "oracle_tol"_a = 1e-10,
+             "The PRECONDITIONER variant of the GLR Woodbury: "
+             "(a Hr + |S|)^{-1}, surrogate eigenvalues replaced by their "
+             "magnitudes. Positive definite for every a > 0, so it "
+             "preconditions where M(a) itself is indefinite (deflation "
+             "legitimately stores negative error modes). Coincides with "
+             "glr_solve when the surrogate is PSD.");
 
     py::enum_<corrections::FlipMode>(corr, "FlipMode",
                                      "flip: lambda -> -lambda (c = 2); "

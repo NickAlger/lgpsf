@@ -43,6 +43,14 @@ struct LanczosOptions
     double ritz_tol = 1e-9;    ///< a Ritz pair converges when its residual
                                ///< bound is below ritz_tol * spectral scale
     unsigned seed = 0;         ///< start-vector seed (deterministic)
+    /// Deflate against the existing block? True is right for CACHING
+    /// (extend_modes: finding a block column twice is wasted work, and the
+    /// cache is allowed to be approximate). CERTIFICATION must say false:
+    /// deflation-type columns are not eigenvectors of B + E, so the
+    /// operator couples the block span to its complement, and a
+    /// complement-restricted sweep does not bound the full spectrum.
+    /// make_pd forces false for exactly this reason.
+    bool deflate_block = true;
 };
 
 /// Everything one deflated Lanczos run learned: ALL Ritz pairs (ascending),
@@ -76,7 +84,8 @@ inline PencilSweep pencil_sweep( const ShiftedOperator& A,
             "ritz_tol must all be positive");
     }
     const Eigen::Index n = A.dim();
-    const Eigen::Index room = n - A.block.rank();
+    const Eigen::Index room =
+        n - ( opts.deflate_block ? A.block.rank() : 0 );
     const int m_cap = static_cast<int>(std::min<Eigen::Index>(
         room, static_cast<Eigen::Index>(opts.max_iters)));
     PencilSweep sweep;
@@ -99,7 +108,7 @@ inline PencilSweep pencil_sweep( const ShiftedOperator& A,
         // stored H_r-images make every projection oracle-free
         for ( int pass = 0; pass < 2; ++pass )
         {
-            if ( A.block.rank() > 0 )
+            if ( opts.deflate_block && A.block.rank() > 0 )
             {
                 u.noalias() -= A.block.V * (A.block.HrV.transpose() * u);
             }
@@ -338,8 +347,10 @@ struct FlipReport
 /// `certified = false` with progress kept — corrected modes stay in the
 /// block — so calling again simply continues.
 ///
-/// Call this BEFORE caching leftmost modes with `extend_modes`: make_pd
-/// only corrects modes its own (block-deflated) Lanczos discovers.
+/// The certifying sweeps run UNDEFLATED (see `LanczosOptions
+/// .deflate_block`): the certificate stays exact no matter what the block
+/// contains, at the cost of re-converging already-corrected extremes when
+/// re-certifying a corrected operator.
 inline FlipReport make_pd( ShiftedOperator& A, double gamma = 0.5,
                            FlipMode mode = FlipMode::Flip,
                            LanczosOptions opts = {} )
@@ -364,6 +375,10 @@ inline FlipReport make_pd( ShiftedOperator& A, double gamma = 0.5,
         LanczosOptions round = opts;
         round.max_iters = std::min(budget, std::max(40, opts.max_iters / 4));
         round.seed = round_seed++;
+        // certification never trusts the block: deflation-type columns are
+        // not invariant, so the sweep must see the FULL operator (already
+        // corrected modes reappear at their harmless corrected values)
+        round.deflate_block = false;
         const PencilSweep sweep = pencil_sweep(A, round);
         budget -= sweep.iterations;
         report.iterations += sweep.iterations;

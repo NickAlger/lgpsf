@@ -1773,3 +1773,40 @@ Ritz pair to CONVERGE (interlacing means an unconverged leftmost estimate
 certifies nothing), and on tight clusters near zero that can require
 exhausting the deflated space — which is why `make_pd` is resumable rather
 than throwing on budget exhaustion.
+
+## Two things the examples caught that the tests had not (2026-08-03)
+
+Writing the corrections examples on a real (if small) inverse problem
+surfaced two genuine defects. Both are the same lesson: unit tests exercise
+the constructions one at a time; an end-to-end pipeline exercises their
+COMPOSITIONS.
+
+- **Certification must never trust the block.** `make_pd`'s sweeps deflated
+  against all existing block columns, but deflation-type columns are not
+  eigenvectors of $B+E$ — the operator couples the block span to its
+  complement, so a complement-restricted sweep does not bound the full
+  spectrum. On the heat problem, re-certifying after a value pass produced
+  a floor of $-1.9\cdot10^{-6}$ against a true pencil minimum of
+  $-4.6\cdot10^{-6}$, and the "guaranteed" two-level solve met negative
+  curvature. Fix: `LanczosOptions.deflate_block`, forced FALSE by
+  `make_pd` — certifying sweeps see the full operator (already-corrected
+  modes reappear at their harmless corrected values, costing budget, not
+  soundness). `extend_modes` still deflates: the cache is allowed to be
+  approximate by design (P3). Regression test pins the certified floor to
+  a dense generalized eigensolver on a non-invariant block.
+- **The GLR preconditioner needs the $|\theta|$ variant.** Once a value
+  pass stores trustworthy NEGATIVE error modes, $M(a) = aH_r + S$ is
+  legitimately indefinite below their magnitude, and `glr_solve` (exact,
+  and right to refuse) cannot serve as the two-level inner preconditioner
+  there. `glr_precondition` applies $(aH_r + |S|)^{-1}$ — PD for every
+  $a > 0$, the production choice validated at field scale (the GLR builds
+  there always used $|\Lambda|$), and identical to `glr_solve` when the
+  surrogate is PSD. The two-level inner loop now uses it.
+
+Also learned, and written into `shifted_deployment.py` rather than the
+library: the GLR and two-level deployments want DIFFERENT investments from
+the same fit. GLR quality is $\lambda_{k+1}/a$ — it wants a deep
+`extend_modes` cache and no deflation content in its surrogate (negative
+error modes under $|\cdot|$ over-damp their directions at small $a$);
+two-level wants deflation and needs no cache depth. One fit, two structs,
+honestly labeled.

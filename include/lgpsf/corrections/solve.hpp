@@ -167,8 +167,10 @@ struct SolveResult
 
 namespace detail {
 
-/// PCG on P(a) = B + E + a H_r, preconditioned by the GLR Woodbury
-/// M(a)^{-1}, one right-hand side. P(a) must be SPD for CG's theory; on a
+/// PCG on P(a) = B + E + a H_r, preconditioned by the GLR Woodbury in its
+/// |theta| PRECONDITIONER variant (`glr_precondition`) — defined at every
+/// a > 0, including shifts where deflation's negative modes make M(a)
+/// itself indefinite. One right-hand side. P(a) must be SPD for CG's theory; on a
 /// warned shift an indefinite operator diagnoses itself (breakdown or
 /// stagnation) rather than converging to a wrong answer.
 inline Eigen::VectorXd pcg_two_level( const ShiftedOperator& A,
@@ -185,7 +187,7 @@ inline Eigen::VectorXd pcg_two_level( const ShiftedOperator& A,
         return x;
     }
     Eigen::VectorXd r = b;
-    Eigen::VectorXd z = glr_solve(A, r, a, opts.oracle_tol);
+    Eigen::VectorXd z = glr_precondition(A, r, a, opts.oracle_tol);
     Eigen::VectorXd p = z;
     double rz = r.dot(z);
     iters = 0;
@@ -211,7 +213,7 @@ inline Eigen::VectorXd pcg_two_level( const ShiftedOperator& A,
         {
             break;
         }
-        z = glr_solve(A, r, a, opts.oracle_tol);
+        z = glr_precondition(A, r, a, opts.oracle_tol);
         const double rz_next = r.dot(z);
         p = z + (rz_next / rz) * p;
         rz = rz_next;

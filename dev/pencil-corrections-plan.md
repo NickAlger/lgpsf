@@ -498,8 +498,13 @@ not code.
    `extend_modes`; `make_pd` with $\gamma$, $\lambda_{\mathrm{floor}}$,
    `FlipReport`. **Landed 2026-08-01** (restart-in-complement on
    breakdown; salted internal seed; `make_pd` resumable, certifies only
-   on a CONVERGED leftmost survivor; leftmost discovery belongs to
-   `make_pd` alone — run it before caching leftmost modes).
+   on a CONVERGED leftmost survivor). **Amended 2026-08-03**: certifying
+   sweeps run UNDEFLATED (`LanczosOptions.deflate_block` forced false) —
+   deflation-type columns are not invariant, so a block-deflated sweep
+   could certify a floor above the true pencil minimum; and the two-level
+   inner preconditioner is now `glr_precondition`, the $|\theta|$
+   Woodbury variant (PD at every $a>0$; the field-scale GLR builds always
+   used $|\Lambda|$).
 6. Zone semantics + warnings + `solve(…, a)` dispatch (§5).
    **Landed 2026-08-01** (`corrections/solve.hpp`; the warning-zone
    certificate bounds post-certification corrections exactly via a

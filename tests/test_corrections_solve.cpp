@@ -271,3 +271,73 @@ TEST_CASE("an indefinite operator reveals itself in the inner iteration")
     CHECK_THROWS_AS(solve(A, Eigen::MatrixXd::Ones(n, 1), 5e-3, opts),
                     std::runtime_error);
 }
+
+TEST_CASE("glr_precondition serves where M(a) is indefinite")
+{
+    std::mt19937 gen(6);
+    const int n = 30;
+    const PencilProblem problem = with_spectrum(standard_spectrum(n), gen);
+    ShiftedOperator A = certified_example(problem);
+
+    // a trustworthy NEGATIVE error mode, as a deflation would store it
+    Eigen::VectorXd v = test_helpers::randn_points(n, 1, gen).col(0);
+    v /= std::sqrt(v.dot(problem.Hrd * v));
+    Eigen::MatrixXd Cc = Eigen::MatrixXd::Zero(1, 1);
+    Cc(0, 0) = -2e-3;
+    merge(A.block, A.hr, Eigen::MatrixXd(v), Cc, Cc,
+          lgpsf::corrections::Provenance::ValuePass);
+
+    // below the surrogate floor: the exact solve refuses, the
+    // preconditioner does not, and the two coincide when the shift is
+    // above the floor... first, the refusal boundary is the surrogate's:
+    // the merge folds part of the direction onto the flip columns, so the
+    // surrogate's min eigenvalue lands NEAR -2e-3 rather than exactly on it
+    const double glr_floor = lgpsf::corrections::glr_pd_floor(A);
+    CHECK(glr_floor > 1e-3);
+    CHECK(glr_floor <= 2e-3 * (1.0 + 1e-9));
+    const Eigen::MatrixXd x = Eigen::MatrixXd::Ones(n, 1);
+    CHECK_THROWS_AS(lgpsf::corrections::glr_solve(A, x, 0.5 * glr_floor),
+                    std::domain_error);
+    CHECK(lgpsf::corrections::glr_precondition(A, x, 0.5 * glr_floor)
+              .allFinite());
+
+    // the |theta| operator really is applied: against dense truth
+    const double a = 0.5 * glr_floor;
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(A.block.C_surr);
+    const Eigen::MatrixXd S_abs =
+        (A.block.HrV * eig.eigenvectors())
+        * eig.eigenvalues().cwiseAbs().asDiagonal()
+        * (A.block.HrV * eig.eigenvectors()).transpose();
+    const Eigen::MatrixXd expected =
+        (a * problem.Hrd + S_abs).ldlt().solve(Eigen::MatrixXd(x));
+    CHECK((lgpsf::corrections::glr_precondition(A, x, a) - expected)
+              .cwiseAbs()
+              .maxCoeff()
+          < 1e-9 * expected.cwiseAbs().maxCoeff());
+
+    // and the two-level solve now converges below the surrogate floor
+    // (the OPERATOR is still PD there: the correction is small)
+    SolveOpts opts;
+    opts.mode = SolveMode::TwoLevel;
+    opts.rtol = 1e-10;
+    const Eigen::MatrixXd b = test_helpers::randn_points(n, 1, gen);
+    const auto result = solve(A, b, a, opts);
+    const Eigen::MatrixXd Ecorr =
+        A.block.HrV * A.block.C_corr * A.block.HrV.transpose();
+    const Eigen::MatrixXd truth =
+        (problem.Bd + Ecorr + a * problem.Hrd).ldlt().solve(
+            Eigen::MatrixXd(b));
+    CHECK((result.X - truth).cwiseAbs().maxCoeff()
+          < 1e-7 * truth.cwiseAbs().maxCoeff());
+
+    // when the surrogate is PSD, precondition == solve exactly
+    ShiftedOperator clean = certified_example(problem);
+    LanczosOptions lopts;
+    lopts.max_iters = 100;
+    extend_modes(clean, 4, 0.0, lopts);
+    const Eigen::MatrixXd via_solve =
+        lgpsf::corrections::glr_solve(clean, x, 0.7);
+    const Eigen::MatrixXd via_precondition =
+        lgpsf::corrections::glr_precondition(clean, x, 0.7);
+    CHECK(via_solve == via_precondition);
+}

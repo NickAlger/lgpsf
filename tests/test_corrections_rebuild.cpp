@@ -102,9 +102,10 @@ TEST_CASE("rebuild_at flips the newly opened window and renews the contracts")
     REQUIRE(first.certified);
     CHECK(first.flipped == 1);  // only -0.5 is below -5e-3
     CHECK(*A.lambda_floor == doctest::Approx(-1e-3).epsilon(1e-6));
-    // a = 1e-3 sits exactly ON the floor (refused: the contract is strict);
-    // strictly inside the window it is warned
-    CHECK(classify_shift(A, 1e-3).zone == Zone::Refused);
+    // AT the certified floor the contract is strict (refused); strictly
+    // inside the window it is warned. (Test against the certified value:
+    // the constructed -1e-3 and the certified floor differ by rounding.)
+    CHECK(classify_shift(A, -*A.lambda_floor).zone == Zone::Refused);
     CHECK(classify_shift(A, 2e-3).zone == Zone::Warned);
 
     RebuildOptions ropts;
@@ -186,4 +187,49 @@ TEST_CASE("archived value pairs fold back in with zero new applies")
     CHECK(classify_shift(A, 1e-3).zone == Zone::Guaranteed);
 
     CHECK_THROWS_AS(rebuild_at(A, 0.0), std::invalid_argument);
+}
+
+TEST_CASE("re-certification stays exact when the block is not invariant")
+{
+    // The regression: deflation-type columns are NOT eigenvectors of B + E,
+    // so a block-deflated certification sweep would miss spectrum coupled
+    // across the block boundary and certify a floor ABOVE the true pencil
+    // minimum. make_pd's undeflated sweeps must match dense truth exactly.
+    std::mt19937 gen(2);
+    const int n = 40;
+    Eigen::VectorXd lambda(n);
+    for ( int i = 0; i < n; ++i )
+    {
+        lambda(i) = 3.0 * std::pow(10.0, -3.0 * i / (n - 1));
+    }
+    const PencilProblem problem = with_spectrum(lambda, gen);
+    ShiftedOperator A =
+        make_shifted_operator(dense_op(problem.Bd), ProbeArchive{},
+                              sparse_hr_oracle(problem.Hr), 1e-2);
+    LanczosOptions lopts;
+    lopts.max_iters = 400;
+    REQUIRE(make_pd(A, 0.5, FlipMode::Flip, lopts).certified);
+
+    // a value-pass-style correction on a NON-eigen direction, negative
+    // enough to create new spectrum below the old floor
+    Eigen::VectorXd v = test_helpers::randn_points(n, 1, gen).col(0);
+    v /= std::sqrt(v.dot(problem.Hrd * v));
+    Eigen::MatrixXd Cc = Eigen::MatrixXd::Zero(1, 1);
+    Cc(0, 0) = -6e-3;
+    lgpsf::corrections::merge(A.block, A.hr, Eigen::MatrixXd(v), Cc, Cc,
+                              lgpsf::corrections::Provenance::ValuePass);
+
+    RebuildOptions ropts;
+    ropts.lanczos = lopts;
+    const auto rebuilt = rebuild_at(A, 1e-3, ropts);
+    REQUIRE(rebuilt.flip.certified);
+
+    // the certified floor must equal the TRUE pencil minimum of the
+    // corrected operator, dense-checked
+    const Eigen::MatrixXd P0 =
+        problem.Bd + A.block.HrV * A.block.C_corr * A.block.HrV.transpose();
+    Eigen::GeneralizedSelfAdjointEigenSolver<Eigen::MatrixXd> eigen(
+        0.5 * (P0 + P0.transpose()), problem.Hrd);
+    CHECK(*A.lambda_floor
+          == doctest::Approx(eigen.eigenvalues()(0)).epsilon(1e-6));
 }

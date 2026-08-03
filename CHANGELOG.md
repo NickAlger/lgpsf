@@ -154,6 +154,17 @@ to [Semantic Versioning](https://semver.org/).
   exact PD certificate of the raw sparse pencil off the LDLT inertia.
   Where factorization is viable (small $N$ / 2-D) this is both a fast
   exact solve and an independent check on the whole iterative stack.
+- **`lgpsf.corrections.glr_precondition`**, and a certification-soundness
+  fix, both found by the new end-to-end examples. `glr_precondition`
+  applies $(aH_r + |S|)^{-1}$ (surrogate eigenvalues by magnitude): PD for
+  every $a > 0$, so it preconditions where $M(a)$ itself is legitimately
+  indefinite — deflation stores trustworthy negative error modes — and the
+  two-level inner loop now uses it. And `make_pd`'s certifying sweeps no
+  longer deflate against the block (`LanczosOptions.deflate_block`, forced
+  false there): deflation-type columns are not eigenvectors of $B+E$, so a
+  complement-restricted sweep could certify a floor above the true pencil
+  minimum; certification now stays exact after any corrections, pinned by
+  a regression test against a dense generalized eigensolver.
 - **`Symmetrize::Weighted`**: a scale-aware symmetrization for
   `assemble_sparse` — a per-entry convex average with inverse-row-energy
   weights, so where two row fits disagree about a shared entry the weaker
