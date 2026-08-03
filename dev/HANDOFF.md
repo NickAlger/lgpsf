@@ -23,6 +23,8 @@ narrative and open items only; when a thread closes, its record moves to
 | Repo cleanup | 5 of 6 slices done — see below |
 | Fitting speed | **~4.5× faster than 0.1.0** at unchanged accuracy — see below |
 | Pencil corrections layer | **COMPLETE — all 12 slices landed** (implementation 2026-07-31/08-01; PIG validation 2026-08-03: flip counts 1438 Euclidean vs 14 pencil, free deflation 35→23 vs recorded 34→22, value pass 6/12/18 matching the offline prediction exactly, true-pair fold 6/13/19 vs in-ymir 5/12/18) (`Symmetrize::Weighted` 2026-07-31; boundary, `ModeBlock`, `ShiftedOperator` + GLR Woodbury, pencil Lanczos + `make_pd`, zones + both solve modes, both deflations, rebuild_at, and the Cholesky backend 2026-08-01) — full implementation plan in [`pencil-corrections-plan.md`](pencil-corrections-plan.md); the layer is operator-blind (matvec-only) in `include/lgpsf/corrections/`, a sibling of the fit stack |
+| Corrections examples | **landed 2026-08-03** — `heat_inversion.py` (shared PDE problem) + 4 lessons in pipeline order; writing them caught two library defects (see design-notes 2026-08-03) |
+| Heat mini-paper | **planned** — [`heat-mini-paper-plan.md`](heat-mini-paper-plan.md): the ten-figure end-to-end tutorial over the heat problem, awaiting maintainer review |
 | **Not done** | **CI, cibuildwheel, M6 release infra** |
 
 ## Fitting defaults changed, 2026-07-28
