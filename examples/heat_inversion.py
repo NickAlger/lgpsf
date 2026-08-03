@@ -147,7 +147,7 @@ def build_problem(grid=24, seed=0):
 
     return dict(x=x, mass=mass, H=H, sigma=sigma, count=count,
                 spacing=spacing, seed=seed, kappa=kappa, Hr=Hr,
-                apply_Hd=apply_Hd, grid=grid)
+                apply_Hd=apply_Hd, propagate=propagate, grid=grid)
 
 
 def probes(problem, num_probes, seed=None):

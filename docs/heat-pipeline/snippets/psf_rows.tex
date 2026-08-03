@@ -1,0 +1,9 @@
+\begin{verbatim}
+# A row of the Hessian is the point-spread function of "diffuse for
+# time 2T", anchored at that row's grid point. Sampling one costs two
+# PDE solves -- H_d e_i by the matrix-free apply.
+def psf(index):
+    impulse = np.zeros(problem["count"])
+    impulse[index] = 1.0
+    return problem["apply_Hd"](impulse)
+\end{verbatim}

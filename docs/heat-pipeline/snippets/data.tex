@@ -1,0 +1,8 @@
+\begin{verbatim}
+# Observe the diffused field everywhere at the final time, with iid
+# noise at 1.5% of the signal's RMS -- the data a real inversion holds.
+rng = np.random.default_rng(SEED)
+observed = problem["propagate"](u0)                        # A u0
+noise = NOISE * np.sqrt(np.mean(observed**2))
+data = observed + noise * rng.standard_normal(observed.shape)
+\end{verbatim}

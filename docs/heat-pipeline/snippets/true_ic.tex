@@ -1,0 +1,15 @@
+\begin{verbatim}
+# The true initial condition carries features at TWO scales: one broad
+# blob spanning the conductive slab's boundary, and four sharp spots --
+# in the pocket, the background, and the slab. The scale separation is
+# what the final figure of the paper is built to expose.
+def gaussian(center, width, amplitude=1.0):
+    d2 = ((x[0] - center[0]) ** 2 + (x[1] - center[1]) ** 2)
+    return amplitude * np.exp(-0.5 * d2 / width**2)
+
+u0 = (gaussian((0.42, 0.62), 0.16)
+      + 0.9 * gaussian((0.75, 0.30), 0.02)     # in the insulating pocket
+      + 0.8 * gaussian((0.70, 0.75), 0.02)     # in the background
+      - 0.7 * gaussian((0.22, 0.35), 0.02)     # in the slab, signed
+      + 0.8 * gaussian((0.15, 0.80), 0.02))    # in the slab
+\end{verbatim}
