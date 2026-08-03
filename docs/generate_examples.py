@@ -40,7 +40,7 @@ IMG = REPO / "docs" / "img"
 
 # Shared infrastructure, not a lesson: it defines the test problem the other
 # examples fit, and has no output of its own.
-SKIP = {"frog_kernel"}
+SKIP = {"frog_kernel", "heat_inversion"}
 
 # Every example is documented at its own defaults. If one ever gets slow
 # enough to need abbreviating here, that is a signal its default is wrong.

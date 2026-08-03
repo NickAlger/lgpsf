@@ -39,6 +39,20 @@ optional** — the numbers always print; figures are skipped without it.
 | [`preconditioner.py`](preconditioner.py) | **What a fit is for.** Solve `(H^T H + alpha I) x = H^T b` with the fit as a preconditioner: 19-34x fewer CG iterations across four decades of alpha, from one batch of probes. Uses scipy's CG and sparse factorization. |
 | [`preconditioner.cpp`](preconditioner.cpp) | The same study in C++, with CG written out so the one line the preconditioner enters on is visible. |
 
+## The corrections layer
+
+A second shared problem (`heat_inversion.py` -- a genuine PDE-constrained
+inverse problem: recover a heat equation's initial condition through a
+sharp-jump conductivity field) and four lessons over it, in pipeline order.
+
+| | |
+|---|---|
+| [`heat_inversion.py`](heat_inversion.py) | The shared problem, not a lesson: the heat Hessian dense (for ground truth) and matrix-free (`apply_Hd`), the Laplacian `Hr`, the kappa field with sharp jumps, and the lean-fit helper. |
+| [`weighted_symmetrization.py`](weighted_symmetrization.py) | Row scales spanning 280x are physics. `Average` lets strong rows' tails overwrite weak rows' signal (worst row 5x worse); `Weighted` protects them, at a small honest cost on the near-exact spike rows. |
+| [`certified_positive_definiteness.py`](certified_positive_definiteness.py) | 164 negative Euclidean eigenvalues, 0 below the pencil threshold. `make_pd` certifies the exact PD floor from matvecs and Hr-solves alone, and an a0 sweep shows what the threshold protects you from. |
+| [`deflation.py`](deflation.py) | Free vs paid error correction, refereed by PCG on the true system: at a lean budget the free pass HURTS (the clamp report says so first), V1 saturates at the residual basis, and V2's power step is what pays. |
+| [`shifted_deployment.py`](shifted_deployment.py) | One fit, two deployments, every shift: the GLR cache (quality = lambda_k+1/a) vs the two-level solve, zone checks, a refusal below the certified floor, and `rebuild_at` re-anchoring with zero new heat solves. |
+
 ## Underneath
 
 | | |
