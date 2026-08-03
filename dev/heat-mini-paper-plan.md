@@ -152,3 +152,18 @@ build (compiler-flag reproducibility, as with docgen).
   one-sided preconditioned operator for ALL THREE curves**, with the
   caption note about symmetric similarity. No questions remain — the
   plan is fully specified; implementation starts at slice 1.
+
+- **Spike OFF for this problem (decided 2026-08-03, after slice 2).**
+  The smooth LG expansion is the main lgpsf fit; the additive spike is
+  a trick for undermeshed regimes, and this problem's narrowest PSFs
+  (pocket, sigma ≈ 0.9 cells at grid 32) are still resolvable. Measured
+  basis for the call: the spike coefficient is a free L2 basis vector,
+  weakly determined at small probe budgets — negative on ~half the rows
+  at k = 10 (122 assembled diagonals negative), still negative on ~1/3
+  of rows at k = 50, digging anchor-cell holes that row-level L2 QC
+  barely notices; aggregate held-out QC ties or improves without it
+  (overall 0.26 vs 0.30 at k = 10, 0.070 vs 0.072 at k = 50; only the
+  pocket prefers the spike, 0.006 vs 0.012 at k = 50). Possible library
+  follow-up, not this paper's work: an optional nonnegativity constraint
+  on the spike, or anchoring the diagonal to the Hutchinson estimate
+  `E[z_i (Hz)_i]` the probes already contain.

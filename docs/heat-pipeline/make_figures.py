@@ -183,6 +183,10 @@ def fitted_operator(problem, k):
     V, HV = probes(problem, k)
     config = lgpsf.OperatorFitConfig()
     config.tau_window = 3.0
+    # The smooth LG expansion is the fit. The additive spike term is a
+    # trick for undermeshed regimes; this problem's narrowest PSFs are
+    # still about a cell wide, so it stays off.
+    config.spike = False
     config.row.mode_policy = lgpsf.ShellLadder([0, 1, 2, 3, 4])
     config.row.target_score = None
     fit = lgpsf.fit_operator(problem["x"], problem["mass"], problem["mass"],
