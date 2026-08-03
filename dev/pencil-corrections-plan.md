@@ -418,7 +418,11 @@ zone semantics incl. warning + refusal; `rebuild_at` equivalence to a
 fresh build at $a_1$; GLR vs two-level vs Cholesky backend agreement.
 
 Maintainer-side (private PIG data; acceptance numbers recorded here so
-the implementing session knows the targets):
+the implementing session knows the targets). **Measured 2026-08-03** —
+the library driven end-to-end on the archived PIG data through the
+Python bindings, scored with the research referee (PCG on the certified
+surrogate system, Cholesky preconditioners, fixed RHS). Every target
+hit; measured values annotated per item below:
 
 1. **Flip-count study** — the motivating claim of P1. Dense generalized
    eigendecomposition of (weighted-sym fit, $H_r$): count Euclidean
@@ -426,15 +430,33 @@ the implementing session knows the targets):
    ($\gamma = \tfrac12$, $a_0 = 10^{-4}$). Expect orders of magnitude
    apart; expect pencil-threshold flip within ~1 PCG iteration of the
    dense Euclidean flip (flip-vs-relu was already ≤ 1).
+   *Measured:* Euclidean **1438** modes vs pencil **14** (two orders of
+   magnitude); `make_pd` flipped exactly the dense count (14/14) and
+   certified $\lambda_{\mathrm{floor}} = -4.451\times10^{-5}$ matching
+   the dense generalized eigensolver to all printed digits (3000 oracle
+   solves, 47 s at $N = 6557$); PCG 11/23/35 vs Euclidean 12/23/34 —
+   within one iteration at every depth.
 2. **Free deflation reproduction** — $k{=}200$,
    $\mathrm{rcond}=3\cdot10^{-2}$: 34 → 22 at $10^{-6}$; no gain at
    $k \le 20$.
+   *Measured:* 35 → **23** (within one of the record on both sides; zero
+   clamps, $\theta \in [-0.85, 1.62]$). At $k{=}20$: 78 → 117, worse,
+   with 9 of 20 value estimates clamped — the recorded no-gain finding
+   reproduced with its mechanism visible.
 3. **Value-pass reproduction** — $k{=}100$, $m{=}50$: 5/12/18/24 against
    the true operator (vs undeflated 12/26/36/45); zero clamps.
+   *Measured:* with surrogate values, **6/12/18** — the offline study's
+   prediction (6/18 at $10^{-2}/10^{-6}$) matched exactly, zero clamps.
+   Folding the 50 ARCHIVED true-matvec pairs (`fold_value_pairs`, zero
+   new applies): **6/13/19** vs the in-ymir true-system 5/12/18 — within
+   one iteration at every depth, across both the referee-vs-true-system
+   and pipeline differences.
 4. **Exact-value ceiling context** — certified-correction truncations
    gave 4/9/13 at $r{=}25$ and 3/5/7 at $r{=}50$ (to
    $10^{-2}/10^{-4}/10^{-6}$); useful for judging how much of the gap a
    given build closes.
+   *Measured:* 4/8/13 and 2/5/7 — within one iteration; also validates
+   the referee reproduction itself.
 
 ## 10. Not included, and why
 
@@ -500,6 +522,8 @@ not code.
     the supplied matrices against the operator handles; the per-shift
     cache follows the block's rank).
 12. Maintainer-side validation runs (§9) and recording of results here.
+    **Landed 2026-08-03** — all four studies hit their targets; measured
+    values annotated in §9. The plan is fully implemented.
 
 Each slice lands with tests and doc updates; bindings track the C++ per
 repo convention. Dependency direction (`tools/check_dependencies.py`)
