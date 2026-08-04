@@ -583,9 +583,12 @@ def item_spectra(problem):
              50 + VP_APPLIES, cond("value")),
             ("as fitted, k = 50 (sing. values)", 50, cond("asis_sv")),
             ("Average + flips, k = 50 (sing. values)", 50, cond("avg_sv"))]
+    def fmt(kappa):
+        return f"{kappa:.0f}" if kappa >= 100 else f"{kappa:.3g}"
+
     print(f"{'variant':>42}  {'probes':>6}  {'condition':>10}")
     for label, probes_used, kappa in rows:
-        print(f"{label:>42}  {probes_used:>6}  {kappa:>10.3g}")
+        print(f"{label:>42}  {probes_used:>6}  {fmt(kappa):>10}")
     out = os.path.join(HERE, "snippets")
     os.makedirs(out, exist_ok=True)
     with open(os.path.join(out, "cost_table.tex"), "w") as handle:
@@ -593,7 +596,7 @@ def item_spectra(problem):
         handle.write("preconditioner & probes & condition number "
                      "\\\\\n\\hline\n")
         for label, probes_used, kappa in rows:
-            handle.write(f"{label} & {probes_used} & {kappa:.3g} \\\\\n")
+            handle.write(f"{label} & {probes_used} & {fmt(kappa)} \\\\\n")
         handle.write("\\hline\n\\end{tabular}\n")
     print("wrote snippets/cost_table.tex")
 
