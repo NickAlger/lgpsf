@@ -8,6 +8,7 @@ For **using** lgpsf. Notes for people changing it are in [`../dev/`](../dev/).
 |---|---|
 | [installation.md](installation.md) | pip, CMake, and the two build warnings worth heeding. |
 | [quickstart.md](quickstart.md) | What you must supply, the fit, and how to check it worked. |
+| [heat-pipeline/heat-pipeline.pdf](heat-pipeline/heat-pipeline.pdf) | **The tutorial**: the complete pipeline — probe, fit, certify, deflate, deploy — on one heat-equation inverse problem, with every figure and snippet generated from [heat-pipeline/make_figures.py](heat-pipeline/make_figures.py). |
 
 ## Reference
 

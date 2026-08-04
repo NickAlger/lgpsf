@@ -79,6 +79,8 @@ See [docs/installation.md](docs/installation.md).
 ## Documentation
 
 - **[Quickstart](docs/quickstart.md)** — the shortest path to a fit.
+- **[Tutorial](docs/heat-pipeline/heat-pipeline.pdf)** — the complete
+  pipeline on one heat-equation inverse problem, fit to deployment.
 - **[API guide](docs/api-guide.md)** — the three layers, and the array
   conventions that trip people up.
 - **[Defaults](docs/defaults.md)** — what the knobs are set to, and the

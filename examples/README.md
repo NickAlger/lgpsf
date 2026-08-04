@@ -44,6 +44,9 @@ optional** — the numbers always print; figures are skipped without it.
 A second shared problem (`heat_inversion.py` -- a genuine PDE-constrained
 inverse problem: recover a heat equation's initial condition through a
 sharp-jump conductivity field) and four lessons over it, in pipeline order.
+These lessons deliberately slice the pipeline up; the tutorial
+[`docs/heat-pipeline/heat-pipeline.pdf`](../docs/heat-pipeline/heat-pipeline.pdf)
+tells the same story as one continuous walkthrough on the same problem.
 
 | | |
 |---|---|
