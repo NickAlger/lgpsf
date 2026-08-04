@@ -1,0 +1,15 @@
+\begin{tabular}{l r r}
+\hline
+preconditioner & probes & condition number \\
+\hline
+regularization only & 0 & 3.75e+03 \\
+Weighted + flips, k = 10 & 10 & 15.1 \\
+Weighted + flips, k = 20 & 20 & 6.43 \\
+Weighted + flips, k = 50 & 50 & 3.51 \\
+Weighted + flips, k = 150 & 150 & 3.07 \\
+k = 50 + free deflation & 50 & 15 \\
+k = 50 + value pass (m = 30) & 80 & 2.45 \\
+as fitted, k = 50 (sing. values) & 50 & 9.59 \\
+Average + flips, k = 50 (sing. values) & 50 & 7.58 \\
+\hline
+\end{tabular}
