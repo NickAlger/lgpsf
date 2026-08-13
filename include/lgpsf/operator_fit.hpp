@@ -194,8 +194,12 @@ struct OperatorFitConfig
     /// prior. See the file comment.
     double window_aspect_cap = std::numeric_limits<double>::infinity();
 
-    /// Model the diagonal spike. Requires the square dof context (no separate
-    /// row coordinates), since the spike is tied to the row's own dof.
+    /// Model the diagonal spike. The spike is tied to the row's own column
+    /// dof: in the square context (no separate row coordinates) that is the
+    /// row index itself; with separate row coordinates the caller must name
+    /// it explicitly via `fit_operator`'s `row_own_col` (subset/rectangular
+    /// contexts, e.g. a distributed rank fitting its rows against own + halo
+    /// columns), or set spike = false.
     bool spike = true;
 
     /// The per-row candidate-stream policy. Its `split` and `jitter` are
@@ -334,7 +338,8 @@ inline OperatorFit fit_operator(
     const std::optional<Eigen::MatrixXd>& mu0 = std::nullopt,
     const std::optional<Eigen::MatrixXd>& x_rows = std::nullopt,
     const std::vector<char>& gate = {},
-    const std::vector<std::optional<ellipsoid_tree::Ellipsoid>>& window_ellipsoids = {} )
+    const std::vector<std::optional<ellipsoid_tree::Ellipsoid>>& window_ellipsoids = {},
+    const std::vector<int>& row_own_col = {} )
 {
     const int dim = static_cast<int>(x_cols.cols());
     const Eigen::Index num_cols = x_cols.rows();
@@ -372,11 +377,19 @@ inline OperatorFit fit_operator(
         throw std::invalid_argument(
             "lgpsf::fit_operator: x_rows must have one coordinate per row");
     }
-    if ( config.spike && x_rows )
+    if ( config.spike && x_rows && row_own_col.empty() )
     {
         throw std::invalid_argument(
-            "lgpsf::fit_operator: the spike needs the square dof context, so it "
-            "cannot be combined with separate row coordinates; set spike = false");
+            "lgpsf::fit_operator: the spike needs to know each row's own column "
+            "dof; with separate row coordinates pass row_own_col (the column "
+            "index of each row's own dof, -1 for rows without one) or set "
+            "spike = false");
+    }
+    if ( !row_own_col.empty()
+         && static_cast<Eigen::Index>(row_own_col.size()) != num_rows )
+    {
+        throw std::invalid_argument(
+            "lgpsf::fit_operator: row_own_col must have one entry per row");
     }
     if ( !gate.empty() && static_cast<Eigen::Index>(gate.size()) != num_rows )
     {
@@ -549,16 +562,27 @@ inline OperatorFit fit_operator(
                     int spike_position = -1;
                     if ( config.spike )
                     {
-                        const auto found = std::lower_bound(
-                            window.begin(), window.end(), static_cast<int>(rho));
-                        if ( found != window.end() && *found == static_cast<int>(rho) )
+                        // The row's own column dof: identity in the square
+                        // context, explicit via row_own_col in subset/
+                        // rectangular contexts (e.g., a distributed rank
+                        // fitting its rows against own + halo columns).
+                        const int own =
+                            row_own_col.empty()
+                                ? static_cast<int>(rho)
+                                : row_own_col[static_cast<std::size_t>(rho)];
+                        if ( own >= 0 )
                         {
-                            spike_position =
-                                static_cast<int>(found - window.begin());
+                            const auto found = std::lower_bound(
+                                window.begin(), window.end(), own);
+                            if ( found != window.end() && *found == own )
+                            {
+                                spike_position =
+                                    static_cast<int>(found - window.begin());
+                            }
                         }
-                        // else the row dof fell outside its own window, only
-                        // possible with a far-off explicit mu0; the shipped
-                        // model then simply has no spike.
+                        // else the row dof fell outside its own window (far-
+                        // off explicit mu0) or has no own column (own < 0);
+                        // the shipped model then simply has no spike.
                     }
 
                     const Eigen::Index window_size =
@@ -717,6 +741,7 @@ inline OperatorFit fit_operator(
     fit.m1_diag = m1_diag;
     fit.m2_diag = m2_diag;
     fit.spike = config.spike;
+    fit.spike_col = row_own_col;
     diagnostics.config = config;
     fit.window_center = std::move(window_center);
     fit.window_covariance = std::move(window_covariance);

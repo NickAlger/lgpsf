@@ -100,6 +100,20 @@ struct LGOperator
     Eigen::VectorXd m2_diag;                ///< (K_all,)
     bool spike = true;
 
+    /// The column dof carrying each row's spike: EMPTY = the square identity
+    /// (column rho), else one entry per row with the row's own column index
+    /// (-1 = the row has no own column dof, hence no spike there).  This is
+    /// what lets subset/rectangular column contexts — e.g. a distributed
+    /// rank fitting its rows against own + halo columns — keep the spike.
+    std::vector<int> spike_col;
+
+    /// The spike's column for `rho`: identity when `spike_col` is empty.
+    int spike_column( Eigen::Index rho ) const
+    {
+        return spike_col.empty() ? static_cast<int>(rho)
+                                 : spike_col[static_cast<std::size_t>(rho)];
+    }
+
     /// (R_all, P) fitted parameters in the PUBLIC absolute encoding, so every
     /// row decodes with `unpack_theta` alone -- no mu0, no mode.
     Eigen::MatrixXd theta;
@@ -486,7 +500,7 @@ inline Eigen::VectorXd eval_entries(
             double value = detail::in_window(fit, rho, cols[slot])
                                ? values(static_cast<Eigen::Index>(k))
                                : 0.0;
-            if ( fit.spike && cols[slot] == rho )
+            if ( fit.spike && cols[slot] == fit.spike_column(rho) )
             {
                 value += fit.m1_diag(rho) * fit.s(rho);
             }
@@ -541,9 +555,10 @@ inline Eigen::MatrixXd matvec(
                     out.row(rho) +=
                         weights(static_cast<Eigen::Index>(i)) * v.row(window[i]);
                 }
-                if ( fit.spike )
+                if ( fit.spike && fit.spike_column(rho) >= 0 )
                 {
-                    out.row(rho) += fit.m1_diag(rho) * fit.s(rho) * v.row(rho);
+                    out.row(rho) += fit.m1_diag(rho) * fit.s(rho)
+                                    * v.row(fit.spike_column(rho));
                 }
             }
         },
@@ -698,11 +713,13 @@ inline Eigen::SparseMatrix<double> assemble_sparse(
                             rho, deployed[i], values(static_cast<Eigen::Index>(i)));
                     }
                 }
-                if ( fit.spike )
+                if ( fit.spike && fit.spike_column(rho) >= 0 )
                 {
                     // Additive on top of the unmodified smooth part at the
-                    // diagonal; duplicate triplets sum, which is that convention.
-                    per_row[slot].emplace_back(rho, rho,
+                    // row's own column dof (the diagonal, in the square
+                    // context); duplicate triplets sum, which is that
+                    // convention.
+                    per_row[slot].emplace_back(rho, fit.spike_column(rho),
                                                fit.m1_diag(rho) * fit.s(rho));
                 }
             }
@@ -785,10 +802,24 @@ inline std::vector<std::string> validate( const LGOperator& fit )
     {
         complain("x_rows must be (num_rows, dim) when present");
     }
-    if ( fit.spike && fit.x_rows )
+    if ( fit.spike && fit.x_rows && fit.spike_col.empty() )
     {
-        complain("the spike needs the square dof context, so it cannot coexist "
-                 "with separate row coordinates");
+        complain("the spike needs to know each row's own column dof: with "
+                 "separate row coordinates the operator must carry spike_col");
+    }
+    if ( !fit.spike_col.empty() )
+    {
+        if ( static_cast<Eigen::Index>(fit.spike_col.size()) != rows )
+        {
+            complain("spike_col must have one entry per row");
+        }
+        for ( const int own : fit.spike_col )
+        {
+            if ( own >= static_cast<int>(fit.x_cols.rows()) )
+            {
+                complain("spike_col entry exceeds the column count");
+            }
+        }
     }
 
     const auto expect_rows = [&]( Eigen::Index got, const char* what ) {
