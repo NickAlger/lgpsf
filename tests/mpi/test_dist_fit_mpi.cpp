@@ -19,6 +19,7 @@
 //       && mpiexec -n 4 ./test_dist_fit_mpi
 
 #include "lgpsf/mpi/dist_fit.hpp"
+#include "lgpsf/mpi/dist_wsym.hpp"
 #include "lgpsf/mode_policy.hpp"
 
 #include <cmath>
@@ -237,19 +238,102 @@ int main( int argc, char** argv )
             }
         }
     }
-    long tot_bad = 0, tot_checked = 0;
+    // ---- distributed weighted symmetrization vs serial, bitwise --------
+    long wsym_bad = 0;
+    {
+        std::vector<double> ref_wsym(static_cast<std::size_t>(n) * n, 0.0);
+        if ( rank == 0 )
+        {
+            Eigen::SparseMatrix<double> A(n, n);
+            std::vector<Eigen::Triplet<double>> trip;
+            for ( int i = 0; i < n; ++i )
+            {
+                for ( int j = 0; j < n; ++j )
+                {
+                    const double v =
+                        ref_vals[static_cast<std::size_t>(i) * n
+                                 + static_cast<std::size_t>(j)];
+                    if ( v != 0.0 ) { trip.emplace_back(i, j, v); }
+                }
+            }
+            // NOTE: exact-zero stored entries are dropped by this dense
+            // round trip on BOTH sides below, so the zeros-kept pattern
+            // is not exercised here; values are.
+            A.setFromTriplets(trip.begin(), trip.end());
+            const Eigen::SparseMatrix<double> W =
+                lgpsf::detail::weighted_symmetrize(A);
+            for ( int outer = 0; outer < W.outerSize(); ++outer )
+            {
+                for ( Eigen::SparseMatrix<double>::InnerIterator it(W, outer);
+                      it; ++it )
+                {
+                    ref_wsym[static_cast<std::size_t>(it.row()) * n
+                             + static_cast<std::size_t>(it.col())] =
+                        it.value();
+                }
+            }
+        }
+        MPI_Bcast(ref_wsym.data(), n * n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+        std::vector<lgpsf::mpi::GlobalTriplet> rows_local;
+        for ( int outer = 0; outer < res.B_local.outerSize(); ++outer )
+        {
+            for ( Eigen::SparseMatrix<double>::InnerIterator
+                      it(res.B_local, outer); it; ++it )
+            {
+                if ( it.value() == 0.0 ) { continue; }  // match the dense ref
+                rows_local.push_back(lgpsf::mpi::GlobalTriplet{
+                    static_cast<long>(rstart + it.row()),
+                    res.col_gids[static_cast<std::size_t>(it.col())],
+                    it.value()});
+            }
+        }
+        std::vector<long> row_ranges(static_cast<std::size_t>(size) + 1);
+        for ( int r = 0; r <= size; ++r )
+        {
+            row_ranges[static_cast<std::size_t>(r)] = (long)(n * r) / size;
+        }
+        const std::vector<lgpsf::mpi::GlobalTriplet> mine =
+            lgpsf::mpi::dist_weighted_symmetrize(MPI_COMM_WORLD, rows_local,
+                                                 row_ranges);
+        std::vector<double> got(static_cast<std::size_t>(nloc) * n, 0.0);
+        for ( const lgpsf::mpi::GlobalTriplet& t : mine )
+        {
+            got[static_cast<std::size_t>(t.row - rstart) * n
+                + static_cast<std::size_t>(t.col)] = t.value;
+        }
+        for ( int i = 0; i < nloc; ++i )
+        {
+            for ( int j = 0; j < n; ++j )
+            {
+                if ( got[static_cast<std::size_t>(i) * n
+                         + static_cast<std::size_t>(j)]
+                     != ref_wsym[static_cast<std::size_t>(rstart + i) * n
+                                 + static_cast<std::size_t>(j)] )
+                {
+                    ++wsym_bad;
+                }
+            }
+        }
+    }
+
+    long tot_bad = 0, tot_checked = 0, tot_wsym_bad = 0;
     MPI_Allreduce(&bad, &tot_bad, 1, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(&checked, &tot_checked, 1, MPI_LONG, MPI_SUM,
+                  MPI_COMM_WORLD);
+    MPI_Allreduce(&wsym_bad, &tot_wsym_bad, 1, MPI_LONG, MPI_SUM,
                   MPI_COMM_WORLD);
     long halo_tot = plan.candidates_received, halo_sum = 0;
     MPI_Allreduce(&halo_tot, &halo_sum, 1, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
     if ( rank == 0 )
     {
-        std::printf("[G-L2] n=%d ranks=%d: %ld entries checked, %ld "
-                    "mismatches (BITWISE), halo candidates total %ld\n",
-                    n, size, tot_checked, tot_bad, halo_sum);
-        std::printf(tot_bad == 0 ? "[G-L2] PASS\n" : "[G-L2] FAIL\n");
+        std::printf("[G-L2] n=%d ranks=%d: %ld entries checked, %ld fit + "
+                    "%ld wsym mismatches (BITWISE), halo candidates total "
+                    "%ld\n",
+                    n, size, tot_checked, tot_bad, tot_wsym_bad, halo_sum);
+        std::printf(tot_bad + tot_wsym_bad == 0 ? "[G-L2] PASS\n"
+                                                : "[G-L2] FAIL\n");
     }
     MPI_Finalize();
-    return tot_bad == 0 ? 0 : 1;
+    return tot_bad + tot_wsym_bad == 0 ? 0 : 1;
 }
