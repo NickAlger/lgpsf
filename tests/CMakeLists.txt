@@ -6,6 +6,7 @@ add_executable(lgpsf_tests
     test_ellipsoid_transform.cpp
     test_lg_ellipsoid_feature.cpp
     test_whitening.cpp
+    test_operator_qc.cpp
     test_levenberg_marquardt.cpp
     test_varpro.cpp
     test_init_dictionary.cpp

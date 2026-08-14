@@ -15,6 +15,7 @@ See [`../../examples/README.md`](../../examples/README.md) for what each one tea
 - [What a Laguerre-Gaussian mode looks like](lg_modes.md)
 - [Choosing which modes to add, and in what order](mode_policies.md)
 - [Reading a fit: which rows worked, which did not, and how you would know](operator_diagnostics.md)
+- [What the operator-level QC measures, and why probe scaling matters](operator_qc_mesh_study.md)
 - [Fit a whole operator from random matvecs, and watch the error fall with k](operator_fit_frog.md)
 - [An LGOperator you build yourself, with no fitting at all](operator_without_fitting.md)
 - [What a fit is FOR: preconditioning a regularized inverse problem](preconditioner.md)

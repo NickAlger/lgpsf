@@ -34,6 +34,7 @@ optional** — the numbers always print; figures are skipped without it.
 | [`operator_fit_frog.cpp`](operator_fit_frog.cpp) | The same pipeline in C++, on the same problem, with figures from `ellipsoid_tree`'s `plot2d` — no plotting dependency to install. |
 | [`deploying_a_fit.py`](deploying_a_fit.py) | `matvec`, `assemble_sparse`, `eval_entries`, `eval_kernel`: four views of a fit, what truncation costs, and why symmetrizing can make things worse. |
 | [`operator_diagnostics.py`](operator_diagnostics.py) | Reading a fit with no truth available: statuses, the baseline guard, `qc_map`, `spike_measure`, `ellipsoid_field`. |
+| [`operator_qc_mesh_study.py`](operator_qc_mesh_study.py) | The operator-level QC on a mesh where the mass matrix cannot hide: `z = M^-1/2 randn` probes and dual-norm residuals give a mesh-independent relative error, checked against the dense truth; each probe family wins in its own norm. |
 | [`operator_without_fitting.py`](operator_without_fitting.py) | `LGOperator` is a data structure. Build one from a physics model, merge pieces with `concatenate_rows`, never touch the fitter. |
 | [`rectangular_operator.py`](rectangular_operator.py) | Rows and columns on different meshes. Square is the special case. |
 | [`preconditioner.py`](preconditioner.py) | **What a fit is for.** Solve `(H^T H + alpha I) x = H^T b` with the fit as a preconditioner: 19-34x fewer CG iterations across four decades of alpha, from one batch of probes. Uses scipy's CG and sparse factorization. |
