@@ -149,6 +149,34 @@ inline Eigen::MatrixXd whiten_extra( const Eigen::Ref<const Eigen::MatrixXd>& E,
     return detail::scale_rows(E, scale);
 }
 
+/// Squared dual-space (Y') norm of a raw row-space coefficient vector:
+/// ||v||_{M1^-1}^2 = sum_i v_i^2 / (m1)_i.
+///
+/// The operator-level quality control (docs/varpro-whitening-notes.tex,
+/// "Operator-level quality control") measures held-out residuals r = Bz - y
+/// and responses y in this norm: qc^2 = sum_l dual_norm2(r_l) /
+/// sum_l dual_norm2(y_l).  With probes drawn i.i.d. in the whitened
+/// variables (z = M2^(-1/2) * randn, i.e. L^2-white noise), that ratio
+/// estimates the relative Hilbert-Schmidt operator error in the natural
+/// norms; for any other held-out family it remains the held-out relative
+/// error on that family.  Distributed callers sum per-rank partials of
+/// numerator and denominator and Allreduce the two scalars.
+inline double dual_norm2( const Eigen::Ref<const Eigen::VectorXd>& v,
+                          const Eigen::Ref<const Eigen::VectorXd>& m1_diag )
+{
+    if ( v.size() != m1_diag.size() )
+    {
+        throw std::invalid_argument(
+            "lgpsf::dual_norm2: v and m1_diag must have equal length");
+    }
+    if ( (m1_diag.array() <= 0.0).any() )
+    {
+        throw std::invalid_argument(
+            "lgpsf::dual_norm2: every entry of m1_diag must be positive");
+    }
+    return (v.array().square() / m1_diag.array()).sum();
+}
+
 /// The whitened basis evaluated at one theta_hat: a FeatureAt plus the fixed
 /// scaling sqrt(target_mass) M2^(1/2).
 ///

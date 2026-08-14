@@ -210,6 +210,7 @@ derivative formulas are needed anywhere.
 
 The prediction that this layering would hold has since been tested by building
 on top of it. Two things are worth recording because they confirm it.
+% (operator-level QC section added below, 2026-08-13 -- draft for review)
 
 First, the fitting core is genuinely generic: \texttt{varpro.hpp} is templated
 on the basis functor and contains nothing specific to Laguerre--Gaussians,
@@ -226,5 +227,124 @@ the returned coefficients come back in physical units. Because the whitened
 design matrix is column-equilibrated inside the inner solve, that scalar
 rescales only $(c, s)$ --- the fitted $\theta$, the scores and the entire
 selection are invariant to it.
+
+\section{Operator-level quality control}
+\label{sec:operator-qc}
+
+The fit makes two different kinds of decision, and they deserve two different
+metrics. The per-row cross-validation score selects a \emph{model for one row}
+(how many LG modes to use), and it already operates in whitened coordinates:
+its residuals are $\what y$-residuals, i.e.\ residuals in the $y/\sqrt{m_\rho}$
+scaling of \eqref{eq:whiten-y}. Nothing in this section touches it. The second
+decision is made about the \emph{operator as a whole} -- is the assembled fit
+$B \approx H$ accurate enough to stop spending probes? -- and this section
+derives the metric for that decision, extending the whitening story from rows
+up to the operator.
+
+\paragraph{Why a naive global metric misleads.} A natural-looking choice is to
+hold out a few probes and average their relative residuals,
+$\tfrac1k\sum_\ell \|Bz_\ell - y_\ell\| / \|y_\ell\|$. The trouble is the
+denominator: $\|Hz\|$ is dominated by the overlap of $z$ with the leading
+spectral directions of $H$, and the operators we care about have large spectral
+outliers -- that is the very reason they need preconditioning. Each per-probe
+ratio therefore has a heavy-tailed denominator, and with a handful of held-out
+probes the \emph{mean of ratios} inherits the tail: its value is largely a
+property of the draw, not of the fit. (In the ice-sheet application we observed
+a factor-of-three spread across probe draws at fixed fit quality.) The fix is
+the same one used throughout these notes: state the quantity in the natural
+norms, whiten, and then let plain Euclidean arithmetic be correct by
+construction.
+
+\paragraph{The metric.} The error $D := H - B$ maps $X \to Y'$, so its natural
+Hilbert--Schmidt norm measures inputs in $\langle u,v\rangle_X = u^\top \Mtwo
+v$ and outputs in the dual norm $\|r\|_{Y'}^2 = r^\top \Mone^{-1} r$. Summing
+$\|D u_k\|_{Y'}^2$ over an $X$-orthonormal basis $\{u_k\}$ gives
+\begin{equation}
+\|D\|_{\mathrm{HS}(X,Y')}^2
+\;=\; \big\| \Mone^{-1/2}\, (H - B)\, \Mtwo^{-1/2} \big\|_F^2 .
+\label{eq:hs-norm}
+\end{equation}
+That is, the natural operator error is the plain Frobenius norm of the error
+after whitening both sides -- the operator-level analogue of the per-row
+transforms \eqref{eq:whiten-z}--\eqref{eq:whiten-y}, with the single row mass
+$m_\rho$ replaced by the full $\Mone$. The quality-control quantity is the
+relative version, $\|D\|_{\mathrm{HS}} / \|H\|_{\mathrm{HS}}$.
+
+\paragraph{The estimator.} Draw held-out probes i.i.d.\ standard normal
+\emph{in the whitened variables}: $\what z_\ell \sim N(0, I)$, i.e.\ $z_\ell =
+\Mtwo^{-1/2} \what z_\ell$ in raw coordinates, so that $\mathbb{E}\, z_\ell
+z_\ell^\top = \Mtwo^{-1}$. In function-space terms this makes $z_\ell$ white
+noise with respect to the $X$ inner product -- coefficient covariance
+$\Mtwo^{-1}$ is the FEM representation of $L^2$-white noise -- whereas a
+coordinate-i.i.d.\ draw sits one factor of $\Mtwo$ away from it. Then
+\begin{equation}
+\mathbb{E}\, \big\| \Mone^{-1/2} (H-B) z_\ell \big\|^2
+\;=\; \|D\|_{\mathrm{HS}(X,Y')}^2 ,
+\qquad
+\mathbb{E}\, \big\| \Mone^{-1/2} H z_\ell \big\|^2
+\;=\; \|H\|_{\mathrm{HS}(X,Y')}^2 ,
+\end{equation}
+and the quality control is the ratio of sums (an \emph{energy} ratio, not a
+mean of ratios):
+\begin{equation}
+\mathrm{qc}^2 \;=\;
+\frac{\sum_\ell \big\| \Mone^{-1/2} (B z_\ell - y_\ell) \big\|^2}
+     {\sum_\ell \big\| \Mone^{-1/2} y_\ell \big\|^2},
+\qquad y_\ell = H z_\ell .
+\label{eq:qc-energy}
+\end{equation}
+Two remarks on this estimator. First, as a ratio of sums it is biased at
+$O(1/k)$ for the ratio of expectations, which is immaterial for a stopping
+test. Second, and decisively, it concentrates where the mean of ratios does
+not: numerator and denominator fluctuate \emph{together} through the shared
+draw, so their ratio is far more stable than either sum alone. The heavy tail
+that poisons the per-probe ratios enters both sums the same way and largely
+cancels.
+
+\paragraph{Held-out interpretation without the i.i.d.\ assumption.} The
+i.i.d.-in-whitened-variables assumption is what upgrades \eqref{eq:qc-energy}
+to an unbiased estimate of the \emph{global} relative Hilbert--Schmidt error;
+it is not what makes the formula meaningful. For any held-out probe family --
+scaled or unscaled, random or structured (polynomials, sinusoids, Dirac
+combs, draws from other smoothness classes) -- \eqref{eq:qc-energy} is still
+a perfectly reasonable held-out relative error: the error of $B$'s action on
+that family, measured in the natural norms. What changes with the probe
+family is only \emph{which} operator error the number reflects -- the family
+weights the directions being tested -- not whether the number is a valid
+relative error on them.
+
+\paragraph{Mesh independence.} Whitening is what makes the number mean the same
+thing on different meshes. Heuristically, \eqref{eq:hs-norm} is the quadrature
+approximation of the continuum Hilbert--Schmidt (relative) norm of the kernel
+error, so under refinement -- uniform or adaptive -- the metric approaches a
+mesh-independent limit whenever the underlying kernel is square-integrable. We
+do not prove this; it is the standard quadrature heuristic. By contrast, the
+unweighted version (Euclidean norms, coordinate-i.i.d.\ probes) estimates the
+raw-coordinate Frobenius ratio, which weights every node equally: on an
+adaptive mesh, refining a region silently re-weights the metric toward it. On
+a quasi-uniform mesh the two versions differ only by constants that cancel in
+the ratio, which is why the distinction is easy to miss until an adaptive mesh
+makes it matter.
+
+\paragraph{What changes and what does not.} In whitened variables the probing
+rule is unchanged -- ``draw $\what z$ i.i.d.'' is exactly the
+\eqref{eq:whiten-z} convention -- and the residual weighting $\Mone^{-1/2}$ is
+the global form of the per-row $y/\sqrt{m_\rho}$. The per-row scores, the mode
+selection, and the fitted operator are untouched. Two consequences do warrant
+attention. First, in raw coordinates the probes acquire a factor
+$\Mtwo^{-1/2}$, and the fit consumes the same probes as the quality control:
+changing the probe covariance changes the fitted operator (incidentally, it
+makes the whitened per-row design itself i.i.d., since
+$\what z = \Mtwo^{1/2} z = $ the drawn vector), so adopting
+\eqref{eq:qc-energy} is a change to the fit's inputs, not only to a printed
+number. The per-row fits are insensitive to this change: a row's regression
+is valid conditioned on whatever probes were drawn -- the probe distribution
+affects statistical efficiency, not correctness -- and within one PSF window
+the column masses vary mildly, so the covariance change amounts to a
+near-constant factor per window, which the regression absorbs. It is only
+the \emph{global} quantity, on a mesh whose resolution varies by orders of
+magnitude across the domain, that needs the scaling. Second, any threshold
+calibrated against a previous metric must be recalibrated against this one,
+once.
 
 \end{document}

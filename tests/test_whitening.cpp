@@ -367,3 +367,28 @@ TEST_CASE("the whitened regression reproduces the row model")
     }
     MESSAGE("worst relative whitened-regression error: " << worst);
 }
+
+TEST_CASE("dual_norm2: definition, consistency with whiten_data, guards")
+{
+    Eigen::VectorXd v(3), m(3);
+    v << 2.0, -3.0, 0.5;
+    m << 4.0, 9.0, 0.25;
+    // sum v_i^2 / m_i = 1 + 1 + 1
+    CHECK(lgpsf::dual_norm2(v, m) == doctest::Approx(3.0));
+
+    // per-row consistency: for a single row with mass m_rho,
+    // dual_norm2 of the scalar residual equals |whiten_data(r)|^2
+    Eigen::VectorXd r1(1), m1(1);
+    r1 << 0.7;
+    m1 << 2.5;
+    const double what = lgpsf::whiten_data(r1, m1(0))(0);
+    CHECK(lgpsf::dual_norm2(r1, m1) == doctest::Approx(what * what));
+
+    Eigen::VectorXd bad(3);
+    bad << 1.0, -1.0, 1.0;
+    CHECK_THROWS_AS((void) lgpsf::dual_norm2(v, bad), std::invalid_argument);
+    Eigen::VectorXd short_m(2);
+    short_m << 1.0, 1.0;
+    CHECK_THROWS_AS((void) lgpsf::dual_norm2(v, short_m),
+                    std::invalid_argument);
+}
