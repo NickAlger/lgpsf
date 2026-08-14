@@ -31,11 +31,14 @@ def test_a_python_callable_a_dense_wrap_and_a_sparse_wrap_agree():
     from_sparse = corr.sparse_op(scipy_sparse.csr_matrix(A))
 
     assert from_callable.dim == 30
-    # the callable round-trips numpy's own product, exactly; the dense and
-    # sparse wraps compute in Eigen, so cross-library agreement is to
-    # rounding, not bitwise (the C++ suite pins the in-Eigen exactness)
-    np.testing.assert_array_equal(from_callable.apply(X), A @ X)
+    # all three routes agree to rounding, not bitwise: the dense and sparse
+    # wraps compute in Eigen, and even the callable's numpy product can
+    # differ in the last bits from A @ X (numpy's matmul kernel depends on
+    # the block's memory layout), so cross-route agreement is to a tight
+    # tolerance (the C++ suite pins the in-Eigen exactness)
     scale = np.abs(A @ X).max()
+    np.testing.assert_allclose(from_callable.apply(X), A @ X,
+                               atol=1e-13 * scale)
     np.testing.assert_allclose(from_dense.apply(X), A @ X, atol=1e-13 * scale)
     np.testing.assert_allclose(from_sparse.apply(X), A @ X, atol=1e-13 * scale)
 
