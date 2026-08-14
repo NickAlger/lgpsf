@@ -3,8 +3,9 @@
 #define LGPSF_MPI_HALO_EXCHANGE_HPP
 
 /// \file halo_exchange.hpp
-/// The distributed halo protocol of the Tier-B lgpsf fit (design record:
-/// nicks_research_experiments/ellipsoid_psf_pig, "Tier-B halo design").
+/// The distributed halo protocol of the lgpsf fit (designed and validated
+/// against the maintainer's ice-sheet application; the "Tier-B halo
+/// design" record lives with that project's research notes).
 ///
 /// Roles: ROWS own window ellipsoids (footprints) living in the column
 /// domain; COLUMNS own points.  Rank-local summaries (box-forest cuts of
