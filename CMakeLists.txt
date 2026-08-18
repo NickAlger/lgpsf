@@ -38,10 +38,10 @@ if(NOT TARGET ellipsoid_tree::ellipsoid_tree)
     endif()
     include(FetchContent)
     # Single-sourced so the URL and the status message cannot drift apart.
-    set(_ellipsoid_tree_pinned_version 0.2.0)
+    set(_ellipsoid_tree_pinned_version 0.3.0)
     FetchContent_Declare(ellipsoid_tree
         URL https://github.com/NickAlger/ellipsoid_tree/archive/refs/tags/v${_ellipsoid_tree_pinned_version}.tar.gz
-        URL_HASH SHA256=24e66d161a85a9a1f98cb3838b0bb14edeba98d7c7d1dfb98678bdd61852ad66)
+        URL_HASH SHA256=3ff1756630faf9897317900c066e747354bdba5223fb1cdeb468aed19cfde8b9)
     FetchContent_MakeAvailable(ellipsoid_tree)
     message(STATUS "lgpsf: using downloaded ellipsoid_tree v${_ellipsoid_tree_pinned_version} (${ellipsoid_tree_SOURCE_DIR})")
 endif()
