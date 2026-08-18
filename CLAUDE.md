@@ -45,11 +45,10 @@ bindings.
 > for.
 
 **Derived from, but diverges from, prior research.** The original method
-was developed in `~/repos/nicks_research_experiments/ellipsoid_psf_pig`
-(`lg-split-method-notes.tex`, `varpro-ellipsoid-notes.tex`,
-`varpro-rung-plan.md`) -- read those for the original motivation and
-experimental history, but **do not treat that plan as this project's
-spec**. Concrete divergences: VarPro derivatives here are analytic
+was developed in the maintainer's private research repo (method notes and
+the experimental history live there) -- consult it for the original
+motivation if you have access, but **do not treat that plan as this
+project's spec**. Concrete divergences: VarPro derivatives here are analytic
 (forward- and reverse-mode), not finite-differenced; the LG basis is
 generalized to arbitrary spatial dimension $N$ (the research repo was
 2D-only); the smooth+spike combination is handled via a general

@@ -37,7 +37,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 SHIPPED = ["include", "bindings", "tests", "examples", "docs", "dev",
            "experiments", "cmake", ".github", "CMakeLists.txt",
            "pyproject.toml", "README.md", "CONTRIBUTING.md", "CHANGELOG.md",
-           "CITATION.cff"]
+           "CITATION.cff", "CLAUDE.md"]
 
 # `ellipsoid_tree` is a PUBLIC library we explicitly depend on, so referencing
 # it is correct rather than a leak. Everything else outside the repo is not.
