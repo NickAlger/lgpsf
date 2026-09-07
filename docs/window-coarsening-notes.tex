@@ -1,0 +1,387 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1.1in]{geometry}
+\usepackage{amsmath,amssymb,mathtools,booktabs}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+
+\newcommand{\Mtwo}{M_2}
+\newcommand{\what}[1]{\widehat{#1}}
+\newcommand{\eps}{\varepsilon}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{Graded window coarsening: a per-row work bound for the\\
+       operator fit that needs no estimate of the kernel's width}
+\author{N.~Alger}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+A row of the LG-PSF operator is fitted on its \emph{window}, every column
+dof inside $\tau_w$ times the caller's a-priori ellipsoid, and the fit's cost
+is linear in the window's point count. The window is only as good as the
+prior: on the maintainer's ice-sheet Hessian at continental scale a few
+hundred rows whose prior was too wide by decades had windows of about
+$90{,}000$ points, sat on one rank, and that rank's fit took $5{,}900$\,s
+against a mean of $75$\,s. This note records the fix. The fit's design
+matrix is a mass-weighted quadrature of the model's action on the probes, so
+subsampling the window is choosing a coarser quadrature, and one quadrature
+-- cells graded by distance from the row's centre, size at most $\eps$ times
+that distance, floored at single points -- is adequate for every kernel width
+at once. Each cell becomes its mass-weighted centroid, its summed mass and
+the mass-weighted mean of every probe field: the in-cell probe sum is kept
+exactly, only the basis function's variation over the cell is approximated.
+The deployed support is the full window; only the fit's quadrature on it is
+coarsened, with controlled error, and the two finalists are re-scored on the
+full window before the baseline guard decides. Measured on sixty real rows
+with windows of 250 to $100{,}000$ points, $\eps = 0.1$ keeps every guard
+decision and 97\% of ladder levels for 11--54$\times$ less wall time on the
+largest windows. Whitening is as in \code{varpro-whitening-notes.pdf}; the
+measurements are \code{experiments/window-coarsening.md}.
+\end{abstract}
+
+\section{The fit is a quadrature}
+
+Fix a row $\rho$ with mass $m_\rho$ and its window of $K$ column points $x_j$
+with masses $m_j = (\Mtwo)_{jj}$. Probes $z_q$, $q = 1,\dots,k$, are
+restricted to the window and the data are $y_q = (Hz_q)(\rho)$. (The
+whitening note indexes probes by $\ell$; here $\ell$ is reserved for the
+angular order of a mode.) After noise whitening the row fit is the ordinary
+least-squares problem
+\begin{equation}
+\what y_q \;\approx\; \sum_i c_i\, A_{qi}(\theta) \;+\; s\, B_q,
+\qquad
+A_{qi}(\theta) = \sqrt{m_\rho}\sum_{j=1}^{K} m_j\, z_{jq}\, \phi_i(x_j;\theta),
+\qquad
+B_q = \sqrt{m_\rho}\; z_{\mathrm{spike},q},
+\label{eq:design}
+\end{equation}
+with $\what y_q = y_q/\sqrt{m_\rho}$, $\phi_i(\cdot\,;\theta)$ the
+Laguerre--Gaussian modes in the ellipsoid parametrized by $\theta$, and $s$
+the spike coefficient. The unknowns $(\theta, c, s)$ are fitted from $k$
+equations indexed by the probes. The window enters only through the sum over
+$j$ in $A_{qi}$, a mass-weighted quadrature of $\int z_q(x)\,\phi_i(x;\theta)
+\,dx$ over the window; the points are never regressed on. Two things follow.
+The cost of the fit is linear in $K$ (every basis evaluation is over $K$
+points, and basis evaluation is about half of a row fit), and ``subsample
+the window'' means ``choose a coarser quadrature of the model's action on the
+probes''. A coarser quadrature is then judged as a quadrature: by the error
+in the columns $A_{qi}$ at the $\theta$ the search visits.
+
+\section{Aggregation: what stays exact}
+
+Partition the window into cells $C$ and replace each by one quadrature point,
+\begin{equation}
+m_C = \sum_{j\in C} m_j, \qquad
+x_C = \frac{1}{m_C}\sum_{j\in C} m_j\, x_j, \qquad
+z_{Cq} = \frac{1}{m_C}\sum_{j\in C} m_j\, z_{jq},
+\label{eq:aggregate}
+\end{equation}
+so that the coarse column is
+\begin{equation}
+\tilde A_{qi}(\theta) = \sqrt{m_\rho}\sum_C m_C\, z_{Cq}\, \phi_i(x_C;\theta)
+ = \sqrt{m_\rho}\sum_C \Big(\sum_{j\in C} m_j z_{jq}\Big)\, \phi_i(x_C;\theta).
+\label{eq:coarse-design}
+\end{equation}
+The mass and the probe sum of every cell are preserved, $\sum_C m_C = \sum_j
+m_j$ and $\sum_C m_C z_{Cq} = \sum_j m_j z_{jq}$ (to $10^{-14}$ relative in
+every test). What is approximated is the basis function's variation over the
+cell, by the midpoint rule at the centroid. Expanding $\phi_i$ about $x_C$,
+one cell's error is
+\begin{equation}
+\sum_{j\in C} m_j z_{jq}\,\phi_i(x_j) - \Big(\sum_{j\in C} m_j z_{jq}\Big)\phi_i(x_C)
+ = \nabla\phi_i(x_C)\cdot d_{Cq} + O(h_C^2), \qquad
+d_{Cq} = \sum_{j\in C} m_j z_{jq}\,(x_j - x_C),
+\label{eq:dipole}
+\end{equation}
+with $h_C$ the cell's size and $d_{Cq}$ the probe's \emph{dipole} inside the
+cell. The centroid makes the in-cell first moment of the masses vanish,
+$\sum_{j\in C} m_j (x_j - x_C) = 0$; so for a probe that is smooth over the
+cell, $z_{jq} = z_{Cq} + O(h_C)$, the dipole is $O(h_C^2)$ and the error is
+second order. For a white-noise probe, the
+default, the dipole is as large as the monopole and the error is \emph{first}
+order in $h_C$ -- but zero-mean and independent across probes, so it enters
+the regression like noise added to the design rather than like a bias.
+Measured, as the relative error of the worst design column per ladder level
+at a fixed $\theta$ over $\eps = 0.05$ to $0.3$: slopes of $1.0$ in $\eps$
+for white-noise probes ($0.84$--$1.12$ on a $3\times 10^5$-point disc,
+$0.97$--$1.21$ on real windows) and $2.0$ for smooth probes ($1.7$--$2.2$).
+At $\eps = 0.1$ the white-noise column error runs from 1.5\% at level 0 to
+10\% at level 5, and the cross-validation score at a fixed $\theta$ moves by
+about $8\times 10^{-3}$ on the largest windows. A dipole-corrected cell --
+carry $d_C$ and add $\nabla\phi_i(x_C)\cdot d_C$ to the design -- would
+restore second order; the numbers do not ask for it.
+
+\section{The graded cell rule}
+\label{sec:grading}
+
+\paragraph{The rule.} Work in the whitened coordinates of the window frame,
+$u = L_w^{-1}(x - \mu_w)$ (\S\ref{sec:frame}). Build a $2^N$-tree on the
+bounding box of $\{u_j\}$, splitting at the midpoint of every axis; a node is
+split while it holds more than one point and
+\begin{equation}
+\operatorname{diag}(\text{box}) \;>\; \eps\, d(\text{box}), \qquad
+d(\text{box}) = \operatorname{dist}\big(0, \text{box}\big),
+\label{eq:grading}
+\end{equation}
+the distance from the origin to the box's nearest point, zero when the box
+contains the origin. Every leaf is a cell. So a multi-point cell at distance
+$r$ from the centre has size $h \le \eps r$, and cells shrink to single
+points as they approach the centre.
+
+\paragraph{Uniform in the width.} For a Gaussian $g(r) = e^{-r^2/2\sigma^2}$
+the midpoint rule on a cell of size $h$ at distance $r$ errs by about
+$h\,|g'(r)|$,
+\begin{equation}
+h\,\frac{r}{\sigma^2}\, e^{-r^2/2\sigma^2}
+ = \frac{h}{r}\; t\, e^{-t/2}\Big|_{t = r^2/\sigma^2}
+ \;\le\; \frac{2}{e}\,\frac{h}{r} \;=\; 0.74\,\frac{h}{r},
+\label{eq:gauss-bound}
+\end{equation}
+the maximum over $\sigma$ at fixed $r$ falling at $r = \sqrt 2\,\sigma$, where
+the kernel is still $e^{-1}$ of its peak. With $h \le \eps r$ the error is at
+most $0.74\,\eps$ of the peak for every width $\sigma$ simultaneously. The
+rule needs no estimate of the kernel's width -- which is the point, since the
+row whose window is far too wide is exactly the row whose prior width is
+wrong.
+
+\paragraph{The modes' smoothness.} A Laguerre--Gaussian mode of radial
+degree $p$ and angular order $\ell$ is a polynomial of degree $2p + \ell$
+times the Gaussian: its finest structure is at scale $\sigma/(p + \ell)$, it
+lives near $r \sim \sigma$, and beyond that the Gaussian envelope takes over.
+Three regions:
+\begin{itemize}
+\item \emph{The singleton near field}, $r \lesssim h/\eps$ on a mesh of
+  spacing $h$. A box containing the centre has $d = 0$ and splits down to
+  single points, and no two points merge closer than $h/\eps$, since a
+  two-point cell has diagonal at least $h$. The fit sees every point.
+\item \emph{The mode's own radius}, $r \sim \sigma$: cells of size
+  $\eps\sigma$ against structure at scale $\sigma/(p + \ell)$. The midpoint
+  rule on a smooth integrand errs by the square of the ratio, $(\eps\,(p +
+  \ell))^2$; resolving the structure at all asks for
+  \begin{equation}
+  \eps\,(p + \ell)_{\max} \;\lesssim\; 0.5 .
+  \label{eq:resolution}
+  \end{equation}
+  A shell ladder to level $L$ holds every mode with $2p + \ell \le L$, so
+  $(p + \ell)_{\max} = L$: at the ladder's top level of 5, $\eps \le 0.1$.
+\item \emph{Beyond}, $r \gg \sigma$: cells grow as $\eps r$ but the mode
+  decays as a polynomial times $e^{-r^2/2\sigma^2}$, and
+  \eqref{eq:gauss-bound} already covers it.
+\end{itemize}
+A coarser $\eps$ under-resolves the high modes; their aliased columns look
+like noise to the cross-validation, so the ladder stops lower. That is the
+conservative failure, and every measured casualty at $\eps \ge 0.15$ is of
+this kind -- a ladder that stopped early, never a fit that wandered.
+
+\paragraph{The count.} In 2D the dyadic annulus $[r, 2r]$ has area $3\pi
+r^2$ and cells of size $\eps r$, so about $3\pi/\eps^2$ cells per annulus and
+\begin{equation}
+K_c \;\sim\; \frac{3\pi}{\eps^2}\,\log_2\frac{R}{h}
+\label{eq:count}
+\end{equation}
+for a window of radius $R$ on a mesh of spacing $h$: logarithmic in the
+window's size, which is what makes the fit's cost scale under mesh
+refinement, and finite in 3D, where an octree gives about $4\pi/\eps^3$ per
+shell. Two corrections matter at practical sizes. The near field is a
+\emph{singleton core} of about $7\pi/\eps^2$ points -- nothing merges within
+$h/\eps$ of the centre, and the dyadic quantization keeps most cells single
+out to a few times that -- so the law needs a floor: at $\eps = 0.05$ the
+core is nearly the whole count below $10^4$ points, and no window below about
+$2{,}000$ points coarsens at all. Where the grading bites, the constant sits
+above $3\pi$, because the rule bounds the box \emph{diagonal} and dyadic
+halving leaves leaves between half and the full allowed size. Measured on
+ball windows of $10^5$ grid points, $K_c$ over \eqref{eq:count} runs from
+$0.76$ at $\eps = 0.05$ (floor still binding) to $1.7$ at $\eps = 0.3$; a
+$10^5$-point window becomes $21{,}600$ cells at $\eps = 0.05$, $7{,}700$ at
+$0.1$ and $4{,}000$ at $0.15$.
+
+\section{Why the window frame}
+\label{sec:frame}
+
+The window is the ellipsoid $\{x : (x - \mu_w)^\top \Sigma_w^{-1} (x - \mu_w)
+\le 1\}$ with $\Sigma_w = \tau_w^2\, \mathrm{cap}_a(\Sigma_{\mathrm{prior}})$,
+where $\mathrm{cap}_a$ floors the minor axes so that the axis ratio is at
+most $a$ (\code{window\_aspect\_cap}). It is already the object that encodes
+how much of the prior's shape the library trusts, so the cells are built in
+its whitened coordinates: with $\Sigma_w = L_w L_w^\top$,
+\begin{equation}
+u = L_w^{-1}(x - \mu_w),
+\label{eq:frame}
+\end{equation}
+and \eqref{eq:grading} grades by $|u|$, the Mahalanobis distance of
+$\Sigma_w$. A ball window, $a = 1$, makes $L_w$ a multiple of the identity
+and the grading Euclidean. A user who lifts the cap and trusts an anisotropic
+prior gets the grading in that prior's own metric for free: a kernel aligned
+with the window is resolved isotropically in the window's coordinates, and a
+kernel rotated against the window loses resolution along its major axis by
+the window's aspect ratio -- the loss the fit already accepts through the
+cap. One tree, no new notion of trust. The cells are axis-aligned boxes in
+the Cholesky coordinates (parallelograms in physical space when $L_w$ has
+off-diagonal entries); the grading is the metric of $\Sigma_w$ regardless.
+
+\section{Protected positions}
+
+Three kinds of position stay singleton cells, copied bit for bit: a node
+holding one is split until that point is alone.
+
+\paragraph{The spike.} Its column in \eqref{eq:design} is $B_q =
+\sqrt{m_\rho}\, z_{\mathrm{spike}, q}$, with no mass in it: the whitened
+extra is $\what e = \sqrt{m_\rho}\,\Mtwo^{-1/2} e$ and $e$ is one-hot, so the
+$\Mtwo^{-1/2}$ cancels against the $\Mtwo^{1/2}$ in $\what z$. A singleton
+reproduces the column exactly and keeps the meaning of $s$, of the spike's
+measure and of the assembled diagonal entry; merged into a cell, the spike's
+row would carry the cell's mass and $s$ would be silently rescaled.
+
+\paragraph{The support of extra bases.} For a general extra column $E$ the
+design column is the plain sum $\sqrt{m_\rho}\sum_j z_{jq} E_j$, without
+masses, because an extra is a functional and not a kernel evaluation.
+Aggregation preserves $\sum_j m_j z_j$, not $\sum_j z_j E_j$, so a general
+$E$ is not coarsened consistently by \eqref{eq:aggregate}. What makes the
+spike work generalizes with no special case: \code{coarsen\_window} takes a
+set of \emph{protected positions} and keeps each a singleton;
+\code{fit\_operator} passes the spike, a direct caller with extras passes the
+union of their supports, and sparse extras are then exact. If the protected
+set would exceed \code{coarsen\_above}, the row is left uncoarsened rather
+than refused, and \code{fit\_points} says so.
+
+\paragraph{The farthest point.} $R_w = \max_j |x_j - \mu_0|$
+(\code{window\_radius}) is both the window-containment admissibility bound
+on a released centre and the ladder's top rung. A centroid lies strictly
+inside its cell's hull, so without protection $R_w$ would silently tighten;
+the point farthest from the centre in physical distance stays a singleton
+(ties to the smallest window position). The bottom rung,
+\code{local\_spacing}, is preserved by the singleton near field of
+\S\ref{sec:grading}. The spike and the farthest point are distinct unless
+the window has one point, so the coarse set always has at least two.
+
+\section{Deployment, and the full-window re-score}
+
+The deployed row is the fitted kernel's $\tau$-ellipsoid intersected with the
+full window,
+\begin{equation}
+\text{support} \;=\; \text{window} \;\cap\; \{\, \|u_\theta\| \le \tau \,\},
+\label{eq:support}
+\end{equation}
+and nothing in the coarsening writes the window. So the guarantee is:
+\emph{the deployed support is the fit window; the fit's quadrature on it is
+coarsened with controlled error.} Near the centre the two quadratures agree
+exactly, far out the kernel is small, and every deployed point lies in a cell
+the fit saw -- the out-of-window extrapolation pathology that forced
+``deployed support $=$ window'' cannot recur inside it.
+
+What can go wrong is a score. On a coarsened row the cross-validation score
+that drives the ladder and the baseline guard is a coarse-quadrature score,
+and it is optimistic: the coarse quadrature adds noise to the design, and the
+coarse baseline moves too. After the search, the two finalists -- the winner
+and the baseline -- are re-scored on the full $x$, $m$, $z$ (one
+\code{linear\_cv\_score} each, $O(Km)$ for $m$ modes, negligible against a
+fit; the coefficients are not refit). \code{score} and
+\code{baseline\_score} report those numbers, and the guard ``ship iff score
+$<$ baseline'' is taken on them. Measured on the fifteen largest windows: a
+model's coarse score differs from its full-window score by up to $0.018$ at
+$\eps = 0.1$ and $0.056$ at $0.3$; the guard taken on coarse scores flips no
+decision at $\eps \le 0.15$ and claims 2 false wins over the baseline at
+$0.2$ and 4 at $0.3$, never the reverse. With the re-score the quadrature's
+optimism can cost a row its fit, never ship a bad one.
+
+\paragraph{Released centres.} The remaining gap is a candidate whose centre
+is fitted and displaced by $\|\mu - \mu_0\|$ from the grading's centre: it
+sits on cells of size $\eps\,\|\mu - \mu_0\|$, and a needle narrower than
+those cells is under-resolved there -- its coarse columns are aliased, its
+coefficients can inflate, and its coarse score says nothing about the fine
+evaluation at deployment. Coarsened rows therefore arm the resolution rule
+(\code{resolution\_eps}, set to \code{coarsen\_eps}): a released candidate is
+admissible only if
+\begin{equation}
+\min \text{axis} \;\ge\; \eps\, \|\mu - \mu_0\|\, \max\big(1, (p + \ell)_{\max}\big),
+\label{eq:released}
+\end{equation}
+the floor of 1 being the pure Gaussian, whose structure is at $\sigma$
+itself. Pinned candidates are untouched, and the re-score is the consistency
+check behind the rule: an aliasing artifact scores well on the cells and
+badly on the points. Dead rows are safe by themselves -- zero data give zero
+coefficients whatever the design.
+
+\section{Determinism}
+
+\code{coarsen\_window} is a pure function of its arguments: no threads, no
+randomness, no dependence on allocation. The split is canonical (midpoints; a
+point on a split plane goes to the upper child; empty children are dropped),
+cells are emitted sorted by the smallest window position they contain, and
+each cell accumulates \eqref{eq:aggregate} in ascending position. The same
+inputs give bit-identical outputs, so the library's bit-identity across
+thread counts and runs is untouched. In the distributed fit each rank's
+window array is merged in ascending global id and is therefore independent
+of the rank layout; a pure function of that array in that order is
+rank-independent too, and the MPI gate with coarsening on passes bitwise at
+1, 2 and 4 ranks ($564$ of $600$ rows coarsened, $20{,}305$ window points
+fitted on $13{,}046$ cells). The default path, \code{coarsen\_above = 0}, is
+byte-identical to before.
+
+\section{Using it}
+
+Two knobs on \code{OperatorFitConfig} and one diagnostic:
+\begin{itemize}
+\item \code{coarsen\_above} (default $0$, off): windows with more points
+  than this are coarsened. When on, a few thousand -- below about $2{,}000$
+  points the grading is the identity and buys nothing.
+\item \code{coarsen\_eps} (default $0.1$): the grading ratio of
+  \eqref{eq:grading}; \eqref{eq:resolution} at the ladder's top level of 5.
+\item \code{FitDiagnostics::fit\_points}: per row, what the fit ran on --
+  the window size, or the coarse count when the trigger fired. Whether the
+  bound is binding is readable here and nowhere else
+  (\code{DistFitResult::fit\_points\_total} sums it).
+\end{itemize}
+The $\eps$ sweep of \code{experiments/window-coarsening.md} is
+Table~\ref{tab:sweep}: sixty real rows of the heat-equation inverse problem
+at four mesh spacings, windows of $246$ to $99{,}856$ points, 60 probes, a
+shell ladder to level 5 decided by cross-validation alone. Every coarse fit is re-scored on the full window.
+``Fits'' is the fraction of rows whose fit beats the full-window baseline,
+against $0.87$ for the full fits; ``same level'' the fraction shipping the
+full fit's ladder level; ``max $\Delta$score'' the worst full-window score
+change over the sixty rows; ``max coarse$-$full'' the largest gap
+between a model's coarse-quadrature score and its full-window score on the
+fifteen largest windows, and ``false wins'' how often the guard taken on
+coarse scores would have shipped a model the full-window scores reject.
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{@{}rrrrrrrr@{}}
+\toprule
+$\eps$ & median $K_c/K$ & fits & same level & max $\Delta$score
+     & max coarse$-$full & false wins & wall ratio \\
+\midrule
+0.05 & 0.864 & 0.87 & 0.98 & $+0.0029$ & 0.0072 & 0 & 0.235 \\
+0.1  & 0.493 & 0.87 & 0.97 & $+0.0108$ & 0.0181 & 0 & 0.110 \\
+0.15 & 0.305 & 0.85 & 0.88 & $+0.1366$ & 0.0256 & 0 & 0.072 \\
+0.2  & 0.219 & 0.78 & 0.93 & $+0.0344$ & 0.0381 & 2 & 0.054 \\
+0.3  & 0.129 & 0.72 & 0.75 & $+0.0730$ & 0.0556 & 4 & 0.036 \\
+\bottomrule
+\end{tabular}
+\caption{The $\eps$ sweep on sixty real rows, windows of 246 to 99{,}856
+points. Full fits: 0.87 of rows beat the baseline.}
+\label{tab:sweep}
+\end{table}
+
+$\eps = 0.1$ keeps every guard decision and the ladder level on 97\% of
+rows, the fitted axes within $10^{-4}$ in $\log_{10}$ and the orientation
+within $0.25^\circ$, $c_0$ within $0.02\%$, for $9\times$ less wall time
+overall and 11--54$\times$ on the $10^5$-point windows (23--30\,s to
+0.5--1.4\,s). $\eps = 0.15$ loses the first fit to an early ladder stop;
+$\eps \ge 0.2$ loses 10--17\% of the fits and makes the coarse score
+dishonest. The motivating case, a prior too wide by decades, is the easy one:
+the kernel then lies inside the singleton core and is fitted exactly (on the
+rows with a $4\times$ widened prior the score is within $0.0003$ of the full
+fit's at every $\eps$ up to $0.2$). The rows that feel $\eps$ are
+honest-prior rows on fine meshes, whose kernels fill their windows.
+
+Cost: a cell costs what a point costs ($5.7\times 10^{-6}$ against
+$6.0\times 10^{-6}$\,s per candidate), so the saving is exactly the cell
+ratio $K_c/K$; by \eqref{eq:count} a $10^5$-point row at $\eps = 0.1$ costs
+less than a $10^4$-point row does today. The coarsening itself is
+$O(K\log K)$ and is not the bottleneck.
+
+\end{document}

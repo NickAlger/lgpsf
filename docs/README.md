@@ -29,6 +29,7 @@ For **using** lgpsf. Notes for people changing it are in [`../dev/`](../dev/).
 | | |
 |---|---|
 | [varpro-whitening-notes.pdf](varpro-whitening-notes.pdf) ([.tex](varpro-whitening-notes.tex)) | The mathematics: how the smooth and spike bases combine without the fitting code ever touching a mass matrix. |
+| [window-coarsening-notes.pdf](window-coarsening-notes.pdf) ([.tex](window-coarsening-notes.tex)) | The mathematics of graded window coarsening: the fit as a quadrature, the cell rule and its error bound, what stays exact, and why the deployed operator is unchanged. |
 | [examples/](examples/) | **Every example as a page**: the program, its real output, and the figures it draws. Generated from the code, so it cannot drift. |
 | [`../examples/`](../examples/) | The example sources themselves, with a guide to what each teaches and the order to read them in. |
 | [`../experiments/`](../experiments/) | Measurements about the library — including whether refining the mesh costs more probes (it does not). |
