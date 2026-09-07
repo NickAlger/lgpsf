@@ -37,6 +37,12 @@
 /// such row carried 94% of a whole-operator test error. `eval_kernel_unrestricted`
 /// is the named opt-out, so asking for extrapolation requires saying so.
 ///
+/// The deployed support is the fit window even when the fit's quadrature on
+/// it was coarsened (`OperatorFitConfig::coarsen_above`): the coarsening is
+/// graded so that its error is controlled, every deployed point lies in a
+/// cell the fit saw, and the scores the fit reports are re-evaluated on the
+/// full window. Nothing here knows, or needs to know, whether a row was.
+///
 /// One rule covers every helper:
 ///
 ///     support  =  the row's window  intersect  the fitted tau-ellipsoid

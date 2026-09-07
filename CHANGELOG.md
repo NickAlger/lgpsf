@@ -177,6 +177,27 @@ to [Semantic Versioning](https://semver.org/).
   covers both policies.
 - `experiments/lm_tolerance.py` and `experiments/anisotropy_hardening.py`, with
   their write-ups.
+- **Graded window coarsening** — a per-row work bound for the operator fit
+  that needs no estimate of the kernel's width. `coarsen_window` (new header
+  `coarsen_window.hpp`, public API, in the umbrella): a 2^N-tree in the
+  window ellipsoid's own coordinates with cells at most `eps` times their
+  distance from the row's centre, each replaced by its mass-weighted
+  centroid, summed mass and mean probe fields — the probe sum inside a cell
+  is kept exactly, only the basis function's variation over it is
+  approximated. Protected positions (the spike, the support of any extra
+  column) and the farthest point stay singletons, so the spike column and the
+  admissibility radius are exact; pure and deterministic, so a distributed
+  fit stays rank-independent. In `fit_operator`,
+  `OperatorFitConfig::coarsen_above` (default `0` = off) triggers it on
+  windows above that size and `coarsen_eps` (default `0.1`) sets the
+  grading; the deployed support stays the full window, `score` /
+  `baseline_score` are re-evaluated on it, and the baseline guard decides on
+  those. `FitDiagnostics::fit_points` reports what each row's fit ran on
+  (`DistFitResult::fit_points_total` in the MPI layer). Released centres on
+  coarsened rows are held to a resolution rule,
+  `ProbeFitConfig::resolution_eps` (default `0` = off):
+  `min axis >= eps * ||mu - default_mu|| * max(1, (p+ell)_max)`. A strict
+  no-op at the defaults.
 
 ## [0.1.0] — 2026-07-28
 

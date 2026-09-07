@@ -277,6 +277,25 @@ struct ProbeFitConfig
     /// Simplicity tie-break margin.
     double tie_delta = 0.0;
 
+    /// Resolution rule for RELEASED centres; 0 (the default) disables it.
+    /// When positive, a candidate whose centre was fitted is admissible only
+    /// if
+    ///
+    ///     min axis  >=  resolution_eps * ||mu - default_mu|| * max(1, (p + ell)_max)
+    ///
+    /// with `(p + ell)_max` over its mode set. It closes the one gap a graded
+    /// coarsening of the batch leaves (coarsen_window.hpp): cells at distance
+    /// d from `default_mu` have size `eps * d`, and a mode of radial degree p
+    /// and angular order ell has its finest structure at scale
+    /// `sigma / (p + ell)` -- a pure Gaussian at sigma itself, hence the floor
+    /// of 1 -- so a narrow kernel displaced far from the node sits on cells
+    /// that cannot resolve it, and its score on the cells says nothing about
+    /// the fine evaluation at deployment. The displacement is measured from
+    /// `default_mu`, the centre the grading is about, not from a guess's own
+    /// centre. Pinned candidates are untouched. `fit_operator` sets this to
+    /// its `coarsen_eps` on the rows it coarsens. Finite and >= 0.
+    double resolution_eps = 0.0;
+
     int cv_folds = 5;
 
     /// The split, as data. Empty means "build the deterministic round-robin
@@ -530,6 +549,12 @@ inline ProbeFitResult fit_from_probes(
             "lgpsf::fit_from_probes: config.mode_policy is required (use FixedSet "
             "for an explicit mode list, ShellLadder for a level ladder)");
     }
+    if ( !(config.resolution_eps >= 0.0) || !std::isfinite(config.resolution_eps) )
+    {
+        throw std::invalid_argument(
+            "lgpsf::fit_from_probes: config.resolution_eps must be finite and >= 0, "
+            "got " + std::to_string(config.resolution_eps));
+    }
 
     const int num_extra = ( spike_index >= 0 ) ? 1 : 0;
     const double mass =
@@ -707,6 +732,23 @@ inline ProbeFitResult fit_from_probes(
             // The displacement encoding makes this the bound it always meant
             // to be: theta_hat's leading block IS mu - center.
             admissible = admissible && fit.theta_hat.head(dim).norm() <= radius;
+            if ( config.resolution_eps > 0.0 )
+            {
+                // The resolution rule, see ProbeFitConfig::resolution_eps.
+                // Measured from default_mu, the centre the batch's grading is
+                // about -- `center` unless a guess carried its own -- so it
+                // reads the absolute centre rather than theta_hat's block.
+                int order = 1;
+                for ( const Mode& mode_entry : modes )
+                {
+                    order = std::max(order, mode_entry.p + mode_entry.ell);
+                }
+                const double displacement =
+                    (candidate.model.theta.head(dim) - mu0).norm();
+                admissible = admissible
+                             && candidate.axes.minCoeff()
+                                    >= config.resolution_eps * displacement * order;
+            }
         }
         candidate.admissible = admissible;
         return candidate;

@@ -15,6 +15,7 @@
 
 #include "doctest/doctest.h"
 
+#include "lgpsf/coarsen_window.hpp"
 #include "lgpsf/probe_fit.hpp"
 #include "test_helpers.hpp"
 
@@ -712,5 +713,126 @@ TEST_CASE("malformed inputs and a missing policy are rejected eagerly")
                                     target.z.leftCols(12),
                                     target.y.head(12), target.mu0,
                                     target.spike_index, starved),
+                    std::invalid_argument);
+}
+
+TEST_CASE("the resolution rule rejects a needle at a released, displaced centre")
+{
+    // The one gap a graded coarsening of the batch leaves, constructed. Cells
+    // at distance d from default_mu are eps * d wide, so a kernel RELEASED to
+    // a centre d away and narrower than eps * d * (p + ell)_max sits on cells
+    // that cannot resolve it -- and its score on the cells says nothing about
+    // the fine evaluation at deployment. Here: a needle at (0.5, 0.5) on a
+    // window coarsened about the origin, with the fit seeded AT the needle so
+    // the candidate is exactly the needle and admissibility is the only thing
+    // in play. The target is built on the coarse quadrature itself, so the
+    // seeded candidate has nowhere to move and scores perfectly: the score
+    // cannot reject it, only the rule can.
+    std::mt19937 gen(15);
+    const int per_side = 31;
+    const int count = per_side * per_side;
+    Eigen::MatrixXd x(count, 2);
+    int row = 0;
+    for ( int i = 0; i < per_side; ++i )
+    {
+        for ( int j = 0; j < per_side; ++j )
+        {
+            x(row, 0) = -1.0 + 2.0 * i / (per_side - 1);
+            x(row, 1) = -1.0 + 2.0 * j / (per_side - 1);
+            ++row;
+        }
+    }
+    const Eigen::VectorXd m2 = test_helpers::uniform_points(count, 1, gen, 0.5, 2.0).col(0);
+    const Eigen::MatrixXd z = test_helpers::randn_points(count, 40, gen);
+    const Eigen::VectorXd mu0 = Eigen::VectorXd::Zero(2);
+    const int spike = (per_side / 2) * per_side + per_side / 2;  // the point at the origin
+    const double mass = 1.3;
+
+    // coarsen about the origin in a ball frame, coarsely enough that a grid
+    // this small actually coarsens
+    const lgpsf::EllipsoidFrame frame =
+        lgpsf::make_frame(mu0, 1.5 * Eigen::MatrixXd::Identity(2, 2));
+    const lgpsf::CoarseWindow cw = lgpsf::coarsen_window(x, m2, z, {spike}, mu0, frame, 0.4);
+    REQUIRE(cw.x.rows() < count);
+    REQUIRE(cw.protected_cells.size() == 1u);
+    MESSAGE("coarsened " << count << " points to " << cw.x.rows() << " cells");
+
+    // the needle: semi-axes 0.08 and 0.06 at (0.5, 0.5), d = 0.707 from the
+    // origin; level-2 modes, so (p + ell)_max = 2
+    Eigen::VectorXd needle_mu(2);
+    needle_mu << 0.5, 0.5;
+    Eigen::VectorXd theta_hat_needle(theta_hat_size(2, MuMode::Pinned));
+    theta_hat_needle << std::log(0.08), std::log(0.06), 0.02;
+    const std::vector<Mode> modes = modes_up_to_level(2, 2);
+    const WhitenedBasis basis(cw.x, mass, cw.m2, modes, needle_mu, MuMode::Pinned);
+    const Eigen::VectorXd c =
+        test_helpers::randn_points(static_cast<int>(modes.size()), 1, gen).col(0);
+    const Eigen::VectorXd s = test_helpers::randn_points(1, 1, gen).col(0);
+    Eigen::MatrixXd extra = Eigen::MatrixXd::Zero(cw.x.rows(), 1);
+    extra(cw.protected_cells.front(), 0) = 1.0;
+    const Eigen::MatrixXd e_hat = whiten_extra(extra, mass, cw.m2);
+    const Eigen::MatrixXd z_hat = whiten_probes(cw.z, cw.m2);
+    const Eigen::VectorXd y_hat = (basis(theta_hat_needle).values() * c).transpose() * z_hat
+                                  + (e_hat * s).transpose() * z_hat;
+    const Eigen::VectorXd y = std::sqrt(mass) * y_hat;
+
+    const lgpsf::EllipsoidFrame truth =
+        lgpsf::unpack_theta_hat(theta_hat_needle, needle_mu, MuMode::Pinned);
+    lgpsf::InitialGuess at_needle;
+    at_needle.sigma = truth.L * truth.L.transpose();
+    at_needle.mu = needle_mu;
+    at_needle.label = "needle";
+
+    ProbeFitConfig config = basic_config(std::make_shared<FixedSet>(modes, "truth"));
+    config.num_rungs = 0;
+    const auto fit_with = [&]( double resolution_eps, MuPolicy policy ) {
+        ProbeFitConfig c_ = config;
+        c_.resolution_eps = resolution_eps;
+        c_.mu = policy;
+        return fit_from_probes(cw.x, cw.m2, cw.z, y, mu0, cw.protected_cells.front(),
+                               c_, {at_needle}, mass);
+    };
+
+    // without the rule: the needle is found, narrow, displaced, perfect on the
+    // cells, and inside both existing guards -- admissible
+    const double radius = lgpsf::window_radius(cw.x, mu0);
+    const ProbeFitResult without = fit_with(0.0, MuPolicy::Free);
+    REQUIRE(without.candidates.size() == 1u);
+    const CandidateFit& needle = without.candidates.front();
+    const double displacement = (needle.model.theta.head(2) - mu0).norm();
+    MESSAGE("needle: axes " << needle.axes.transpose() << ", displaced " << displacement
+                            << " of radius " << radius << ", score " << needle.score);
+    CHECK(needle.axes.minCoeff() < 0.1);
+    CHECK(displacement > 0.6);
+    CHECK(needle.axes.maxCoeff() <= radius);
+    CHECK(displacement <= radius);
+    CHECK(needle.score < 1e-6);
+    CHECK(needle.admissible);
+
+    // with it, at the coarsening's own eps: min axis 0.06 against
+    // 0.4 * 0.707 * 2 = 0.57 -- rejected, and still returned as the (flagged)
+    // winner because there is nothing else to pick
+    const ProbeFitResult with = fit_with(0.4, MuPolicy::Free);
+    REQUIRE(with.candidates.size() == 1u);
+    CHECK_FALSE(with.candidates.front().admissible);
+    CHECK(with.winner == 0);
+
+    // a threshold, not a ban: an eps at which the needle IS resolved admits it
+    // (0.02 * 0.707 * 2 = 0.028 < 0.06)
+    const ProbeFitResult fine = fit_with(0.02, MuPolicy::Free);
+    REQUIRE(fine.candidates.size() == 1u);
+    CHECK(fine.candidates.front().admissible);
+
+    // a pinned candidate is never subject to it
+    const ProbeFitResult pinned = fit_with(0.4, MuPolicy::Pinned);
+    REQUIRE(pinned.candidates.size() == 1u);
+    CHECK(pinned.candidates.front().admissible);
+    CHECK_FALSE(pinned.candidates.front().released);
+
+    // and the eps is validated eagerly
+    ProbeFitConfig bad = config;
+    bad.resolution_eps = -0.1;
+    CHECK_THROWS_AS(fit_from_probes(cw.x, cw.m2, cw.z, y, mu0, cw.protected_cells.front(),
+                                    bad, {at_needle}, mass),
                     std::invalid_argument);
 }

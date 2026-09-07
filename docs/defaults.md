@@ -10,6 +10,8 @@ the problem was.
 |---|---|---|
 | `tau_window` | `10.0` | Window radius, in standard deviations of the `sigma` you supplied. Deliberately generous — the admissibility guard assumes the window contains the row. |
 | `window_aspect_cap` | `inf` | Window shape. `1` gives a ball, `inf` your ellipsoid untouched, anything between caps the axis ratio. |
+| `coarsen_above` | `0` | Coarsen the *fit's* quadrature on windows with more points than this; `0` never does. A per-row work bound that needs no estimate of the kernel's width: graded cells at most `coarsen_eps` times their distance from the centre, each reduced to its mass-weighted centroid — about `3π/eps²` cells per dyadic annulus, so logarithmic in the window's size. The deployed support stays the full window and the scores are re-evaluated on it. Off until field validation says otherwise. |
+| `coarsen_eps` | `0.1` | The grading ratio. The resolution condition `eps · (p+ℓ)_max ≲ 0.5` covers the ladder's top level of 5 at `0.1`; coarser aliases the high modes into noise, which the ladder reads as "stop lower". Also arms `resolution_eps` at this value on coarsened rows. |
 | `spike` | `true` | Fit a diagonal correction for the part of the PSF the mesh cannot resolve. Turn it off when the kernel is mesh-resolved, and it must be off for rectangular operators, where no diagonal exists. |
 | `seed` | unset | Unset means **no generator is consulted at all**: folds are round-robin and the jitter table is fixed. Runs are reproducible by construction, not by seeding. |
 | `num_threads` | `0` | Implementation chooses. Results are bit-identical for any value. |
@@ -24,6 +26,7 @@ the problem was.
 | `target_score` | `0.05` | Stop early once a candidate is certifiably good. `None` sweeps the whole ladder. |
 | `mode_patience` | `2` | Stop growing modes after this many rungs without improvement. |
 | `cv_folds` | `5` | Held-out folds for the selection score. |
+| `resolution_eps` | `0.0` | Off. When positive, a *released* candidate is admissible only if `min axis ≥ eps · ‖mu − default_mu‖ · max(1, (p+ℓ)_max)`: a narrow kernel displaced far from the node sits on coarse cells that cannot resolve it. `fit_operator` sets it to `coarsen_eps` on the rows it coarsens. |
 | `varpro.ridge` | `1e-8` | Damps the linear coefficients only — the ellipsoid is never regularized. |
 | `varpro.jacobian` | `Kaufman` | Drops a term that vanishes at the solution; one reverse sweep instead of a full Jacobian tensor, same answer. |
 | `varpro.ftol` | `1e-4` | Stops one nonlinear fit on relative cost reduction. **This is the one that binds** — see below. |
@@ -132,7 +135,12 @@ model energy outside the window, so out-of-window mass is *unpenalized*, not
 merely unverified — and Laguerre-Gaussian modes, being polynomials times a
 Gaussian, extrapolate violently. At field scale a single rogue row with an
 unconstrained tail was enough to dominate the global error. Fitted object and
-deployed object are now the same object by construction.
+deployed object are now the same object by construction. The fit's *quadrature*
+on that window may be coarsened (`coarsen_above`), graded so that its error is
+controlled — cells at most `coarsen_eps` times their distance from the centre,
+singletons near it — and the reported `score` / `baseline_score` are
+re-evaluated on the full window, so the baseline guard decides on the deployed
+object.
 
 ## Do not gate dead rows
 

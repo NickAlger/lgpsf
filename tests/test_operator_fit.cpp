@@ -1135,3 +1135,261 @@ TEST_CASE("the operator and the diagnostics are genuinely separable")
     CHECK(standalone.m2_diag == op.m2);
     CHECK(standalone.x_cols.data() != op.x_cols.data());
 }
+
+// ---------------------------------------------------------------------------
+// Graded window coarsening (OperatorFitConfig::coarsen_above / coarsen_eps)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// The exact response of the synthetic operator to held-out probes, from the
+/// same construction make_operator used: the dense truth, row by row.
+Eigen::MatrixXd true_responses( const Synthetic& op, const Eigen::MatrixXd& V_qc )
+{
+    Eigen::MatrixXd HV_qc = Eigen::MatrixXd::Zero(op.x_cols.rows(), V_qc.cols());
+    for ( Eigen::Index rho = 0; rho < op.x_cols.rows(); ++rho )
+    {
+        if ( !op.gate[static_cast<std::size_t>(rho)] )
+        {
+            continue;
+        }
+        const Eigen::VectorXd center = op.x_cols.row(rho).transpose();
+        const WhitenedBasis basis(op.x_cols, op.m1(rho), op.m2, op.modes, center,
+                                  MuMode::Pinned);
+        const Eigen::VectorXd phi =
+            basis(op.theta_hat_true[static_cast<std::size_t>(rho)]).values()
+            * op.c_true[static_cast<std::size_t>(rho)];
+        Eigen::VectorXd h_row(op.x_cols.rows());
+        for ( Eigen::Index j = 0; j < op.x_cols.rows(); ++j )
+        {
+            h_row(j) = std::sqrt(op.m1(rho)) * std::sqrt(op.m2(j)) * phi(j);
+        }
+        h_row(rho) += op.m1(rho) * op.s_true(rho);
+        HV_qc.row(rho) = h_row.transpose() * V_qc;
+    }
+    return HV_qc;
+}
+
+/// A coarsening that fires on every fitted row of a 21 x 21 synthetic operator
+/// (windows of 441 points against a trigger of 50) and coarsens it visibly.
+/// eps 0.4 is coarser than the resolution condition asks for at level 2 --
+/// deliberately, so the tests see a real coarsening on a grid this small.
+OperatorFitConfig coarsening_config( const Synthetic& op )
+{
+    OperatorFitConfig config = config_for(op);
+    config.coarsen_above = 50;
+    config.coarsen_eps = 0.4;
+    return config;
+}
+
+} // namespace
+
+TEST_CASE("coarsened fits are bit-identical across thread counts")
+{
+    // coarsen_window is a pure function of the row's window array -- no
+    // threads, a canonical split, a canonical cell order, ascending in-cell
+    // accumulation -- so the fit's thread invariant survives it. The grid is
+    // finer than elsewhere so the trigger actually fires.
+    std::mt19937 gen(31);
+    const Synthetic op = make_operator(gen, 21, 30, 6);
+
+    std::vector<OperatorFit> fits;
+    for ( int threads : {1, 2, 4} )
+    {
+        OperatorFitConfig config = coarsening_config(op);
+        config.num_threads = threads;
+        fits.push_back(run(op, config));
+    }
+    const OperatorFit& a = fits.front();
+
+    // every fitted row was coarsened
+    int coarsened = 0;
+    for ( Eigen::Index rho = 0; rho < a.model.num_rows(); ++rho )
+    {
+        const std::size_t r = static_cast<std::size_t>(rho);
+        if ( !op.gate[r] )
+        {
+            continue;
+        }
+        REQUIRE(a.diagnostics.status[r] != RowStatus::Failed);
+        const int window = static_cast<int>(a.model.row_window(static_cast<int>(rho)).size());
+        CHECK(a.diagnostics.fit_points(rho) < window);
+        ++coarsened;
+    }
+    CHECK(coarsened == op.fitted_rows);
+
+    for ( std::size_t i = 1; i < fits.size(); ++i )
+    {
+        const OperatorFit& b = fits[i];
+        CHECK(same(a.model.theta, b.model.theta));
+        CHECK(same(a.model.mu, b.model.mu));
+        CHECK(same(a.model.L, b.model.L));
+        CHECK(same(a.model.c, b.model.c));
+        CHECK(same(a.model.s, b.model.s));
+        CHECK(same(a.diagnostics.score, b.diagnostics.score));
+        CHECK(same(a.diagnostics.baseline_score, b.diagnostics.baseline_score));
+        CHECK(a.diagnostics.fit_points == b.diagnostics.fit_points);
+        CHECK(a.model.mode_set_id == b.model.mode_set_id);
+        CHECK(a.model.window_indptr == b.model.window_indptr);
+        CHECK(a.model.window_indices == b.model.window_indices);
+        CHECK(a.diagnostics.released == b.diagnostics.released);
+        REQUIRE(a.model.mode_sets.size() == b.model.mode_sets.size());
+        for ( std::size_t k = 0; k < a.model.mode_sets.size(); ++k )
+        {
+            CHECK(a.model.mode_sets[k] == b.model.mode_sets[k]);
+        }
+        for ( std::size_t k = 0; k < a.diagnostics.status.size(); ++k )
+        {
+            CHECK(a.diagnostics.status[k] == b.diagnostics.status[k]);
+            CHECK(a.diagnostics.stop_reason[k] == b.diagnostics.stop_reason[k]);
+        }
+    }
+}
+
+TEST_CASE("coarsening changes the fit's quadrature, not the deployed window")
+{
+    // The deployed support is the fit window, coarsened or not: the CSR
+    // arrays and the window region are written before any fit and never by
+    // the coarsening. What changes is what the fit RAN on -- fit_points --
+    // and the guard's numbers, which are re-scored on the full window; the
+    // operator that comes out must still be the synthetic truth to within
+    // the coarse quadrature's own error.
+    std::mt19937 gen(32);
+    const Synthetic op = make_operator(gen, 21, 30, 4);
+    const OperatorFit plain = run(op, config_for(op));
+    const OperatorFit coarse = run(op, coarsening_config(op));
+
+    // the deployed support and the window region: identical
+    CHECK(plain.model.window_indptr == coarse.model.window_indptr);
+    CHECK(plain.model.window_indices == coarse.model.window_indices);
+    CHECK(same(plain.model.window_center, coarse.model.window_center));
+    CHECK(same(plain.model.window_covariance, coarse.model.window_covariance));
+
+    // fit_points: the window size when off, smaller when on, 0 when gated
+    REQUIRE(plain.diagnostics.fit_points.size() == plain.model.num_rows());
+    REQUIRE(coarse.diagnostics.fit_points.size() == coarse.model.num_rows());
+    long full_total = 0, coarse_total = 0;
+    int searched = 0, fell_back = 0;
+    for ( Eigen::Index rho = 0; rho < plain.model.num_rows(); ++rho )
+    {
+        const std::size_t r = static_cast<std::size_t>(rho);
+        const int window = static_cast<int>(plain.model.row_window(static_cast<int>(rho)).size());
+        if ( !op.gate[r] )
+        {
+            CHECK(plain.diagnostics.fit_points(rho) == 0);
+            CHECK(coarse.diagnostics.fit_points(rho) == 0);
+            continue;
+        }
+        REQUIRE(plain.diagnostics.status[r] != RowStatus::Failed);
+        REQUIRE(coarse.diagnostics.status[r] != RowStatus::Failed);
+        CHECK(plain.diagnostics.fit_points(rho) == window);
+        CHECK(coarse.diagnostics.fit_points(rho) >= 2);
+        CHECK(coarse.diagnostics.fit_points(rho) < window);
+        full_total += plain.diagnostics.fit_points(rho);
+        coarse_total += coarse.diagnostics.fit_points(rho);
+
+        // the guard, on the re-scored numbers: a searched fit ships only on a
+        // strict full-window improvement, and a fallback ties exactly
+        const RowStatus status = coarse.diagnostics.status[r];
+        if ( status == RowStatus::Fit )
+        {
+            ++searched;
+            CHECK(coarse.diagnostics.score(rho) < coarse.diagnostics.baseline_score(rho));
+        }
+        else
+        {
+            ++fell_back;
+            CHECK(status == RowStatus::FallbackBaseline);
+            CHECK(coarse.diagnostics.score(rho) == coarse.diagnostics.baseline_score(rho));
+        }
+
+        // the re-scored baseline is a full-window number: the baseline's
+        // parameters do not depend on the quadrature (only its choice of mode
+        // set does, and FixedSet offers one), so on the full window it is the
+        // uncoarsened run's baseline score, bit for bit
+        CHECK(coarse.diagnostics.baseline_score(rho) == plain.diagnostics.baseline_score(rho));
+    }
+    MESSAGE("fit points: " << full_total << " on the full windows, " << coarse_total
+                           << " coarsened; guard: " << searched << " shipped, "
+                           << fell_back << " fell back");
+    CHECK(searched + fell_back == op.fitted_rows);
+    CHECK(coarse_total < full_total);
+
+    // accuracy of the deployed operator on held-out probes: the uncoarsened
+    // fit is exact here (the data is), so whatever the coarse fit loses is the
+    // coarse quadrature's own error, and it must shrink as eps does
+    std::mt19937 held(98);
+    const Eigen::MatrixXd V_qc =
+        test_helpers::randn_points(static_cast<int>(op.x_cols.rows()), 8, held);
+    const Eigen::MatrixXd HV_qc = true_responses(op, V_qc);
+    const auto worst_of = [&]( const OperatorFit& fit ) {
+        const Eigen::VectorXd quality = qc_map(fit.model, V_qc, HV_qc);
+        double worst = 0.0;
+        for ( int rho : model_rows(fit.model) )
+        {
+            worst = std::max(worst, quality(rho));
+        }
+        return worst;
+    };
+    const double worst_plain = worst_of(plain);
+    std::vector<double> eps_values{0.4, 0.3, 0.2};
+    std::vector<double> worst_coarse{worst_of(coarse)};
+    std::vector<long> cells{coarse_total};
+    for ( std::size_t i = 1; i < eps_values.size(); ++i )
+    {
+        OperatorFitConfig finer = coarsening_config(op);
+        finer.coarsen_eps = eps_values[i];
+        const OperatorFit fit = run(op, finer);
+        worst_coarse.push_back(worst_of(fit));
+        cells.push_back(fit.diagnostics.fit_points.cast<long>().sum());
+    }
+    MESSAGE("held-out worst relative residual: " << worst_plain << " uncoarsened; "
+            "coarsened at eps 0.4 / 0.3 / 0.2: " << worst_coarse[0] << " / "
+            << worst_coarse[1] << " / " << worst_coarse[2] << " on "
+            << cells[0] << " / " << cells[1] << " / " << cells[2] << " of "
+            << full_total << " points");
+    CHECK(worst_plain < 1e-3);
+    // Loose on purpose: at eps 0.4 with level-2 modes the resolution condition
+    // eps (p + ell) <~ 0.5 is deliberately NOT met (that is what makes a grid
+    // this small coarsen at all), so this is the aliased regime -- measured at
+    // 7.5%. The claim is the trend: refining eps must not make it worse.
+    CHECK(worst_coarse[0] < 0.15);
+    for ( std::size_t i = 1; i < worst_coarse.size(); ++i )
+    {
+        CHECK(worst_coarse[i] <= worst_coarse[i - 1]);
+    }
+}
+
+TEST_CASE("the coarsening knobs are validated eagerly, and default to off")
+{
+    std::mt19937 gen(7);
+    const Synthetic op = make_operator(gen, 6, 20, 2);
+    CHECK(config_for(op).coarsen_above == 0);
+    CHECK(config_for(op).coarsen_eps == 0.1);
+    CHECK(lgpsf::ProbeFitConfig().resolution_eps == 0.0);
+
+    OperatorFitConfig negative = config_for(op);
+    negative.coarsen_above = -1;
+    CHECK_THROWS_AS(run(op, negative), std::invalid_argument);
+
+    OperatorFitConfig zero_eps = config_for(op);
+    zero_eps.coarsen_above = 10;
+    zero_eps.coarsen_eps = 0.0;
+    CHECK_THROWS_AS(run(op, zero_eps), std::invalid_argument);
+
+    OperatorFitConfig negative_eps = config_for(op);
+    negative_eps.coarsen_above = 10;
+    negative_eps.coarsen_eps = -0.1;
+    CHECK_THROWS_AS(run(op, negative_eps), std::invalid_argument);
+
+    OperatorFitConfig nan_eps = config_for(op);
+    nan_eps.coarsen_above = 10;
+    nan_eps.coarsen_eps = std::numeric_limits<double>::quiet_NaN();
+    CHECK_THROWS_AS(run(op, nan_eps), std::invalid_argument);
+
+    // the check is on the config, not the trigger: a bad eps is refused even
+    // while coarsening is off, as every other knob is
+    OperatorFitConfig off_but_bad = config_for(op);
+    off_but_bad.coarsen_eps = 0.0;
+    CHECK_THROWS_AS(run(op, off_but_bad), std::invalid_argument);
+}

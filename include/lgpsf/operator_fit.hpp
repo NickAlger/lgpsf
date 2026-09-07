@@ -37,8 +37,13 @@
 /// extrapolate violently beyond the data -- at PIG field scale one rogue row
 /// carried 94% of a whole-operator test error. Every dof-context helper
 /// restricts a row to its FIT WINDOW, stored here as CSR-style index arrays:
-/// fitted object == deployed object, which is what makes the per-row scores
-/// honest for deployment.
+/// the deployed support is the fit window, which is what makes the per-row
+/// scores honest for deployment. The fit's QUADRATURE on that window may be
+/// coarsened (`coarsen_above`, off by default): cells graded so that their
+/// error is controlled for every kernel width at once, singletons near the
+/// centre, the deployed support untouched (coarsen_window.hpp) -- and the
+/// reported scores are then re-evaluated on the full window, so the baseline
+/// guard and the diagnostics still speak about the deployed object.
 ///
 /// ## Do not gate dead rows -- fitting them is already free and correct
 ///
@@ -135,6 +140,7 @@
 #include <ellipsoid_tree/geometry.hpp>
 #include <ellipsoid_tree/object_tree.hpp>
 
+#include "lgpsf/coarsen_window.hpp"
 #include "lgpsf/ellipsoid_transform.hpp"
 #include "lgpsf/init_dictionary.hpp"
 #include "lgpsf/lg_operator.hpp"
@@ -194,6 +200,37 @@ struct OperatorFitConfig
     /// prior. See the file comment.
     double window_aspect_cap = std::numeric_limits<double>::infinity();
 
+    /// Coarsen the FIT's quadrature on any window with more points than this;
+    /// 0 (the default) never coarsens. A per-row work bound that needs no
+    /// estimate of the kernel's width: for the fit only, the window is
+    /// replaced by graded cells of size at most `coarsen_eps` times their
+    /// distance from the row's centre (in the window ellipsoid's own
+    /// coordinates), each reduced to its mass-weighted centroid, summed mass
+    /// and mean probe fields, with the spike and the farthest point kept as
+    /// singletons. The cell count is about `3 pi / eps^2` per dyadic annulus
+    /// in 2D -- logarithmic in the window's size -- so a 90,000-point window
+    /// at eps 0.1 costs what a 7,000-point one does. The deployed support
+    /// (`window_indptr` / `window_indices`, `window_center` /
+    /// `window_covariance`) is the full window regardless, and `score` /
+    /// `baseline_score` are re-evaluated on it. A row whose protected set
+    /// (today: the spike) would exceed this trigger is left uncoarsened
+    /// rather than refused; `FitDiagnostics::fit_points` says what each
+    /// row's fit actually ran on. See coarsen_window.hpp.
+    int coarsen_above = 0;
+
+    /// Grading ratio of the coarsened quadrature: cell size over distance
+    /// from the centre. A mode of radial degree p and angular order ell has
+    /// its finest structure at scale `sigma / (p + ell)` near its own radius,
+    /// so the uniform resolution condition is `eps * (p + ell)_max <~ 0.5`
+    /// -- at the ladder's top level of 5, `eps <= 0.1` -- and the centroid
+    /// rule makes the aggregation error second order, `(eps * ell)^2`. A
+    /// coarser quadrature aliases the high modes into noise, which the
+    /// ladder's cross-validation treats as the conservative failure (it stops
+    /// lower). Also arms the released-centre resolution rule
+    /// (`ProbeFitConfig::resolution_eps`) at this value on coarsened rows.
+    /// Finite and positive; read only when `coarsen_above > 0`.
+    double coarsen_eps = 0.1;
+
     /// Model the diagonal spike. The spike is tied to the row's own column
     /// dof: in the square context (no separate row coordinates) that is the
     /// row index itself; with separate row coordinates the caller must name
@@ -239,6 +276,12 @@ struct FitDiagnostics
     std::vector<char> released;      ///< Where the shipped model's center was fitted
     std::vector<RowStatus> status;
     std::map<int, std::string> failures;  ///< Row -> message, for failed rows
+
+    /// (R_all,) how many quadrature points each row's fit ran on: the window
+    /// size, or the coarse cell count when `coarsen_above` triggered; 0 for
+    /// gated and failed rows. Whether the work bound is binding is readable
+    /// from this and nowhere else.
+    Eigen::VectorXi fit_points;
 
     OperatorFitConfig config;  ///< Provenance echo.
 };
@@ -288,6 +331,7 @@ struct RowOutcome
     double score = std::numeric_limits<double>::quiet_NaN();
     double baseline_score = std::numeric_limits<double>::quiet_NaN();
     bool released = false;
+    int fit_points = 0;
     std::string failure;
 };
 
@@ -371,6 +415,18 @@ inline OperatorFit fit_operator(
         throw std::invalid_argument(
             "lgpsf::fit_operator: window_aspect_cap must be >= 1 (1 is an "
             "isotropic window, infinity the caller's ellipsoid untouched)");
+    }
+    if ( config.coarsen_above < 0 )
+    {
+        throw std::invalid_argument(
+            "lgpsf::fit_operator: coarsen_above must be >= 0 (0 never coarsens), got "
+            + std::to_string(config.coarsen_above));
+    }
+    if ( !(config.coarsen_eps > 0.0) || !std::isfinite(config.coarsen_eps) )
+    {
+        throw std::invalid_argument(
+            "lgpsf::fit_operator: coarsen_eps must be finite and positive, got "
+            + std::to_string(config.coarsen_eps));
     }
     if ( x_rows && x_rows->rows() != num_rows )
     {
@@ -457,6 +513,12 @@ inline OperatorFit fit_operator(
     std::vector<detail::RowOutcome> outcomes(static_cast<std::size_t>(num_rows));
     std::vector<Eigen::MatrixXd> prior(static_cast<std::size_t>(num_rows));
     std::vector<char> attempt(static_cast<std::size_t>(num_rows), 0);
+    // The window ellipsoid as a frame, for the graded coarsening, which
+    // grades in the window's own coordinates. Built only when coarsening can
+    // trigger, so the default path does no extra work and gains no failure
+    // mode; kept per row rather than un-flattened from window_covariance.
+    std::vector<EllipsoidFrame> window_frame(
+        config.coarsen_above > 0 ? static_cast<std::size_t>(num_rows) : 0u);
     Eigen::MatrixXd window_center = Eigen::MatrixXd::Constant(
         num_rows, dim, std::numeric_limits<double>::quiet_NaN());
     Eigen::MatrixXd window_covariance = Eigen::MatrixXd::Constant(
@@ -503,6 +565,22 @@ inline OperatorFit fit_operator(
                 region.Sigma = config.tau_window * config.tau_window
                                * capped_covariance(covariance,
                                                    config.window_aspect_cap);
+            }
+            if ( config.coarsen_above > 0 )
+            {
+                // Sigma_w = L_w L_w^T; a derived window is SPD by construction
+                // (sigma passed its own Cholesky above), a supplied one is
+                // the caller's word, checked here.
+                const Eigen::LLT<Eigen::MatrixXd> window_chol(region.Sigma);
+                if ( window_chol.info() != Eigen::Success )
+                {
+                    outcome.status = RowStatus::Failed;
+                    outcome.failure = "window covariance is not positive definite";
+                    attempt[static_cast<std::size_t>(rho)] = 0;
+                    continue;
+                }
+                window_frame[static_cast<std::size_t>(rho)] =
+                    make_frame(region.mu, Eigen::MatrixXd(window_chol.matrixL()));
             }
             window_center.row(rho) = region.mu.transpose();
             for ( int i = 0; i < dim; ++i )
@@ -601,16 +679,81 @@ inline OperatorFit fit_operator(
                     const double target_mass = m1_diag(rho);
                     const int num_extra = ( spike_position >= 0 ) ? 1 : 0;
 
+                    // --- the fit's quadrature: the window, or its graded
+                    //     coarsening ----------------------------------------
+                    //
+                    // From here to the guard everything reads x_fit / m2_fit /
+                    // z_fit / spike_fit. The window itself -- outcome.window,
+                    // window_center / window_covariance -- is the deployed
+                    // support and is never touched. A row whose protected set
+                    // (today: just the spike) would exceed the trigger is left
+                    // uncoarsened rather than refused, so with one protected
+                    // position the third condition is vacuous; it is the
+                    // general rule written down.
+                    const bool coarsened =
+                        config.coarsen_above > 0
+                        && window_size > config.coarsen_above
+                        && num_extra <= config.coarsen_above;
+                    CoarseWindow coarse;
+                    if ( coarsened )
+                    {
+                        std::vector<int> protected_positions;
+                        if ( spike_position >= 0 )
+                        {
+                            protected_positions.push_back(spike_position);
+                        }
+                        coarse = coarsen_window(
+                            x_window, m2_window, z, protected_positions, center,
+                            window_frame[static_cast<std::size_t>(rho)],
+                            config.coarsen_eps);
+                        if ( coarse.x.rows() < 2 )
+                        {
+                            // Only coincident points can do this (the spike
+                            // and the farthest point are distinct singletons
+                            // otherwise); fail attributably rather than let
+                            // local_spacing throw its own message.
+                            throw std::invalid_argument(
+                                "lgpsf::fit_operator: coarsened window has "
+                                + std::to_string(coarse.x.rows()) + " points (from "
+                                + std::to_string(window_size) + " at coarsen_eps="
+                                + std::to_string(config.coarsen_eps)
+                                + "; are the window's points coincident?)");
+                        }
+                    }
+                    const Eigen::MatrixXd& x_fit = coarsened ? coarse.x : x_window;
+                    const Eigen::VectorXd& m2_fit = coarsened ? coarse.m2 : m2_window;
+                    const Eigen::MatrixXd& z_fit = coarsened ? coarse.z : z;
+                    const int spike_fit =
+                        ( coarsened && spike_position >= 0 )
+                            ? coarse.protected_cells.front()
+                            : spike_position;
+                    const Eigen::Index fit_size = x_fit.rows();
+                    outcome.fit_points = static_cast<int>(fit_size);
+
+                    // The released-centre resolution rule (probe_fit.hpp) is
+                    // armed on coarsened rows only: it rejects a needle sitting
+                    // on cells the grading made too coarse for it, and there
+                    // are no such cells otherwise. row_config is shared across
+                    // rows, so a coarsened row takes its own copy.
+                    std::optional<ProbeFitConfig> coarse_config;
+                    if ( coarsened )
+                    {
+                        coarse_config = row_config;
+                        coarse_config->resolution_eps = config.coarsen_eps;
+                    }
+                    const ProbeFitConfig& fit_config =
+                        coarse_config ? *coarse_config : row_config;
+
                     // --- baseline: a linear fit at sigma[rho], pinned -------
-                    const Eigen::MatrixXd z_hat = whiten_probes(z, m2_window);
+                    const Eigen::MatrixXd z_hat = whiten_probes(z_fit, m2_fit);
                     const Eigen::VectorXd y_hat = whiten_data(y, target_mass);
-                    Eigen::MatrixXd extra = Eigen::MatrixXd::Zero(window_size, num_extra);
+                    Eigen::MatrixXd extra = Eigen::MatrixXd::Zero(fit_size, num_extra);
                     if ( num_extra > 0 )
                     {
-                        extra(spike_position, 0) = 1.0;
+                        extra(spike_fit, 0) = 1.0;
                     }
                     const Eigen::MatrixXd e_hat =
-                        whiten_extra(extra, target_mass, m2_window);
+                        whiten_extra(extra, target_mass, m2_fit);
                     const Eigen::VectorXd theta_baseline =
                         theta_hat_from_cholesky(prior_L);
 
@@ -625,7 +768,7 @@ inline OperatorFit fit_operator(
                         {
                             continue;
                         }
-                        const WhitenedBasis basis(x_window, target_mass, m2_window,
+                        const WhitenedBasis basis(x_fit, target_mass, m2_fit,
                                                   modes, center, MuMode::Pinned);
                         const double score =
                             linear_cv_score(z_hat, y_hat, basis, theta_baseline,
@@ -666,13 +809,73 @@ inline OperatorFit fit_operator(
                         prior.sigma = covariance;
                         prior.label = "sigma0";
                         searched = fit_from_probes(
-                            x_window, m2_window, z, y, center, spike_position,
-                            row_config, {prior}, target_mass);
+                            x_fit, m2_fit, z_fit, y, center, spike_fit,
+                            fit_config, {prior}, target_mass);
+                    }
+
+                    // --- full-window re-score of the finalists --------------
+                    //
+                    // On a coarsened row the scores so far are coarse-
+                    // quadrature scores: the search's internal currency. The
+                    // guard is taken, and the diagnostics report, the same two
+                    // models scored on the FULL window -- one linear_cv_score
+                    // each, O(K m), negligible against a fit -- so `score` and
+                    // `baseline_score` keep their literal meaning, and an
+                    // aliasing artifact (good on the cells, bad on the points)
+                    // cannot ship. The coefficients are not refit.
+                    double searched_score =
+                        searched ? searched->score
+                                 : std::numeric_limits<double>::infinity();
+                    if ( coarsened )
+                    {
+                        const Eigen::MatrixXd z_hat_full = whiten_probes(z, m2_window);
+                        Eigen::MatrixXd extra_full =
+                            Eigen::MatrixXd::Zero(window_size, num_extra);
+                        if ( num_extra > 0 )
+                        {
+                            extra_full(spike_position, 0) = 1.0;
+                        }
+                        const Eigen::MatrixXd e_hat_full =
+                            whiten_extra(extra_full, target_mass, m2_window);
+
+                        const WhitenedBasis full_baseline(
+                            x_window, target_mass, m2_window, *baseline_modes,
+                            center, MuMode::Pinned);
+                        baseline_score = linear_cv_score(
+                            z_hat_full, y_hat, full_baseline, theta_baseline,
+                            e_hat_full, row_config.split);
+
+                        if ( searched )
+                        {
+                            // The winner is evaluated in the encoding
+                            // fit_from_probes fitted it in: about `center`,
+                            // the only centre this row's dictionary uses (the
+                            // prior guess carries none; rungs, warm starts and
+                            // the release stage all sit at default_mu), with
+                            // the centre fitted when the candidate's was --
+                            // released, or under MuPolicy::Free, where
+                            // `released` stays false by convention. A pinned
+                            // re-encoding would drop a released displacement
+                            // and score the wrong model.
+                            const MuMode winner_mode =
+                                ( searched->released
+                                  || row_config.mu == MuPolicy::Free )
+                                    ? MuMode::Fitted
+                                    : MuMode::Pinned;
+                            const WhitenedBasis full_winner(
+                                x_window, target_mass, m2_window,
+                                searched->model.modes, center, winner_mode);
+                            searched_score = linear_cv_score(
+                                z_hat_full, y_hat, full_winner,
+                                to_theta_hat(searched->model.theta, center,
+                                             winner_mode),
+                                e_hat_full, row_config.split);
+                        }
                     }
 
                     // --- the guard ------------------------------------------
                     outcome.baseline_score = baseline_score;
-                    if ( searched && searched->score < baseline_score )
+                    if ( searched && searched_score < baseline_score )
                     {
                         outcome.status = RowStatus::Fit;
                         const EllipsoidFrame shipped = searched->model.frame();
@@ -683,7 +886,7 @@ inline OperatorFit fit_operator(
                         outcome.modes = searched->model.modes;
                         outcome.s =
                             searched->model.s.size() ? searched->model.s(0) : 0.0;
-                        outcome.score = searched->score;
+                        outcome.score = searched_score;
                         outcome.released = searched->released;
                     }
                     else
@@ -721,6 +924,7 @@ inline OperatorFit fit_operator(
                     outcome.status = RowStatus::Failed;
                     outcome.failure = error.what();
                     outcome.window.clear();
+                    outcome.fit_points = 0;
                 }
             }
         },
@@ -758,6 +962,7 @@ inline OperatorFit fit_operator(
                                           std::numeric_limits<double>::quiet_NaN());
     diagnostics.baseline_score = Eigen::VectorXd::Constant(
         num_rows, std::numeric_limits<double>::quiet_NaN());
+    diagnostics.fit_points = Eigen::VectorXi::Zero(num_rows);
     fit.mode_set_id.assign(static_cast<std::size_t>(num_rows), -1);
     diagnostics.stop_reason.assign(static_cast<std::size_t>(num_rows), RowStop::None);
     diagnostics.released.assign(static_cast<std::size_t>(num_rows), 0);
@@ -773,6 +978,7 @@ inline OperatorFit fit_operator(
         diagnostics.stop_reason[static_cast<std::size_t>(rho)] = outcome.stop;
         diagnostics.released[static_cast<std::size_t>(rho)] = outcome.released ? 1 : 0;
         diagnostics.baseline_score(rho) = outcome.baseline_score;
+        diagnostics.fit_points(rho) = outcome.fit_points;
 
         fit.window_indptr[static_cast<std::size_t>(rho) + 1] =
             fit.window_indptr[static_cast<std::size_t>(rho)]

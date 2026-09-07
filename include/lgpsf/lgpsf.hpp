@@ -22,6 +22,7 @@
 
 #include <ellipsoid_tree/ellipsoid_tree.hpp>
 
+#include "lgpsf/coarsen_window.hpp"
 #include "lgpsf/ellipsoid_transform.hpp"
 #include "lgpsf/harmonic_polynomials.hpp"
 #include "lgpsf/init_dictionary.hpp"
