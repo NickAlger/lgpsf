@@ -376,25 +376,25 @@ log2(R/h)`. Templates: `examples/reading_a_row_fit.py`, `examples/fit_one_psf.
 py`. This decides `eps`'s default and whether the second-order argument holds
 for the ladder's top modes.
 
-**S2 — the header and its tests** (`tests/test_coarsen_window.cpp`):
+**S2 — the header and its tests. DONE 2026-09-06** (11 cases, 282k assertions). Original brief: (`tests/test_coarsen_window.cpp`):
 mass conservation `sum m_C == sum m2` and `sum m_C z_C == sum m2 z` to
 round-off; the spike and the farthest point are singletons; every cell obeys
 the grading rule; the count bound; identity when `eps -> 0`; purity (two calls
 agree bit for bit); a permutation of the input that preserves the sorted
 order changes nothing.
 
-**S3 — the call site, config, diagnostics, docs.** Existing suite passes
+**S3 — the call site, config, diagnostics, docs. DONE 2026-09-06** (suite 206 cases). Original brief: Existing suite passes
 unmodified (coarsening off). New cases in `test_operator_fit.cpp`: with
 coarsening on, bit-identity across thread counts; the guard's strict `<` /
 exact `==` property; CSR windows identical on and off; the re-scored
 `score` / `baseline_score` are full-window numbers; a row whose coarse set
 degenerates fails alone with the new message.
 
-**S4 — bindings and the Python tests** (`bindings/tests/test_lgpsf_py.py`):
+**S4 — bindings and the Python tests. DONE 2026-09-07** (71 pytest cases; the C++ binding agrees with the S1 prototype exactly on the same windows). Original brief: (`bindings/tests/test_lgpsf_py.py`):
 the config fields round-trip, the diagnostics field is exposed,
 `coarsen_window` agrees with the S1 numpy version on the same window.
 
-**S5 — the MPI gate.** `tests/mpi/test_dist_fit_mpi.cpp` with coarsening on
+**S5 — the MPI gate. DONE 2026-09-07**: `tests/mpi/test_dist_fit_mpi.cpp --coarsen` passes bitwise at n = 1/2/4 (564 of 600 rows coarsened, 20,305 window points fitted on 13,046 cells); the default pass is byte-identical to before. Original brief: `tests/mpi/test_dist_fit_mpi.cpp` with coarsening on
 at `-n 1/2/4` (it is manual; see its header for the build line). This is the
 rank-independence claim of §2, item 3, made concrete.
 
