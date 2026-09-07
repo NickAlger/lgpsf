@@ -68,8 +68,16 @@ model's action on the probes". Three candidate rules, judged as quadratures:
   the midpoint error from a cell of size `h` at distance `r` is about
   `(h r / sigma^2) exp(-r^2 / 2 sigma^2)`; maximizing over `sigma` at fixed
   `r` gives `0.74 h / r`. So `h <= eps * r` bounds the error at `eps` for every
-  width simultaneously, and the centroid rule makes it second order,
-  `(eps * ell)^2` at `r ~ sigma` for an angular mode of order `ell`. The cell
+  width simultaneously; the centroid rule makes it second order,
+  `(eps * ell)^2` at `r ~ sigma` for an angular mode of order `ell`, for a
+  probe that is smooth over the cell. **S1 measured (2026-09-06): for
+  white-noise probes the design-column error is FIRST order in `eps`** (slope
+  1.0 on real windows, 2.0 for smooth probes): a cell keeps the in-cell probe
+  sum `sum_j m_j z_j` but drops its dipole `sum_j m_j z_j (x_j - x_C)`. The fit
+  tolerates it because the error is zero-mean across probes (at `eps = 0.1`
+  the column error is 1.5% at level 0 to 10% at level 5; the score changes by
+  ~8e-3 at fixed theta on the largest windows). A dipole-corrected cell would
+  restore second order if ever needed; out of scope here. The cell
   count is about `3 pi / eps^2` per dyadic annulus in 2D, so
   `N ~ 3 pi / eps^2 * log2(R / h_mesh)`: logarithmic in the window size, which
   is what makes the fit's cost scale under mesh refinement, and finite in 3D
@@ -333,7 +341,29 @@ evaluations per coarsened row.
 
 ## 6. Validation plan
 
-**S1 — Python prototype, zero library changes.** `fit_from_probes` is fully
+**S1 — Python prototype, zero library changes. DONE 2026-09-06
+(`experiments/window_coarsening.py`, `experiments/window-coarsening.md`).**
+Sixty real rows of the heat problem, windows of 246 to 99,856 points, k = 60,
+ladder 0..5. Findings: (i) `eps = 0.1` keeps every guard decision, 97% of
+ladder levels, the axes within 1e-4 decades and 0.25 degrees, `c` within 0.02%,
+for 9x less wall overall and 11-54x on the 1e5-point windows (23-30 s ->
+0.5-1.4 s); `0.15` loses one fit to an early ladder stop; `>= 0.2` loses
+10-17% of the fits. (ii) The quadrature error is first order for white-noise
+probes (above), second for smooth ones. (iii) The coarse CV score is
+optimistic: at `eps >= 0.2` it claims wins over the baseline that the
+full-window score denies, never the reverse; none at `eps <= 0.15`. The
+full-window re-score (decision 2) is load-bearing. (iv) A singleton core of
+about `7 pi / eps^2` points sits under the count law (nothing merges within
+`h / eps` of the centre), so `eps = 0.05` buys nothing below ~1e4 points and
+there is no gain below ~2,000 points: `coarsen_above` belongs in the low
+thousands. (v) A cell costs what a point costs (5.7e-6 vs 6.0e-6 s per
+candidate), so the saving is exactly the cell ratio. (vi) The motivating case
+(a prior too wide) is the easy one: the kernel then lies in the singleton core
+and is fitted exactly; the rows that feel `eps` are honest-prior rows on fine
+meshes. Defaults from this: `coarsen_eps = 0.1`, `coarsen_above` a few
+thousand when it is turned on.
+
+Original brief: `fit_from_probes` is fully
 bound (`bindings/lgpsf_bindings.cpp:795-815`), and `LGOperator.row_window`,
 `window_indices`, `x_cols`, `m2_diag` are readable (`:869-921`), so a real
 row's window can be pulled from a completed `fit_operator`, coarsened in
