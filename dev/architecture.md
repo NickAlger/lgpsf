@@ -21,6 +21,7 @@ lg_functions / harmonic_polynomials        pure basis math
   -> whitening                             the ONLY layer touching masses
   -> varpro (+ detail/levenberg_marquardt) the fitting core
   -> init_dictionary, probe_moments, mode_policy
+  -> coarsen_window                        the graded window quadrature
   -> probe_fit                             one target
   -> lg_expansion -> lg_operator           the data structures and their operations
   -> operator_fit                          one producer of them
@@ -45,6 +46,7 @@ validated, applied and assembled without ever including `operator_fit.hpp`.
 | `init_dictionary.hpp` | Initial-ellipsoid hypothesis generation: geometry and policy, no probes and no fitting. Home of `InitialGuess` — the public `(mu, sigma)` starting ellipsoid — and the `*_ladder` helpers that build dictionaries of them, which callers may use directly. First place `ellipsoid_tree`'s layout flip bites — its KDTree wants points as columns. |
 | `probe_moments.hpp` | Zero-matvec estimators from probe data. `spike_index < 0` is the "absent" sentinel. |
 | `mode_policy.hpp` | Virtual `ModePolicy` with `propose` **const**, so statelessness is enforced by the type rather than by convention. `LevelRecord` carries `bool has_winner` rather than the winning fit — that boolean breaks what would be a circular dependency on the engine's header. |
+| `coarsen_window.hpp` | `coarsen_window`: a graded quadrature coarsening of a fit window -- a 2^N-tree in the window frame's whitened coordinates, cells at most `eps` times their distance from the centre, each replaced by its mass-weighted centroid, summed mass and mass-weighted probe means; protected positions (the spike, extra-column supports) and the farthest point stay singletons. Pure and deterministic, so a distributed fit stays rank-independent. Cell count is logarithmic in the window size. |
 | `probe_fit.hpp` | One target's fit from probes: the ordered candidate stream, admissibility, K-fold CV scoring, early stopping. The CV split and jitter table arrive as DATA, so this and everything below it are pure functions of their inputs. |
 | `lg_expansion.hpp` | `LGExpansion` — one target's model (absolute theta, its modes, `c`, `s`). Self-decoding, evaluable, checkable. Both the per-row content of an `LGOperator` and the model half of a fit result. |
 | `lg_operator.hpp` | `LGOperator` and every evaluation/assembly helper. Free functions rather than methods: methods answer "what am I", free functions answer "what can be done with me". |

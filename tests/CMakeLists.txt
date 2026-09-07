@@ -10,6 +10,7 @@ add_executable(lgpsf_tests
     test_levenberg_marquardt.cpp
     test_varpro.cpp
     test_init_dictionary.cpp
+    test_coarsen_window.cpp
     test_mode_policy.cpp
     test_probe_fit.cpp
     test_lg_operator.cpp
