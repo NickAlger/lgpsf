@@ -25,6 +25,7 @@ optional** — the numbers always print; figures are skipped without it.
 | [`counting_rule.py`](counting_rule.py) | Why `k >= 2(m + P)`, and what going past it looks like: in-sample cost collapses to 1e-21 while the held-out score gets *worse*. |
 | [`reading_a_row_fit.py`](reading_a_row_fit.py) | The candidate table — what the search tried, what it kept, why it stopped. The first place to look when a row disappoints. |
 | [`mode_policies.py`](mode_policies.py) | Shells vs wedges vs radial-first, head to head. No order wins everywhere, which is why it is a policy. |
+| [`coarsened_fit.py`](coarsened_fit.py) | `coarsen_window`: one target fitted on its 31,000-point window and on a graded coarsening of it -- 5,900 cells, the same ellipsoid to 1%, the same full-window score to 2%, 6x less wall -- and why a score measured on the cells is not the one to read. |
 
 ## Fitting a whole operator
 

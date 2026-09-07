@@ -198,6 +198,8 @@ to [Semantic Versioning](https://semver.org/).
   `ProbeFitConfig::resolution_eps` (default `0` = off):
   `min axis >= eps * ||mu - default_mu|| * max(1, (p+ell)_max)`. A strict
   no-op at the defaults.
+  Documented in `docs/window-coarsening-notes.pdf` (the mathematics) and shown in
+  `examples/coarsened_fit.py` (one target fitted with and without coarsening).
 
 ## [0.1.0] — 2026-07-28
 

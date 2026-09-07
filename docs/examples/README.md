@@ -6,6 +6,7 @@ See [`../../examples/README.md`](../../examples/README.md) for what each one tea
 
 ## Python
 
+- [Fit ONE target on its full window, then on the same window coarsened](coarsened_fit.md)
 - [The counting rule: why a cost near zero is not good news](counting_rule.md)
 - [Using a fitted operator: the four ways, and what truncation does](deploying_a_fit.md)
 - [What `theta` is, and the two encodings that catch people out](ellipsoid_theta.md)
