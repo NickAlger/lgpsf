@@ -31,6 +31,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include "lgpsf/coarsen_window.hpp"
 #include "lgpsf/corrections/hr_oracle.hpp"
 #include "lgpsf/corrections/mode_block.hpp"
 #include "lgpsf/corrections/cholesky_backend.hpp"
@@ -183,6 +184,18 @@ py::array_t<std::int8_t> codes_of( const std::vector<Enum>& values )
     {
         out.mutable_at(static_cast<py::ssize_t>(i)) =
             static_cast<std::int8_t>(values[i]);
+    }
+    return out;
+}
+
+/// A per-position integer record (a cell map, a position list) as a numpy
+/// int array, so it indexes and masks like the rest of the diagnostics.
+py::array_t<int> int_array( const std::vector<int>& values )
+{
+    py::array_t<int> out(static_cast<py::ssize_t>(values.size()));
+    for ( std::size_t i = 0; i < values.size(); ++i )
+    {
+        out.mutable_at(static_cast<py::ssize_t>(i)) = values[i];
     }
     return out;
 }
@@ -685,6 +698,84 @@ PYBIND11_MODULE(lgpsf, m)
           "family's blind spot. Two-dimensional only; not on by default "
           "because it has not earned it (see experiments/).");
 
+    // ---- window coarsening -------------------------------------------------
+    // Sits between the dictionary and the row fit in the layering: it touches
+    // the probes, which the dictionary never does. Batch-last like everything
+    // else, in both directions.
+
+    py::class_<CoarseWindow>(m, "CoarseWindow",
+                             "A coarsened window: one quadrature point per "
+                             "cell, row-aligned like the window it came from, "
+                             "plus the provenance to remap positions. x is "
+                             "(N, Kc) and z is (num_probes, Kc) -- the same "
+                             "layout the window went in with.")
+        .def_property_readonly("x",
+                               []( const CoarseWindow& cw ) { return batch_last(cw.x); },
+                               "(N, Kc) mass-weighted cell centroids, physical "
+                               "coordinates.")
+        .def_readonly("m2", &CoarseWindow::m2, "(Kc,) summed cell masses.")
+        .def_property_readonly("z",
+                               []( const CoarseWindow& cw ) { return batch_last(cw.z); },
+                               "(num_probes, Kc) mass-weighted mean probe fields.")
+        .def_readonly("protected_cells", &CoarseWindow::protected_cells,
+                      "The cell of each protected input position, in input "
+                      "order; a list.")
+        .def_property_readonly("cell_of",
+                               []( const CoarseWindow& cw ) { return int_array(cw.cell_of); },
+                               "(K,) int: the cell each input position joined.")
+        .def_property_readonly("num_cells",
+                               []( const CoarseWindow& cw ) { return cw.x.rows(); },
+                               "Kc, the fit's work.")
+        .def("__repr__", []( const CoarseWindow& cw ) {
+                 std::ostringstream out;
+                 out << "CoarseWindow(num_cells=" << cw.x.rows() << ", dim="
+                     << cw.x.cols() << ", num_probes=" << cw.z.cols()
+                     << ", num_points=" << cw.cell_of.size() << ")";
+                 return out.str();
+             });
+
+    m.def("coarsen_window",
+          []( const PointsIn& x, const Eigen::VectorXd& m2, const PointsIn& z,
+              const std::vector<int>& protected_positions,
+              const Eigen::VectorXd& centre, const EllipsoidFrame& window_frame,
+              double eps ) {
+              const Eigen::MatrixXd points(map_points(x, "x"));
+              const Eigen::MatrixXd probes(map_batch(z, "z"));
+              py::gil_scoped_release unlock;
+              return coarsen_window(points, m2, probes, protected_positions,
+                                    centre, window_frame, eps);
+          },
+          "x"_a, "m2"_a, "z"_a, "protected_positions"_a, "centre"_a,
+          "window_frame"_a, "eps"_a,
+          "Coarsen a fit window into graded quadrature cells: a per-row work "
+          "bound that needs no estimate of the kernel's width. The fit's "
+          "design matrix is a mass-weighted quadrature of the model's action "
+          "on the probes, so subsampling the window is choosing a coarser "
+          "quadrature, and this one is adequate for EVERY kernel width at "
+          "once: in the whitened coordinates of `window_frame` (the window "
+          "ellipsoid, so an anisotropic window grades in its own Mahalanobis "
+          "metric), cells are graded by distance from the frame's centre -- "
+          "diagonal at most `eps` times that distance, floored at single "
+          "points -- and each cell becomes its mass-weighted centroid, its "
+          "summed mass and the mass-weighted mean of every probe field, which "
+          "keeps every probe sum `sum_j m_j z_jl` exact; only the basis "
+          "function's variation over a cell is approximated. The "
+          "`protected_positions` (the spike, the support of any extra column) "
+          "and the point farthest from `centre` stay singleton cells, copied "
+          "bit for bit, so the spike's design column and `window_radius` are "
+          "unchanged. The cell count is about 3 pi / eps^2 per dyadic annulus "
+          "in 2D, so Kc ~ (3 pi / eps^2) log2(R / h) for a window of radius R "
+          "on a mesh of spacing h -- logarithmic in the window's size; "
+          "eps <= 0.1 resolves the ladder's top level, and eps = 0 is the "
+          "identity. Pure: the same inputs give bit-identical outputs.\n\n"
+          "Layout: x is (N, K), m2 (K,), z (num_probes, K), centre (N,); "
+          "`window_frame` is an EllipsoidFrame (see make_frame). The result's "
+          "x is (N, Kc), z (num_probes, Kc), m2 (Kc,), cell_of (K,) and "
+          "protected_cells a list, cell i of protected_positions[i]. Raises "
+          "ValueError on an empty window, a shape mismatch, a non-positive "
+          "mass, a bad eps or a repeated protected position. See "
+          "coarsen_window.hpp.");
+
     py::class_<ProbeFitConfig>(m, "ProbeFitConfig",
                                "The row fit's policy and numerics. Structural "
                                "facts -- window, probes, masses, spike index -- "
@@ -702,6 +793,13 @@ PYBIND11_MODULE(lgpsf, m)
                        "Absolute early-exit certificate; None disables it.")
         .def_readwrite("mode_patience", &ProbeFitConfig::mode_patience)
         .def_readwrite("tie_delta", &ProbeFitConfig::tie_delta)
+        .def_readwrite("resolution_eps", &ProbeFitConfig::resolution_eps,
+                       "Resolution rule for RELEASED centres; 0 (the default) "
+                       "disables it. A fitted centre is admissible only if the "
+                       "model's min axis >= resolution_eps * ||mu - default_mu|| "
+                       "* max(1, (p + ell)_max): the gap a graded coarsening "
+                       "of the batch leaves. fit_operator sets it to its "
+                       "coarsen_eps on the rows it coarsens.")
         .def_readwrite("cv_folds", &ProbeFitConfig::cv_folds)
         .def_readwrite("split", &ProbeFitConfig::split,
                        "The CV split AS DATA. Empty means the deterministic "
@@ -854,6 +952,17 @@ PYBIND11_MODULE(lgpsf, m)
                        "1 = an isotropic window (a ball), inf = the caller's "
                        "ellipsoid untouched, kappa = cap the axis ratio there. "
                        "Moves the window's SHAPE, never its scale.")
+        .def_readwrite("coarsen_above", &OperatorFitConfig::coarsen_above,
+                       "Coarsen the FIT's quadrature on any window with more "
+                       "points than this; 0 (the default) never coarsens. The "
+                       "deployed support is the full window regardless, and "
+                       "score / baseline_score are re-evaluated on it. See "
+                       "coarsen_window.")
+        .def_readwrite("coarsen_eps", &OperatorFitConfig::coarsen_eps,
+                       "Grading ratio of the coarsened quadrature: cell size "
+                       "over distance from the centre. eps * (p + ell)_max <~ "
+                       "0.5 resolves the ladder; 0.1 at its top level of 5. "
+                       "Read only when coarsen_above > 0.")
         .def_readwrite("spike", &OperatorFitConfig::spike)
         .def_readwrite("row", &OperatorFitConfig::row,
                        "The per-row config. Its split and jitter are "
@@ -925,6 +1034,10 @@ PYBIND11_MODULE(lgpsf, m)
                                "evaluation.")
         .def_readonly("score", &FitDiagnostics::score)
         .def_readonly("baseline_score", &FitDiagnostics::baseline_score)
+        .def_readonly("fit_points", &FitDiagnostics::fit_points,
+                      "(R,) int: how many quadrature points each row's fit ran "
+                      "on -- the window size, or the coarse cell count when "
+                      "coarsen_above triggered; 0 for gated and failed rows.")
         .def_property_readonly("status",
                                []( const FitDiagnostics& d )
                                { return codes_of(d.status); },

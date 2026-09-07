@@ -11,6 +11,7 @@ mathematics, which the C++ suite owns. Nothing here compares against
 any stored reference, so the suite cannot drift out of step with the code.
 """
 
+import importlib.util
 import pathlib
 import re
 
@@ -892,3 +893,209 @@ def test_the_window_aspect_cap_moves_the_shape():
         assert abs(capinf[0, 0] - capinf[1, 1]) > 1e-12
         # the ball contains the ellipsoid, so it can only have more points
         assert len(ball.model.row_window(rho)) >= len(ellipse.model.row_window(rho))
+
+
+# --------------------------------------------------------------------------
+# Window coarsening: the graded quadrature the operator fit can run on.
+#
+# The C++ suite owns the invariants. The binding's job here is the layout
+# (points (N, K) in AND out), the config and diagnostics plumbing, and
+# agreement with the numpy prototype in experiments/, which is the reference
+# the C++ was written against.
+# --------------------------------------------------------------------------
+
+def jittered_window(per_side=31, num_probes=6, seed=21):
+    """A jittered square grid on [-1, 1]^2 as a window: x (2, K), uneven
+    positive masses, random probe fields (num_probes, K), and an anisotropic
+    window frame with an off-diagonal entry so the grading is not Euclidean.
+    The protected position is the point nearest the centre, the spike's role.
+    """
+    rng = np.random.default_rng(seed)
+    h = 2.0 / (per_side - 1)
+    axis = np.linspace(-1.0, 1.0, per_side)
+    grid = np.meshgrid(axis, axis, indexing="ij")
+    x = np.vstack([grid[0].ravel(), grid[1].ravel()])          # (2, K)
+    x = x + 0.3 * h * rng.uniform(-1.0, 1.0, size=x.shape)
+    count = x.shape[1]
+    m = h * h * rng.uniform(0.5, 1.5, size=count)
+    z = rng.normal(size=(num_probes, count))                   # (num_probes, K)
+    centre = np.zeros(2)
+    frame = lgpsf.make_frame(centre, np.array([[1.0, 0.0], [0.3, 0.7]]))
+    spike = int(np.argmin(np.linalg.norm(x - centre[:, None], axis=0)))
+    return dict(x=x, m=m, z=z, centre=centre, frame=frame, spike=spike,
+                count=count)
+
+
+def test_coarsening_config_fields_round_trip_and_default_to_off():
+    row = lgpsf.ProbeFitConfig()
+    assert row.resolution_eps == 0.0
+    row.resolution_eps = 0.25
+    assert row.resolution_eps == 0.25
+
+    config = lgpsf.OperatorFitConfig()
+    assert config.coarsen_above == 0             # a strict no-op by default
+    assert config.coarsen_eps == 0.1
+    config.coarsen_above = 3000
+    config.coarsen_eps = 0.15
+    assert (config.coarsen_above, config.coarsen_eps) == (3000, 0.15)
+
+    # validated eagerly, mapped to ValueError, and echoed back as provenance
+    op = synthetic_operator()
+    with pytest.raises(ValueError, match="coarsen_above"):
+        fit_synthetic(op, coarsen_above=-1)
+    with pytest.raises(ValueError, match="coarsen_eps"):
+        fit_synthetic(op, coarsen_above=10, coarsen_eps=0.0)
+    fit = fit_synthetic(op, coarsen_above=10, coarsen_eps=0.2)
+    assert fit.diagnostics.config.coarsen_above == 10
+    assert fit.diagnostics.config.coarsen_eps == 0.2
+    assert fit.diagnostics.config.row.resolution_eps == 0.0   # per-row, not global
+
+
+def test_coarsen_window_conserves_sums_and_keeps_the_protected_singletons():
+    w = jittered_window()
+    x, m, z = w["x"], w["m"], w["z"]
+    cw = lgpsf.coarsen_window(x, m, z, [w["spike"]], w["centre"], w["frame"], 0.2)
+
+    # layout: points (N, K) in, (N, Kc) out; probes (num_probes, Kc)
+    kc = cw.num_cells
+    assert 1 < kc < w["count"]
+    assert cw.x.shape == (2, kc)
+    assert cw.m2.shape == (kc,)
+    assert cw.z.shape == (z.shape[0], kc)
+    assert cw.cell_of.shape == (w["count"],)
+    assert "num_cells" in repr(cw)
+
+    # cell_of is a partition: every position in exactly one cell, no cell empty
+    assert cw.cell_of.min() == 0 and cw.cell_of.max() == kc - 1
+    sizes = np.bincount(cw.cell_of, minlength=kc)
+    assert np.all(sizes >= 1)
+
+    # conservation: the masses, the probe sums and the first moment are kept
+    # (the probe sums exactly by construction; a cell approximates only the
+    # basis function's variation over it)
+    np.testing.assert_allclose(cw.m2.sum(), m.sum(), rtol=1e-12)
+    np.testing.assert_allclose(cw.z @ cw.m2, z @ m, rtol=0,
+                               atol=1e-12 * np.abs(z @ m).max())
+    np.testing.assert_allclose(cw.x @ cw.m2, x @ m, rtol=0,
+                               atol=1e-12 * np.abs(x @ m).max())
+
+    # the spike and the farthest point are singletons, copied bit for bit
+    farthest = int(np.argmax(np.linalg.norm(x - w["centre"][:, None], axis=0)))
+    assert cw.protected_cells == [cw.cell_of[w["spike"]]]
+    for position in (w["spike"], farthest):
+        cell = cw.cell_of[position]
+        assert sizes[cell] == 1
+        assert np.array_equal(cw.x[:, cell], x[:, position])
+        assert cw.m2[cell] == m[position]
+        assert np.array_equal(cw.z[:, cell], z[:, position])
+
+    # a finer grading gives more cells, and no coarsening past a point is free
+    finer = lgpsf.coarsen_window(x, m, z, [w["spike"]], w["centre"], w["frame"], 0.1)
+    assert kc < finer.num_cells < w["count"]
+
+
+def test_coarsen_window_with_eps_zero_is_the_identity():
+    w = jittered_window(per_side=9)
+    protected = sorted({w["spike"], 3, w["count"] - 1})
+    cw = lgpsf.coarsen_window(w["x"], w["m"], w["z"], protected, w["centre"],
+                              w["frame"], 0.0)
+    assert cw.num_cells == w["count"]
+    assert np.array_equal(cw.x, w["x"])
+    assert np.array_equal(cw.m2, w["m"])
+    assert np.array_equal(cw.z, w["z"])
+    np.testing.assert_array_equal(cw.cell_of, np.arange(w["count"]))
+    assert cw.protected_cells == protected
+
+
+def test_coarsen_window_rejects_bad_input_as_value_error():
+    w = jittered_window(per_side=9)
+    args = (w["x"], w["m"], w["z"])
+    with pytest.raises(ValueError, match="repeated"):
+        lgpsf.coarsen_window(*args, [3, 3], w["centre"], w["frame"], 0.2)
+    with pytest.raises(ValueError, match="out of range"):
+        lgpsf.coarsen_window(*args, [w["count"]], w["centre"], w["frame"], 0.2)
+    with pytest.raises(ValueError, match="eps"):
+        lgpsf.coarsen_window(*args, [], w["centre"], w["frame"], -0.1)
+    with pytest.raises(ValueError, match="masses"):
+        lgpsf.coarsen_window(w["x"], -w["m"], w["z"], [], w["centre"],
+                             w["frame"], 0.2)
+    with pytest.raises(ValueError):                     # z has too few points
+        lgpsf.coarsen_window(w["x"], w["m"], w["z"][:, :-1], [], w["centre"],
+                             w["frame"], 0.2)
+
+
+def load_coarsening_prototype():
+    """The S1 numpy reference, imported from the experiment script by path.
+
+    It takes points as ROWS (the C++ layout), so the call transposes.
+    """
+    pytest.importorskip("scipy")
+    path = REPO / "experiments" / "window_coarsening.py"
+    spec = importlib.util.spec_from_file_location("window_coarsening", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_coarsen_window_agrees_with_the_numpy_prototype():
+    prototype = load_coarsening_prototype()
+    w = jittered_window()
+    protected = [w["spike"]]
+    for eps in (0.1, 0.2, 0.35):
+        got = lgpsf.coarsen_window(w["x"], w["m"], w["z"], protected,
+                                   w["centre"], w["frame"], eps)
+        ref = prototype.coarsen_window(w["x"].T, w["m"], w["z"].T, protected,
+                                       w["centre"], w["frame"].L, eps)
+        assert got.num_cells == ref["m"].size < w["count"]
+        np.testing.assert_array_equal(got.cell_of, ref["cell_of"])
+        assert got.protected_cells == ref["protected_cells"]
+        np.testing.assert_allclose(got.x, ref["x"].T, rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(got.m2, ref["m"], rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(got.z, ref["z"].T, rtol=1e-12, atol=1e-12)
+
+
+def test_fit_operator_with_coarsening_bounds_the_fit_and_keeps_the_window():
+    # A finer grid than the other operator tests and a coarser grading than
+    # the default: nothing merges within h / eps of the centre, so on a grid
+    # of this size eps = 0.1 would be the identity. eps = 0.3 still satisfies
+    # the resolution condition eps * (p + ell)_max <= 0.5 for this level-1
+    # mode set, and merges roughly a third of each window.
+    op = synthetic_operator(per_side=21)
+    off = fit_synthetic(op)
+    one = fit_synthetic(op, coarsen_above=16, coarsen_eps=0.3, num_threads=1)
+    two = fit_synthetic(op, coarsen_above=16, coarsen_eps=0.3, num_threads=2)
+
+    # bit-identical across thread counts, coarsening included
+    for name in ("theta", "mu", "c", "s"):
+        a, b = getattr(one.model, name), getattr(two.model, name)
+        both_nan = np.isnan(a) & np.isnan(b)
+        assert np.array_equal(np.where(both_nan, 0.0, a),
+                              np.where(both_nan, 0.0, b))
+    for name in ("score", "baseline_score", "fit_points", "status"):
+        np.testing.assert_array_equal(getattr(one.diagnostics, name),
+                                      getattr(two.diagnostics, name))
+
+    # the fit ran on fewer points than the window, and the DEPLOYED support
+    # is the full window regardless: the CSR arrays are identical on and off
+    assert one.diagnostics.fit_points.shape == (op["count"],)
+    np.testing.assert_array_equal(one.model.window_indptr, off.model.window_indptr)
+    np.testing.assert_array_equal(one.model.window_indices, off.model.window_indices)
+    for rho in range(op["count"]):
+        window_size = len(off.model.row_window(rho))
+        if rho in op["chosen"]:
+            assert off.diagnostics.fit_points[rho] == window_size > 16
+            assert 1 < one.diagnostics.fit_points[rho] < window_size
+        else:
+            assert off.diagnostics.fit_points[rho] == 0
+            assert one.diagnostics.fit_points[rho] == 0
+
+    # the guard is taken on FULL-window scores: never worse than the baseline,
+    # and strictly better wherever a searched fit shipped
+    status = one.diagnostics.status
+    attempted = status != int(lgpsf.RowStatus.GatedOut)
+    assert np.all(one.diagnostics.score[attempted]
+                  <= one.diagnostics.baseline_score[attempted])
+    fitted = status == int(lgpsf.RowStatus.Fit)
+    assert fitted.any()
+    assert np.all(one.diagnostics.score[fitted]
+                  < one.diagnostics.baseline_score[fitted])
