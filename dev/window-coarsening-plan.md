@@ -113,7 +113,7 @@ struct CoarseWindow
     Eigen::MatrixXd  x;                  ///< (Kc, N) cell centroids, mass-weighted
     Eigen::VectorXd  m2;                 ///< (Kc,)   summed cell masses
     Eigen::MatrixXd  z;                  ///< (Kc, k) mass-weighted mean probe fields
-    int              spike_position = -1;///< the row's own dof, still a singleton
+    std::vector<int> protected_cells;    ///< coarse positions of the protected points, in input order
     std::vector<int> cell_of;            ///< (K,) provenance: which cell each point joined
 };
 
@@ -122,7 +122,8 @@ inline CoarseWindow coarsen_window(
     const Eigen::Ref<const Eigen::MatrixXd>& x_window,   // (K, N)
     const Eigen::Ref<const Eigen::VectorXd>& m2_window,  // (K,)
     const Eigen::Ref<const Eigen::MatrixXd>& z,          // (K, k)
-    int spike_position,                                  // position in the window, or -1
+    const std::vector<int>& protected_positions,         // kept as singleton cells: the spike,
+                                                         // the support of every extra column
     const Eigen::Ref<const Eigen::VectorXd>& centre,     // (N,) the row's centre
     const EllipsoidFrame& window_frame,                  // the window's (mu, L, L_inv)
     double eps );
@@ -132,7 +133,8 @@ inline CoarseWindow coarsen_window(
 
 Algorithm, all in the whitened coordinates `u_j = pullback(window_frame, x_j)`:
 
-1. **Singletons that must survive.** The spike position (§1, item 2) and the
+1. **Singletons that must survive.** Every protected position (the spike, §1
+   item 2, and the support of any extra column, §4 item 8) and the
    point farthest from the centre in *physical* distance — `window_radius`
    (`init_dictionary.hpp:313-328`) is the admissibility bound and the top
    ladder rung (`probe_fit.hpp:563`, `:605`), and a centroid lies strictly
@@ -177,12 +179,12 @@ line 673 changes.
 
 ```
 :588-602  x_window / m2_window / z / y / target_mass / num_extra   unchanged
-:603      cw = (K > n_max) ? coarsen_window(...) : identity          NEW
+:603      cw = (K > n_max) ? coarsen_window(.., {spike_position}, ..) : identity   NEW
 :605      whiten_probes(cw.z, cw.m2)                                  coarse
-:607-610  extra = Zero(Kc, num_extra); extra(cw.spike_position) = 1   coarse
+:607-610  extra = Zero(Kc, num_extra); extra(cw.protected_cells[0]) = 1   coarse
 :613      whiten_extra(extra, target_mass, cw.m2)                     coarse
 :628-629  WhitenedBasis(cw.x, target_mass, cw.m2, modes, center, ..)  coarse
-:668-670  fit_from_probes(cw.x, cw.m2, cw.z, y, center, cw.spike, ..) coarse
+:668-670  fit_from_probes(cw.x, cw.m2, cw.z, y, center, cw.protected_cells[0], ..) coarse
 ```
 
 `y` and `target_mass` are not window-indexed at all (`:600-601`), and
@@ -258,7 +260,44 @@ evaluations per coarsened row.
    `:831-898`). The CSR arrays are never written by the coarsening; add a test
    that they are identical with coarsening on and off.
 6. **The counting rules** depend on probes and parameters only; unaffected.
-7. **`window_shape` / `window_shape_ladder`** (opt-in) lose the within-cell
+7. **Extrapolation safety inside the window.** The pathology that forced
+   "deployment ⊂ window" (fits chasing noise on near-zero rows, with
+   polynomial-times-Gaussian modes taking large values where nothing
+   constrained them) has a mechanism that coarsening can recreate *inside*
+   the window: a basis function that oscillates within a cell is aliased by
+   the quadrature, its coarse column is small or wrong, its coefficient can
+   inflate, and the fine evaluation at deployment sees the full oscillation.
+   Every deployed point lies in a cell the fit saw, so the "outside" case
+   cannot recur; the "aliased" case is excluded by resolution: at distance
+   `r` the cell is `eps * r`, a mode of radial degree `p` and angular order
+   `ell` centred at the node has its finest structure at scale
+   `sigma / (p + ell)` near `r ~ sigma` and is exponentially small beyond,
+   and near the centre the cells are singletons, so the uniform condition is
+   `eps * (p + ell)_max <~ 0.5` — at the ladder's top level of 5, `eps <= 0.1`,
+   which the error analysis of §1 asks for anyway. The gap is a *released*
+   centre displaced by `d`: a kernel there sits on cells of size `eps * d`
+   and a needle with `sigma < eps * d` is under-resolved. Two guards close
+   it: the full-window re-score of the finalists (§3) is a consistency
+   check — an aliasing artifact scores well on the coarse quadrature and
+   badly on the full window, and the guard taken on the full-window scores
+   rejects it — and, structurally, a resolution rule in admissibility for
+   released candidates, `min axis >= eps * ||mu - mu0|| * (p + ell)_max`.
+   Dead rows stay safe by themselves: zero data give zero coefficients
+   regardless of the design. A test should construct the failure (a needle
+   candidate at a displaced centre on a coarsened window) and see it
+   rejected.
+8. **General extra bases.** Extra columns are not quadrature objects:
+   `e_hat = sqrt(m_rho) M2^{-1/2} E` makes the design column the plain sum
+   `sum_j z_{jl} E_{ji}`, without masses, so aggregation (which preserves
+   `sum_j m_j z_j`) does not coarsen a general `E` consistently. The spike
+   works because its support is one point kept as a singleton, and that
+   generalizes with no special case: `coarsen_window` takes the *protected
+   positions* and keeps each a singleton; `fit_operator` passes the spike, a
+   direct caller with extras passes the union of their supports. Sparse
+   extras are then exact, bit for bit, like the spike. If the protected set
+   exceeds the trigger `coarsen_above`, the row is not coarsened and
+   `fit_points` says so — a graceful guard, not a refusal.
+9. **`window_shape` / `window_shape_ladder`** (opt-in) lose the within-cell
    second moments under aggregation (parallel-axis theorem) and read smaller.
    One-line caveat in the header's doc comment; not a default-path issue.
 
@@ -346,16 +385,20 @@ row costs today.
 
 ---
 
-## 7. Open decisions (for the maintainer)
+## 7. Decisions (maintainer, 2026-09-06)
 
-1. Default off (strict no-op, recommended for the first release) or on with
-   `coarsen_above` of a few thousand after S6.
-2. The full-window re-score of the finalists (recommended; two basis
-   evaluations per coarsened row).
-3. Grading in the window frame (recommended, §1) or Euclidean regardless of
-   the cap.
-4. Whether `coarsen_window` is public API (bound, documented) or `detail/`.
-   Public is recommended for the prototype comparison alone.
+1. **Default off.** `coarsen_above = 0`; a strict no-op until S6 says
+   otherwise.
+2. **Full-window re-score of the finalists**, and the guard is taken on the
+   full-window scores. It is also the extrapolation-safety check of §4.7.
+3. **Grading in the window frame** (§1); Euclidean falls out for ball windows.
+4. **`coarsen_window` is public API**: bound, documented, in the umbrella
+   header, with protected positions as the generalization of the spike
+   (§4.8).
+
+Also settled in discussion: the released-centre resolution rule (§4.7) ships
+with the coarsening rather than later, and the S2 tests include the needle
+construction.
 
 ## 8. Explicitly out of scope
 
