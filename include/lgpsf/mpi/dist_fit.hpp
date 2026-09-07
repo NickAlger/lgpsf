@@ -92,6 +92,11 @@ struct DistFitResult
     std::vector<int>            own_to_comb; ///< (nloc) owned col -> combined idx
     long                        window_candidates = 0; ///< sum of window sizes
     long                        fit_points_total = 0;  ///< sum of FitDiagnostics::fit_points: what the fits ran on
+    long                        evaluations_total = 0; ///< sum of FitDiagnostics::evaluations
+    double                      work_total = 0.0;      ///< sum of FitDiagnostics::work
+    double                      work_max_row = 0.0;    ///< max over rows of FitDiagnostics::work
+    double                      seconds_total = 0.0;   ///< sum of FitDiagnostics::row_seconds (telemetry, not deterministic)
+    double                      seconds_max_row = 0.0; ///< max over rows of FitDiagnostics::row_seconds (telemetry)
 };
 
 /// The SPMD fit.  `windows` must be the object handed to `halo_plan`
@@ -195,6 +200,14 @@ inline DistFitResult dist_fit( const HaloPlan& plan,
             static_cast<long>(out.fit.model.row_window(r).size());
         out.fit_points_total +=
             static_cast<long>(out.fit.diagnostics.fit_points(r));
+        out.evaluations_total +=
+            static_cast<long>(out.fit.diagnostics.evaluations(r));
+        out.work_total += out.fit.diagnostics.work(r);
+        out.work_max_row = std::max(out.work_max_row,
+                                    out.fit.diagnostics.work(r));
+        out.seconds_total += out.fit.diagnostics.row_seconds(r);
+        out.seconds_max_row = std::max(out.seconds_max_row,
+                                       out.fit.diagnostics.row_seconds(r));
     }
 
     // ---- assemble the UNsymmetrized local block ------------------------

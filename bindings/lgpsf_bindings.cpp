@@ -534,6 +534,11 @@ PYBIND11_MODULE(lgpsf, m)
         .def_readonly("num_iterations", &VarProResult::num_iterations)
         .def_readonly("num_residual_evaluations",
                       &VarProResult::num_residual_evaluations)
+        .def_readonly("num_basis_evaluations",
+                      &VarProResult::num_basis_evaluations,
+                      "O(K) passes through the basis: one per basis(theta) "
+                      "call (including the entry check) plus one per "
+                      "derivative sweep. Deterministic.")
         .def_readonly("message", &VarProResult::message);
 
     py::class_<WhitenedBasis>(m, "WhitenedBasis",
@@ -863,6 +868,9 @@ PYBIND11_MODULE(lgpsf, m)
         .def_readonly("axes", &CandidateFit::axes)
         .def_readonly("success", &CandidateFit::success)
         .def_readonly("num_iterations", &CandidateFit::num_iterations)
+        .def_readonly("evaluations", &CandidateFit::evaluations,
+                      "Basis evaluations the nonlinear solve spent on this "
+                      "candidate; 0 if no solve ran.")
         .def_readonly("admissible", &CandidateFit::admissible)
         .def_property_readonly("num_modes", &CandidateFit::num_modes);
 
@@ -873,6 +881,10 @@ PYBIND11_MODULE(lgpsf, m)
         .def_readonly("score", &ProbeFitResult::score)
         .def_readonly("stop_reason", &ProbeFitResult::stop_reason)
         .def_readonly("winner", &ProbeFitResult::winner)
+        .def_readonly("evaluations_total", &ProbeFitResult::evaluations_total,
+                      "Sum of CandidateFit.evaluations over the candidates.")
+        .def_readonly("candidates_tried", &ProbeFitResult::candidates_tried,
+                      "len(candidates), for convenience.")
         .def_readonly("candidates", &ProbeFitResult::candidates)
         .def_readonly("skipped", &ProbeFitResult::skipped);
 
@@ -1038,6 +1050,23 @@ PYBIND11_MODULE(lgpsf, m)
                       "(R,) int: how many quadrature points each row's fit ran "
                       "on -- the window size, or the coarse cell count when "
                       "coarsen_above triggered; 0 for gated and failed rows.")
+        .def_readonly("evaluations", &FitDiagnostics::evaluations,
+                      "(R,) int: basis evaluations each row's search spent, "
+                      "summed over its candidates; 0 where the search did "
+                      "not run.")
+        .def_readonly("candidates", &FitDiagnostics::candidates,
+                      "(R,) int: candidates each row's search tried; 0 "
+                      "where it did not run.")
+        .def_readonly("work", &FitDiagnostics::work,
+                      "(R,) float: fit_points * evaluations * modes (the "
+                      "largest mode set tried) -- a dimensionless proxy for "
+                      "the row's fit cost. Deterministic. 0 where the "
+                      "search did not run.")
+        .def_readonly("row_seconds", &FitDiagnostics::row_seconds,
+                      "(R,) float: TELEMETRY, NOT DETERMINISTIC -- wall-"
+                      "clock seconds of each row's fit block (window gather "
+                      "to guard). Read by no decision; not bit-identical "
+                      "across runs or thread counts. 0 for gated rows.")
         .def_property_readonly("status",
                                []( const FitDiagnostics& d )
                                { return codes_of(d.status); },

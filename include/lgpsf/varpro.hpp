@@ -112,6 +112,13 @@ struct VarProResult
     LMStatus status = LMStatus::MaxEvaluations;
     int num_iterations = 0;
     int num_residual_evaluations = 0;
+    /// How many O(K) passes through the basis the fit made: one per
+    /// `basis(theta)` call -- the values at a new trial point, including the
+    /// entry check at `theta_hat_init` -- plus one per derivative sweep (the
+    /// Kaufman reverse sweep, or `jac()` for Golub-Pereyra). The linear
+    /// solves are O(k) and are not counted. A deterministic integer -- the
+    /// cost meter of a row's fit, `K * num_basis_evaluations * num_modes`.
+    int num_basis_evaluations = 0;
     std::string message;
 
     /// (k, P) reduced-residual Jacobian at the returned point -- a diagnostic
@@ -424,6 +431,7 @@ public:
         try
         {
             evaluation_.reset();
+            ++num_basis_evaluations_;
             evaluation_.emplace(basis_(theta_hat));
             A_tilde = project_out(Q_B_, Eigen::MatrixXd(z_hat_.transpose()
                                                         * evaluation_->values()));
@@ -488,6 +496,7 @@ public:
         // Kaufman, in one reverse sweep: cotangent w_hat[j, i] = c_i.
         const Eigen::MatrixXd cotangent =
             Eigen::VectorXd::Ones(z_hat_.rows()) * solution.c.transpose();
+        ++num_basis_evaluations_;
         const Eigen::MatrixXd G = evaluation_->vjp(cotangent);   // (K, P)
         const Eigen::MatrixXd columns = z_hat_.transpose() * G;  // (k, P)
         Eigen::MatrixXd J =
@@ -497,6 +506,7 @@ public:
         {
             if constexpr ( has_jacobian<Evaluation>::value )
             {
+                ++num_basis_evaluations_;
                 const auto& dPhi = evaluation_->jac();
                 for ( std::size_t q = 0; q < dPhi.size(); ++q )
                 {
@@ -526,6 +536,10 @@ public:
 
     Evaluation* evaluation() { return evaluation_ ? &*evaluation_ : nullptr; }
 
+    /// Basis calls and derivative sweeps so far; see
+    /// `VarProResult::num_basis_evaluations`.
+    int num_basis_evaluations() const { return num_basis_evaluations_; }
+
 private:
     Eigen::MatrixXd z_hat_;  ///< (K, k)
     Eigen::VectorXd y_hat_;  ///< (k,)
@@ -543,6 +557,7 @@ private:
     bool have_cache_ = false;
     InnerFactors cached_factors_ = InnerFactors::Full;
     Eigen::Index num_modes_ = 0;
+    int num_basis_evaluations_ = 0;
 };
 
 } // end namespace detail
@@ -724,6 +739,9 @@ VarProResult fit_varpro(
     result.status = lm.status;
     result.num_iterations = lm.num_iterations;
     result.num_residual_evaluations = lm.num_residual_evaluations;
+    // +1 for the entry check above, which evaluates the basis outside the
+    // reduced problem's cache.
+    result.num_basis_evaluations = 1 + reduced.num_basis_evaluations();
     result.message = lm.message;
     result.jacobian = lm.jacobian;
     return result;

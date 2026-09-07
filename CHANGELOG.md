@@ -68,6 +68,19 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The per-row work instrument.** For designing a load-balancing scheme from
+  measurements: `VarProResult::num_basis_evaluations` counts the O(K) passes
+  through the basis (one per `basis(theta)` call including the entry check,
+  one per derivative sweep); `CandidateFit::evaluations` and
+  `ProbeFitResult::evaluations_total` / `candidates_tried` carry it up;
+  `FitDiagnostics` gains per-row `evaluations`, `candidates`,
+  `work` (= `fit_points * evaluations * modes`, the largest mode set tried — a
+  dimensionless cost proxy) and `row_seconds` (wall-clock seconds of the
+  row's fit block — TELEMETRY, not deterministic, read by no decision and
+  excluded from the bit-identity tests); `mpi::DistFitResult` gains
+  `evaluations_total`, `work_total`, `work_max_row`, `seconds_total`,
+  `seconds_max_row`. All exposed in the bindings. Every counter but
+  `row_seconds` is bit-identical across thread counts.
 - **`lgpsf.corrections`**: the operator boundary of the new corrections
   layer — `SymmetricOp` (a symmetric operator as dimension + block matvec,
   type-erased), `HrOracle` (apply the regularization operator and solve

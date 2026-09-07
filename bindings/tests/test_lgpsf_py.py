@@ -519,6 +519,26 @@ def test_the_audit_trail_comes_back():
                if cand.admissible)
 
 
+def test_the_search_reports_the_basis_evaluations_it_spent():
+    target = synthetic_target()
+    result = lgpsf.fit_from_probes(
+        target["x"], target["m2_diag"], target["z"], target["y"], target["mu0"],
+        spike_index=target["spike_index"], config=fixed_config(target),
+        target_mass=target["mass"])
+    assert result.candidates_tried == len(result.candidates)
+    per_candidate = [cand.evaluations for cand in result.candidates]
+    assert result.evaluations_total == sum(per_candidate) > 0
+    assert all(n == 0 or n >= 3 for n in per_candidate)
+    assert result.candidates[result.winner].evaluations > 0
+
+    again = lgpsf.fit_from_probes(
+        target["x"], target["m2_diag"], target["z"], target["y"], target["mu0"],
+        spike_index=target["spike_index"], config=fixed_config(target),
+        target_mass=target["mass"])
+    assert again.evaluations_total == result.evaluations_total
+    assert [c.evaluations for c in again.candidates] == per_candidate
+
+
 def test_every_built_in_mode_policy_drives_a_fit():
     target = synthetic_target()
     for policy in (lgpsf.FixedSet(target["modes"]),
@@ -1071,9 +1091,30 @@ def test_fit_operator_with_coarsening_bounds_the_fit_and_keeps_the_window():
         both_nan = np.isnan(a) & np.isnan(b)
         assert np.array_equal(np.where(both_nan, 0.0, a),
                               np.where(both_nan, 0.0, b))
-    for name in ("score", "baseline_score", "fit_points", "status"):
+    for name in ("score", "baseline_score", "fit_points", "status",
+                 "evaluations", "candidates", "work"):
         np.testing.assert_array_equal(getattr(one.diagnostics, name),
                                       getattr(two.diagnostics, name))
+    # row_seconds is wall-clock telemetry: shaped and finite, never compared
+    assert one.diagnostics.row_seconds.shape == (op["count"],)
+    assert np.all(np.isfinite(one.diagnostics.row_seconds))
+    assert np.all(one.diagnostics.row_seconds >= 0.0)
+
+    # the work instrument: work = fit_points * evaluations * modes (a FixedSet
+    # policy, so the largest mode set tried is the only one), > 0 where the
+    # search ran and 0 where the row was gated
+    d = one.diagnostics
+    gated = d.status == int(lgpsf.RowStatus.GatedOut)
+    assert np.all(d.evaluations[gated] == 0)
+    assert np.all(d.candidates[gated] == 0)
+    assert np.all(d.work[gated] == 0.0)
+    assert np.all(d.row_seconds[gated] == 0.0)
+    ran = d.evaluations > 0
+    assert np.array_equal(ran, ~gated)
+    assert np.all(d.candidates[ran] > 0)
+    assert np.all(d.row_seconds[ran] > 0.0)
+    np.testing.assert_array_equal(
+        d.work[ran], d.fit_points[ran] * d.evaluations[ran] * len(op["modes"]))
 
     # the fit ran on fewer points than the window, and the DEPLOYED support
     # is the full window regardless: the CSR arrays are identical on and off

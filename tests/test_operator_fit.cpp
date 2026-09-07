@@ -260,6 +260,12 @@ TEST_CASE("results are bit-identical across thread counts")
     CHECK(same(a.model.s, b.model.s));
     CHECK(same(a.diagnostics.score, b.diagnostics.score));
     CHECK(same(a.diagnostics.baseline_score, b.diagnostics.baseline_score));
+    CHECK(a.diagnostics.fit_points == b.diagnostics.fit_points);
+    CHECK(a.diagnostics.evaluations == b.diagnostics.evaluations);
+    CHECK(a.diagnostics.candidates == b.diagnostics.candidates);
+    CHECK(same(a.diagnostics.work, b.diagnostics.work));
+    // diagnostics.row_seconds is wall-clock telemetry and is deliberately NOT
+    // compared: it is the one field that is allowed to differ.
     CHECK(a.model.mode_set_id == b.model.mode_set_id);
     CHECK(a.model.window_indptr == b.model.window_indptr);
     CHECK(a.model.window_indices == b.model.window_indices);
@@ -1229,6 +1235,10 @@ TEST_CASE("coarsened fits are bit-identical across thread counts")
         CHECK(same(a.diagnostics.score, b.diagnostics.score));
         CHECK(same(a.diagnostics.baseline_score, b.diagnostics.baseline_score));
         CHECK(a.diagnostics.fit_points == b.diagnostics.fit_points);
+        CHECK(a.diagnostics.evaluations == b.diagnostics.evaluations);
+        CHECK(a.diagnostics.candidates == b.diagnostics.candidates);
+        CHECK(same(a.diagnostics.work, b.diagnostics.work));
+        // row_seconds: wall-clock telemetry, deliberately not compared
         CHECK(a.model.mode_set_id == b.model.mode_set_id);
         CHECK(a.model.window_indptr == b.model.window_indptr);
         CHECK(a.model.window_indices == b.model.window_indices);
@@ -1244,6 +1254,62 @@ TEST_CASE("coarsened fits are bit-identical across thread counts")
             CHECK(a.diagnostics.stop_reason[k] == b.diagnostics.stop_reason[k]);
         }
     }
+}
+
+TEST_CASE("the work instrument: evaluations, candidates, work and seconds per row")
+{
+    // Per-row cost meters for a load-balancing study: what the search spent
+    // (basis evaluations, candidates), the deterministic proxy
+    // work = fit_points * evaluations * modes, and wall-clock seconds that
+    // are telemetry only. The first three are bit-identical across thread
+    // counts (checked in the thread tests); the seconds are not, and are
+    // only required to be finite and to agree with the row's status.
+    std::mt19937 gen(1);
+    const Synthetic op = make_operator(gen, 11, 30, 6);
+    const OperatorFit fit = run(op, config_for(op));
+    const lgpsf::FitDiagnostics& d = fit.diagnostics;
+    const Eigen::Index num_rows = fit.model.num_rows();
+
+    REQUIRE(d.evaluations.size() == num_rows);
+    REQUIRE(d.candidates.size() == num_rows);
+    REQUIRE(d.work.size() == num_rows);
+    REQUIRE(d.row_seconds.size() == num_rows);
+
+    // the policy is a FixedSet, so the largest mode set any candidate tried
+    // is the one mode set there is
+    const double modes = static_cast<double>(op.modes.size());
+    int searched = 0;
+    for ( Eigen::Index rho = 0; rho < num_rows; ++rho )
+    {
+        const std::size_t r = static_cast<std::size_t>(rho);
+        CHECK(std::isfinite(d.row_seconds(rho)));
+        CHECK(d.row_seconds(rho) >= 0.0);
+        if ( !op.gate[r] )
+        {
+            CHECK(d.evaluations(rho) == 0);
+            CHECK(d.candidates(rho) == 0);
+            CHECK(d.work(rho) == 0.0);
+            CHECK(d.row_seconds(rho) == 0.0);
+            continue;
+        }
+        REQUIRE(d.status[r] == RowStatus::Fit);
+        CHECK(d.evaluations(rho) > 0);
+        CHECK(d.candidates(rho) > 0);
+        CHECK(d.fit_points(rho) > 0);
+        CHECK(d.work(rho) > 0.0);
+        CHECK(d.work(rho)
+              == static_cast<double>(d.fit_points(rho))
+                     * static_cast<double>(d.evaluations(rho)) * modes);
+        CHECK(d.row_seconds(rho) > 0.0);
+        ++searched;
+    }
+    CHECK(searched == op.fitted_rows);
+    MESSAGE("work instrument: " << d.evaluations.cast<long>().sum()
+                                << " evaluations over "
+                                << d.candidates.cast<long>().sum()
+                                << " candidates on " << searched << " rows, work "
+                                << d.work.sum() << ", " << d.row_seconds.sum()
+                                << " s");
 }
 
 TEST_CASE("coarsening changes the fit's quadrature, not the deployed window")

@@ -344,6 +344,11 @@ struct CandidateFit
     Eigen::VectorXd axes;  ///< Fitted 1-sigma semi-axes.
     bool success = false;
     int num_iterations = 0;
+    /// Basis evaluations the nonlinear solve spent on this candidate
+    /// (`VarProResult::num_basis_evaluations`); 0 when its start point was
+    /// unusable and no solve ran. The one evaluation the CV score costs is
+    /// not included -- it is implied by the candidate's existence.
+    int evaluations = 0;
 
     /// False if the fit violates window containment -- impossible or runaway,
     /// by the conservativeness of the window.
@@ -364,6 +369,11 @@ struct ProbeFitResult
     double score = std::numeric_limits<double>::infinity();
     StopReason stop_reason = StopReason::Exhausted;
     int winner = -1;  ///< Index into `candidates`.
+
+    /// Sum of `CandidateFit::evaluations` over `candidates`: the basis
+    /// evaluations this whole search spent. Deterministic.
+    int evaluations_total = 0;
+    int candidates_tried = 0;  ///< = candidates.size(), for convenience.
 
     std::vector<CandidateFit> candidates;
     std::vector<std::string> skipped;  ///< Levels the counting rule rejected.
@@ -722,6 +732,7 @@ inline ProbeFitResult fit_from_probes(
         candidate.cost = fit.cost;
         candidate.success = fit.success;
         candidate.num_iterations = fit.num_iterations;
+        candidate.evaluations = fit.num_basis_evaluations;
         candidate.score =
             linear_cv_score(z_hat, y_hat, basis, fit.theta_hat, e_hat, split);
         candidate.axes = detail::axes_of(fit.theta_hat, center, mode);
@@ -1152,6 +1163,11 @@ inline ProbeFitResult fit_from_probes(
     result.score = champion.score;
     result.stop_reason = stop_reason;
     result.winner = winner;
+    result.candidates_tried = static_cast<int>(candidates.size());
+    for ( const CandidateFit& candidate : candidates )
+    {
+        result.evaluations_total += candidate.evaluations;
+    }
     result.candidates = std::move(candidates);
     result.skipped = std::move(skipped);
     return result;

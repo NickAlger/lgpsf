@@ -122,6 +122,7 @@
 /// Intermediate caps remain untried, and this was one operator.
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -283,6 +284,30 @@ struct FitDiagnostics
     /// from this and nowhere else.
     Eigen::VectorXi fit_points;
 
+    /// (R_all,) basis evaluations the row's search spent, summed over its
+    /// candidates (`ProbeFitResult::evaluations_total`); 0 where the search
+    /// did not run (gated, failed, or no mode set was searchable).
+    Eigen::VectorXi evaluations;
+    /// (R_all,) candidates the row's search tried; 0 where it did not run.
+    Eigen::VectorXi candidates;
+    /// (R_all,) a dimensionless proxy for the row's fit cost:
+    ///
+    ///     work = fit_points * evaluations * modes,
+    ///
+    /// with `modes` the size of the largest mode set the search tried. Every
+    /// basis evaluation is O(fit_points * modes), and the evaluations are
+    /// where a row's time goes; the per-row floor (window gather, whitening,
+    /// the baseline's CV score) is not in it. Deterministic, like its
+    /// factors. 0 where the search did not run.
+    Eigen::VectorXd work;
+    /// (R_all,) TELEMETRY, NOT DETERMINISTIC: wall-clock seconds of the row's
+    /// fit block inside the parallel loop -- from the window gather to the
+    /// guard, `std::chrono::steady_clock` -- for the load-balance study.
+    /// It varies run to run and across thread counts, it is read by no
+    /// decision and no output, and the bit-identity tests exclude it. 0 for
+    /// gated rows; a failed row records the time it spent before failing.
+    Eigen::VectorXd row_seconds;
+
     OperatorFitConfig config;  ///< Provenance echo.
 };
 
@@ -332,6 +357,10 @@ struct RowOutcome
     double baseline_score = std::numeric_limits<double>::quiet_NaN();
     bool released = false;
     int fit_points = 0;
+    int evaluations = 0;
+    int candidates = 0;
+    int max_modes = 0;      ///< largest mode set the search tried
+    double row_seconds = 0.0;
     std::string failure;
 };
 
@@ -623,6 +652,9 @@ inline OperatorFit fit_operator(
                 {
                     continue;  // gated out, or its window could not be formed
                 }
+                // Telemetry only (FitDiagnostics::row_seconds): nothing below
+                // reads the clock.
+                const auto row_start = std::chrono::steady_clock::now();
                 try
                 {
                     const Eigen::VectorXd center = centers.row(rho).transpose();
@@ -812,6 +844,17 @@ inline OperatorFit fit_operator(
                             x_fit, m2_fit, z_fit, y, center, spike_fit,
                             fit_config, {prior}, target_mass);
                     }
+                    if ( searched )
+                    {
+                        outcome.evaluations = searched->evaluations_total;
+                        outcome.candidates = searched->candidates_tried;
+                        for ( const CandidateFit& candidate : searched->candidates )
+                        {
+                            outcome.max_modes = std::max(
+                                outcome.max_modes,
+                                static_cast<int>(candidate.num_modes()));
+                        }
+                    }
 
                     // --- full-window re-score of the finalists --------------
                     //
@@ -925,7 +968,13 @@ inline OperatorFit fit_operator(
                     outcome.failure = error.what();
                     outcome.window.clear();
                     outcome.fit_points = 0;
+                    outcome.evaluations = 0;
+                    outcome.candidates = 0;
+                    outcome.max_modes = 0;
                 }
+                outcome.row_seconds =
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - row_start).count();
             }
         },
         config.num_threads);
@@ -963,6 +1012,10 @@ inline OperatorFit fit_operator(
     diagnostics.baseline_score = Eigen::VectorXd::Constant(
         num_rows, std::numeric_limits<double>::quiet_NaN());
     diagnostics.fit_points = Eigen::VectorXi::Zero(num_rows);
+    diagnostics.evaluations = Eigen::VectorXi::Zero(num_rows);
+    diagnostics.candidates = Eigen::VectorXi::Zero(num_rows);
+    diagnostics.work = Eigen::VectorXd::Zero(num_rows);
+    diagnostics.row_seconds = Eigen::VectorXd::Zero(num_rows);
     fit.mode_set_id.assign(static_cast<std::size_t>(num_rows), -1);
     diagnostics.stop_reason.assign(static_cast<std::size_t>(num_rows), RowStop::None);
     diagnostics.released.assign(static_cast<std::size_t>(num_rows), 0);
@@ -979,6 +1032,12 @@ inline OperatorFit fit_operator(
         diagnostics.released[static_cast<std::size_t>(rho)] = outcome.released ? 1 : 0;
         diagnostics.baseline_score(rho) = outcome.baseline_score;
         diagnostics.fit_points(rho) = outcome.fit_points;
+        diagnostics.evaluations(rho) = outcome.evaluations;
+        diagnostics.candidates(rho) = outcome.candidates;
+        diagnostics.work(rho) = static_cast<double>(outcome.fit_points)
+                                * static_cast<double>(outcome.evaluations)
+                                * static_cast<double>(outcome.max_modes);
+        diagnostics.row_seconds(rho) = outcome.row_seconds;
 
         fit.window_indptr[static_cast<std::size_t>(rho) + 1] =
             fit.window_indptr[static_cast<std::size_t>(rho)]

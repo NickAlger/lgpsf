@@ -516,6 +516,50 @@ TEST_CASE("the fit is a pure function of its inputs")
     }
 }
 
+TEST_CASE("the search reports the basis evaluations it spent, deterministically")
+{
+    // The work instrument: every candidate that ran a solve carries its
+    // basis-evaluation count, the result carries the sum, and -- being a
+    // plain integer incremented in the solver loop -- the count is a pure
+    // function of the inputs like everything else.
+    std::mt19937 gen(9);
+    const Target target = make_target(gen);
+    ProbeFitConfig config =
+        basic_config(std::make_shared<ShellLadder>(std::vector<int>{0, 2}));
+
+    const ProbeFitResult first =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, config, {}, target.mass);
+    const ProbeFitResult second =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, config, {}, target.mass);
+
+    REQUIRE(!first.candidates.empty());
+    CHECK(first.candidates_tried == static_cast<int>(first.candidates.size()));
+    int sum = 0;
+    for ( const CandidateFit& candidate : first.candidates )
+    {
+        // a solve that ran evaluates the basis at least three times: the
+        // entry check, the start point, and the first Jacobian sweep
+        CHECK((candidate.evaluations == 0 || candidate.evaluations >= 3));
+        sum += candidate.evaluations;
+    }
+    CHECK(first.evaluations_total == sum);
+    CHECK(first.evaluations_total > 0);
+    CHECK(first.candidates[static_cast<std::size_t>(first.winner)].evaluations > 0);
+    MESSAGE("evaluations: " << first.evaluations_total << " over "
+                            << first.candidates_tried << " candidates");
+
+    // purity
+    CHECK(first.evaluations_total == second.evaluations_total);
+    CHECK(first.candidates_tried == second.candidates_tried);
+    REQUIRE(first.candidates.size() == second.candidates.size());
+    for ( std::size_t i = 0; i < first.candidates.size(); ++i )
+    {
+        CHECK(first.candidates[i].evaluations == second.candidates[i].evaluations);
+    }
+}
+
 TEST_CASE("supplying a different split changes the score, deterministically")
 {
     std::mt19937 gen(10);
