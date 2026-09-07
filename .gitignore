@@ -111,3 +111,4 @@ examples/*.png
 
 # Heat-pipeline fit cache: regenerable, machine-local
 docs/heat-pipeline/cache/
+tests/mpi/test_dist_fit_mpi
