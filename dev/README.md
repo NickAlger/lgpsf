@@ -7,6 +7,7 @@ rationale, and the record of threads that have closed. None of it is needed to
 | | |
 |---|---|
 | [`HANDOFF.md`](HANDOFF.md) | Where things stand, what is in flight, what is owed, what is parked. Start here. |
+| [`window-coarsening-plan.md`](window-coarsening-plan.md) | Plan (2026-09-06, not yet implemented): a per-row work bound for the operator fit by graded window coarsening. |
 | [`archive/`](archive/) | Closed threads: completed plans, session records, superseded decisions. Kept for provenance; not current. |
 
 Two neighbours are easy to confuse with this directory:
