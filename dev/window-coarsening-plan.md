@@ -398,7 +398,7 @@ the config fields round-trip, the diagnostics field is exposed,
 at `-n 1/2/4` (it is manual; see its header for the build line). This is the
 rank-independence claim of §2, item 3, made concrete.
 
-**S6 — field validation, then the default.** On the maintainer's problems,
+**S6 — field validation, then the default. Sub-mesh part DONE 2026-09-07** through the consuming driver at 4 ranks: at eps 0.1 the windows (324 points per row) sit in the singleton core, 2% of points merge, operator and solve identical; at eps 0.3, 22% merge, the fitted ellipsoids stay within 0.009 decades (p95) of the uncoarsened fit, the same fallback count, the same solve, no failures. The continental run (windows of 1e4 to 7e4 points on the rows that cost one rank 2015 s; the fitted kernels there are 30-75 km wide, so the rows are legitimately expensive) is queued with the trigger at 3,000; the default stays off until it reports. Original brief: On the maintainer's problems,
 with the same probes: (a) the sub-mesh, where windows are small and the
 result must be unchanged in operator quality (the held-out QC map and the
 fitted ellipsoids, both readable today) with a mild change in wall time;
