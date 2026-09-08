@@ -1430,7 +1430,7 @@ TEST_CASE("the coarsening knobs are validated eagerly, and default to off")
 {
     std::mt19937 gen(7);
     const Synthetic op = make_operator(gen, 6, 20, 2);
-    CHECK(config_for(op).coarsen_above == 0);
+    CHECK(config_for(op).coarsen_above == 3000);
     CHECK(config_for(op).coarsen_eps == 0.1);
     CHECK(lgpsf::ProbeFitConfig().resolution_eps == 0.0);
 

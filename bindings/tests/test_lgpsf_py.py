@@ -953,7 +953,7 @@ def test_coarsening_config_fields_round_trip_and_default_to_off():
     assert row.resolution_eps == 0.25
 
     config = lgpsf.OperatorFitConfig()
-    assert config.coarsen_above == 0             # a strict no-op by default
+    assert config.coarsen_above == 3000          # on by default since 2026-09-08
     assert config.coarsen_eps == 0.1
     config.coarsen_above = 3000
     config.coarsen_eps = 0.15

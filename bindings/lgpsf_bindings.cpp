@@ -966,7 +966,7 @@ PYBIND11_MODULE(lgpsf, m)
                        "Moves the window's SHAPE, never its scale.")
         .def_readwrite("coarsen_above", &OperatorFitConfig::coarsen_above,
                        "Coarsen the FIT's quadrature on any window with more "
-                       "points than this; 0 (the default) never coarsens. The "
+                       "points than this; 3000 by default, 0 never coarsens. The "
                        "deployed support is the full window regardless, and "
                        "score / baseline_score are re-evaluated on it. See "
                        "coarsen_window.")

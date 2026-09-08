@@ -8,6 +8,18 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`OperatorFitConfig::coarsen_above` now defaults to `3000` (was `0`, off).**
+  The graded window coarsening is on by default: a row whose fit window holds
+  more than 3,000 points is fitted on graded cells instead of the raw window,
+  while the deployed support stays the full window and both scores are
+  re-evaluated on it. **Fits are not bitwise identical to earlier releases on
+  rows above the trigger**; set `coarsen_above = 0` to restore the old path
+  byte for byte. Field validation on a continental ice-sheet Hessian at 192
+  ranks took the worst rank's fit from 2,015 s to 588 s at the same prior, with
+  the operator, the QC ladder and the deployed solve unchanged; below about
+  2,000 points the singleton core near the row leaves nothing to merge, so a
+  smaller trigger only adds bookkeeping.
+
 - **Initial guesses are passed as data, not selected by flags.** Where to seed
   a nonlinear search is problem-specific, so `fit_from_probes` now takes a
   `guesses` collection of `InitialGuess{sigma, mu?, label}` instead of choosing

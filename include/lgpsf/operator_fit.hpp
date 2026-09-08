@@ -39,8 +39,8 @@
 /// restricts a row to its FIT WINDOW, stored here as CSR-style index arrays:
 /// the deployed support is the fit window, which is what makes the per-row
 /// scores honest for deployment. The fit's QUADRATURE on that window may be
-/// coarsened (`coarsen_above`, off by default): cells graded so that their
-/// error is controlled for every kernel width at once, singletons near the
+/// coarsened (`coarsen_above`, ON by default at 3,000 points): cells graded so
+/// that their error is controlled for every kernel width at once, singletons near the
 /// centre, the deployed support untouched (coarsen_window.hpp) -- and the
 /// reported scores are then re-evaluated on the full window, so the baseline
 /// guard and the diagnostics still speak about the deployed object.
@@ -202,7 +202,7 @@ struct OperatorFitConfig
     double window_aspect_cap = std::numeric_limits<double>::infinity();
 
     /// Coarsen the FIT's quadrature on any window with more points than this;
-    /// 0 (the default) never coarsens. A per-row work bound that needs no
+    /// 3,000 by default; 0 never coarsens. A per-row work bound that needs no
     /// estimate of the kernel's width: for the fit only, the window is
     /// replaced by graded cells of size at most `coarsen_eps` times their
     /// distance from the row's centre (in the window ellipsoid's own
@@ -217,7 +217,15 @@ struct OperatorFitConfig
     /// (today: the spike) would exceed this trigger is left uncoarsened
     /// rather than refused; `FitDiagnostics::fit_points` says what each
     /// row's fit actually ran on. See coarsen_window.hpp.
-    int coarsen_above = 0;
+    ///
+    /// DEFAULT CHANGED 2026-09-08, 0 -> 3000: fits are no longer bitwise
+    /// identical to 0.2.x on rows whose window exceeds the trigger.  Field
+    /// validation on a continental ice-sheet Hessian took the worst rank's
+    /// fit from 2,015 s to 588 s at the same prior with the operator, the
+    /// QC ladder and the deployed solve unchanged; below ~2,000 points the
+    /// singleton core near the centre leaves nothing to merge, so a smaller
+    /// trigger only adds bookkeeping.  Set 0 to restore the old behaviour.
+    int coarsen_above = 3000;
 
     /// Grading ratio of the coarsened quadrature: cell size over distance
     /// from the centre. A mode of radial degree p and angular order ell has

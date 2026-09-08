@@ -317,16 +317,21 @@ window array is merged in ascending global id and is therefore independent
 of the rank layout; a pure function of that array in that order is
 rank-independent too, and the MPI gate with coarsening on passes bitwise at
 1, 2 and 4 ranks ($564$ of $600$ rows coarsened, $20{,}305$ window points
-fitted on $13{,}046$ cells). The default path, \code{coarsen\_above = 0}, is
-byte-identical to before.
+fitted on $13{,}046$ cells). Setting \code{coarsen\_above = 0} restores the
+pre-coarsening path byte-identically.
 
 \section{Using it}
 
 Two knobs on \code{OperatorFitConfig} and one diagnostic:
 \begin{itemize}
-\item \code{coarsen\_above} (default $0$, off): windows with more points
-  than this are coarsened. When on, a few thousand -- below about $2{,}000$
-  points the grading is the identity and buys nothing.
+\item \code{coarsen\_above} (default $3{,}000$; $0$ switches it off):
+  windows with more points than this are coarsened. A few thousand is the
+  useful range -- below about $2{,}000$ points the grading is the identity and
+  buys nothing. On by default since 2026-09-08, after field validation on a
+  continental ice-sheet Hessian took the worst rank's fit from $2{,}015$\,s to
+  $588$\,s at the same prior, with the operator, the QC ladder and the
+  deployed solve unchanged. Fits on rows above the trigger are therefore not
+  bitwise identical to releases before that date.
 \item \code{coarsen\_eps} (default $0.1$): the grading ratio of
   \eqref{eq:grading}; \eqref{eq:resolution} at the ladder's top level of 5.
 \item \code{FitDiagnostics::fit\_points}: per row, what the fit ran on --
