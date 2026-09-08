@@ -18,7 +18,10 @@ and assembles. The halo is untouched, the deployed operator is untouched, and
 `dist_fit`'s input and output contract is unchanged, so the redistribution is
 invisible above this library. Rows to move and where they go come from one
 water-filling rule with a single knob, an imbalance tolerance, which
-degenerates to no migration when the problem is already balanced.
+degenerates to no migration when the problem is already balanced. How big the
+win is turns almost entirely on how much of a row's time stays with its owner
+(the re-score and the assembly), which is today an estimate rather than a
+measurement: see slice 0.
 
 ---
 
@@ -27,35 +30,56 @@ degenerates to no migration when the problem is already balanced.
 From one build's fit dump on the continental problem, 409,545 rows over 192
 ranks, last rung (30 probes), with the per-row `row_seconds` telemetry
 (`operator_fit.hpp:303-309`) as ground truth. The table is the per-rank
-max/mean of *actual* fit seconds after keeping every row on its owner except
-the listed fraction, which is placed longest-first onto the least-loaded rank.
+max/mean of *actual* fit seconds under the water-filling rule of section 4
+(an earlier version of this table simulated a different algorithm -- "move the
+top X% globally" -- and charged the whole of a row's time to the move; both
+were wrong).
 
-| rows moved | local proxy | previous rung's work | oracle (true seconds) |
-|---|---|---|---|
-| none (today) | 22.2 | 22.2 | 22.2 |
-| top 1% | 4.5 | 3.8 | 3.0 |
-| top 2% | 3.0 | 2.4 | 1.9 |
-| top 5% | 2.0 | 1.3 | 1.3 |
-| top 10% | 1.0 | 1.0 | 1.0 |
+| resident share `r` | rows moved | resulting max/mean |
+|---|---|---|
+| 0 (nothing stays home) | 13,490 | 1.9 |
+| 0.10 | 13,490 | 4.0 |
+| 0.15 | 13,490 | 5.0 |
+| 0.25 | 13,490 | 7.0 |
+| 0.40 | 13,490 | 10.1 |
+
+Weights are `fit_points x` the previous rung's `evaluations`, tolerance 0.1,
+and `r` is the share of a migrated row's seconds that stays with its owner
+because phases A and C do not move (section 2). With `fit_points` alone the
+rule moves more rows (17,150) and lands at 4.1 at `r = 0.15`.
+
+**The result is about `1 + 22 r`, so the entire payoff is the residual.** Once
+the search is balanced, what is left sits on the same ranks that were
+overloaded, and it alone sets the makespan. The structural estimate is
+`r ~ 0.12` (the full-window re-score is about 9% of a wide row's fit, assembly
+about 3%), which puts the outcome near 4 and a full-Hessian rebuild at roughly
+1,600 s instead of 3,554. But `r` is an ESTIMATE, and it is worse for exactly
+the rows that move: phases A and C scale with the full window while phase B
+scales with the coarse cells, so a heavily coarsened row has a larger `r` than
+the average. **Measuring `r` is slice 0 and gates everything else** -- the
+payoff swings between twelvefold and twofold across the range above.
 
 Three facts drive the design.
 
 1. **The tail is thin.** The top 1% of rows hold 21% of the fit points, the
-   top 2% hold 32%, the top 5% hold 49%. Moving a couple of percent of the
-   rows moves a third of the work.
-2. **Nothing needs history to start.** A purely local proxy, the window
-   ellipsoid's area times the local node density from a nearest-neighbour
-   query, predicts the true coarse point count with log-correlation 0.96 and
-   balances nearly as well as the count itself. Both inputs are available
-   before anything expensive happens, so the first rung of the first build is
-   balanced too.
-3. **History is better when it exists.** `fit_points x evaluations` from the
-   *previous rung* correlates 0.94 in log with row seconds, against 0.62 for
-   points alone. Because `dist_fit` is called once per rung
-   (`fit_impl.hpp`, the ladder loop) and the halo is not rebuilt for this
-   scheme, the assignment can be recomputed at every rung from the previous
-   rung's exact measurements. Rung 1 uses the proxy or a caller hint; rungs 2
-   and up use measurements.
+   top 2% hold 32%, the top 5% hold 49%. A few percent of the rows carry a
+   third of the work.
+2. **No predictor is needed for the points.** `outcome.fit_points` is the
+   exact coarse cell count and is set at `operator_fit.hpp:763`, at the end of
+   phase A, before anything expensive runs -- and phase A must run on the
+   owner anyway before a package can exist. So the assignment is computed
+   AFTER phase A from exact counts. (A design that assigned before phase A
+   would need a predictor: the window size, known right after the dual-tree
+   descent, or a local proxy from the window ellipsoid's area and the node
+   density, which tracks the coarse count at log-correlation 0.96. Neither is
+   necessary, and both were dropped.) Note also that the cell structure
+   depends only on geometry and `coarsen_eps`, so `fit_points` is IDENTICAL
+   across the rungs of one build: after rung 1 it is known exactly for free.
+3. **History supplies the other half.** Points alone correlate 0.62 in log
+   with row seconds; `fit_points x evaluations` correlates 0.94. `dist_fit` is
+   called once per rung and the halo is not rebuilt for this scheme, so the
+   assignment is recomputed at every rung from the previous rung's exact
+   evaluation counts. Rung 1 has points only; rungs 2 and up have both.
 
 For scale: on that problem the fit is 976 s of a 1938 s Gauss-Newton build and
 2504 s of a 3554 s full-Hessian build, so this is the dominant cost of a
@@ -100,16 +124,26 @@ questions have one answer.
   rank holds exactly its own rows (`mpi/dist_wsym.hpp:70`, and in the
   consumer the QC residual and the CSR row counts) keep working untouched,
   because the rank does still hold exactly its own rows.
-- The migration payload is the coarse cells, not the window. At the last rung
-  the moved 2% is about 1.9e7 cells; at 3 + 30 doubles per cell that is about
-  5 GB across the whole job, 26 MB per rank.
+- The migration payload is the coarse cells, not the window -- PROVIDED the
+  row was coarsened. `coarsen_above` defaults to 3,000 as of 2026-09-08, so
+  this holds for the wide rows by default; but a row below the trigger has
+  `x_fit == x_window` (`:755-757`) and migrating it ships the raw window. The
+  byte cap in section 9 is what makes that safe rather than a footnote. At the
+  last rung the moved rows are about 1.9e7 cells; at 3 + 30 doubles per cell
+  that is about 5 GB across the whole job. Note that is 26 MB per rank ON
+  AVERAGE and the senders are few by construction (see section 9).
 
 **The cost of the clean seam.** The re-score stays on the overloaded rank. For
 a wide row the search runs a few hundred evaluations over a few thousand
 cells while the re-score is two evaluations over the full window, so it is
-around 9% of the row's fit. That caps the achievable gain near tenfold rather
-than twentyfold: the busiest rank in the measurement above would land near 60
-s rather than near 22. Worth it for the isolation.
+around 9% of the row's fit; assembly adds about 3% more (it is one pass over a
+deployed support that is roughly 70% of the window, against the re-score's two
+passes plus a probe contraction). Section 1 shows that this residual, not the
+search, is what sets the achievable makespan. Worth it for the isolation -- and
+NOT optional: the re-score is the only thing that scores the finalists on
+points the fit never saw, so it is the honesty check on a coarsening the fit
+was optimized against. That is why the coarse score could be found to be
+optimistic above eps 0.15 at all.
 
 ## 3. Where the seams already are
 
@@ -134,8 +168,16 @@ was unfounded: the indices are already kept.)
 | 696-708 | gather `x_window`, `m2_window`, `z` from the combined columns; `y`, `target_mass` | A |
 | 716-757 | the coarsening decision and `coarsen_window`; `x_fit` / `m2_fit` / `z_fit` / `spike_fit`; `outcome.fit_points` | A |
 | 765-775 | `coarse_config` (the released-centre resolution rule) | A |
-| 777-843 | whitening, the pinned baseline at the prior, the mode-set ladder, `fit_from_probes` | **B** |
+| 777-857 | whitening, the pinned baseline at the prior, the mode-set ladder, `fit_from_probes`, and then `:847-857` reading `evaluations_total` / `candidates_tried` / `max_modes` off the result | **B** |
 | 859-980 | the full-window re-score of the finalists, the guard, selection into `outcome` | C |
+
+Phase B ends at `:857`, not at the `fit_from_probes` call: `:847-857` harvest
+the search's own counters, and those become `FitDiagnostics::evaluations`,
+`candidates` and `work` (`:1035-1039`), `DistFitResult`'s totals
+(`dist_fit.hpp:203-210`), the consumer's report and dump columns 28/29 -- and,
+circularly, section 4's preferred weight for the NEXT rung. They must cross
+back with the finalists. Nothing would catch it if they did not: the MPI gate
+compares dense row images, not diagnostics.
 
 The comment at `:717-726` already states the invariant the split relies on:
 "From here to the guard everything reads `x_fit` / `m2_fit` / `z_fit` /
@@ -144,14 +186,30 @@ Phase B is exactly the region that comment describes.
 
 **What crosses A to B** (all dense, small, trivially serializable): `x_fit`
 (fit_size, dim), `m2_fit` (fit_size), `z_fit` (fit_size, num_probes),
-`spike_fit`, `y` (num_probes), `target_mass`, `prior_L` (dim, dim), `center`
-(dim), and the one flag that makes `coarse_config` (whether the row was
-coarsened).
+`spike_fit`, `y` (num_probes), `target_mass`, `prior_L` (dim, dim),
+**`sigma` (dim, dim)**, `center` (dim), and the one flag that makes
+`coarse_config` (whether the row was coarsened).
 
-**What crosses B to A** for phase C: the finalists. Today those are the pinned
-baseline (`baseline_modes`, `theta_baseline`, `baseline_c`, `baseline_s`,
-`baseline_score`) and the searched fit returned by `fit_from_probes`
-(`:843`). A few dozen doubles plus a mode list.
+`sigma` is on that list for a reason that is easy to miss. `:841` sets
+`prior.sigma = covariance` -- the row's RAW a-priori covariance, bound at
+`:661-662` from the caller's `sigma[rho]`, not `prior_L` -- and that
+`InitialGuess` is the first seed of the LM stream (`probe_fit.hpp:631`,
+`theta_hat_from_sigma(guess.sigma)`). It is the only read of rank-local state
+left inside phase B. It LOOKS recoverable, because `theta_hat_from_sigma(S)`
+is defined as `theta_hat_from_cholesky(chol(S).matrixL())`
+(`init_dictionary.hpp:444-460`) and `prior_L` is exactly that factor
+(`:572-579`). It is not: rebuilding `sigma = L L^T` on the host and factoring
+it again does not return `L` bit for bit. Ship the `dim x dim` block; at
+`dim = 2` that is four doubles.
+
+**What crosses B to A** for phase C: the finalists, plus the counters. The
+pinned baseline (`baseline_modes` as an index into the globally identical
+`baseline_sets` at `:531-532`, `theta_baseline`, `baseline_c`, `baseline_s`,
+`baseline_score`), the searched fit from `fit_from_probes` (`:843`), and
+`evaluations_total`, `candidates_tried`, `max_modes`. Two shape notes: `c` has
+length `num_modes + num_extra`, so this is not a fixed-stride record; and a
+failed row carries a variable-length message (see section 9). `y_hat` is
+recomputable on D1 from `y` and `target_mass`, so it does not travel.
 
 ## 4. The assignment rule
 
@@ -171,18 +229,36 @@ Then:
 2. **Place it.** In decreasing `w`, put each moved row on the rank with the
    most remaining capacity below `T`.
 
+A moved row MAY be placed back on its own owner; the owner is an ordinary
+candidate host with an ordinary remaining capacity.
+
 Properties, all worth a unit test:
 
 - **No migration when balanced.** If every `L_r <= T` the set is empty and the
   scheme is a no-op, which is what a defaulted-on library feature must do.
-- **Feasibility.** `T` is at least the average, so total slack at or below the
-  waterline is at least the total overflow; greedy packing can only fail
-  through indivisibility, which the second term of `T` rules out.
-- **Bound.** The placement is longest-processing-time-first into the least
-  loaded, so it carries the standard Graham guarantee against the optimum of
-  the residual problem.
+- **Bound.** This is list scheduling onto machines with pre-existing loads, so
+  the honest guarantee is `makespan <= sum_i w_i / m + max_{moved} w_i`,
+  roughly a 2-approximation. It is NOT Graham's 4/3: that bound is for an
+  empty schedule.
 - **Determinism.** Ties broken by row global id; the rule is a pure function of
   the weight vector, the ownership map and `eps`.
+
+**`T` is a target, not a guarantee.** Step 1 sheds WHOLE rows until a rank is
+under `T`, so it sheds more than the overflow, and the remaining capacity can
+be unable to absorb what it shed. Counterexample: two ranks, rows
+`{0.9, 0.9, 0.9}` on A and `{0.1}` on B, `eps = 0.1`; then
+`T = max(1.1 x 1.4, 0.9) = 1.54`, A must shed two rows (1.8 of mass) and B can
+take only one of them. `max_i w_i <= T` does not rule this out. Do not write a
+feasibility test; write the bound above, and let the rule return its predicted
+makespan so the caller can see when the target was not reached.
+
+**The granularity floor.** `T >= max_i w_i` means the achievable balance is
+floored by the single most expensive row. At 192 ranks with `fit_points x
+evaluations` this is ALREADY binding: the target comes out at the largest row's
+weight rather than at the mean. As allocations grow the floor gets worse (the
+mean rank load falls, the largest row does not), so whole-row granularity is
+the eventual limit of this scheme, and getting past it means splitting a row's
+search across ranks -- out of scope here, noted in section 9.
 
 **The locality refinement.** A row worth moving is a wide row, and a wide row's
 window already spans several ranks' territories. Restrict the candidate hosts
@@ -191,13 +267,17 @@ territory bounding box meets the window ellipsoid's box) and pick the one with
 the most capacity among those. Makespan is primary, halo and locality are the
 tie-break. Defer to a later slice if it complicates the first one.
 
-**The weights.** In order of preference, whichever is available:
-`fit_points x evaluations` from the previous rung of the same build (exact,
-log-correlation 0.94 with seconds); a caller-supplied hint from the previous
-build; the local proxy (window area times local node density, log-correlation
-0.96 with the coarse point count). A misprediction costs wall time and
-nothing else: the fit of a row is a pure function of the package that travels
-with it, so correctness and bit-identity do not depend on the weights.
+**The weights.** The assignment is computed AFTER phase A, so
+`outcome.fit_points` is exact for every row (`operator_fit.hpp:763`). The
+weight is that count times the previous rung's `evaluations` for the same row
+where a previous rung exists, and the count alone on rung 1. No proxy, no
+caller-supplied hint, no state carried between builds. Anchor each rank's
+initial load on the previous rung's MEASURED per-rank seconds rather than on
+the sum of predicted weights, when a previous rung exists.
+
+A misprediction costs wall time. It does NOT cost correctness or bit-identity,
+because a row's fit is a pure function of the package that travels with it.
+It can, however, cost memory: see the byte cap in section 9.
 
 ## 5. The API
 
@@ -233,24 +313,39 @@ In `operator_fit.hpp`, the three phases become `detail` functions over two
 `detail` structs (`RowFitProblem`, `RowFitCandidates`). They do NOT enter the
 public surface: only `dist_fit`, in the same library, needs them.
 
-In `OperatorFitConfig`: one knob.
+The knob goes on `DistFitInput`, NOT on `OperatorFitConfig`: a serial user who
+set it there would get silence, since `fit_operator` has no ranks to balance
+over.
 
 ```cpp
     /// Fitting-only row redistribution: the imbalance tolerance of the
     /// water-filling rule (0 = disabled, the default; 0.1 is a sane value).
     /// Affects wall time only; the result is bitwise identical either way.
     double balance_tolerance = 0.0;
+
+    /// (nrows) the previous rung's per-row evaluation counts, or empty.
+    /// Purely a scheduling input; see section 4.
+    Eigen::VectorXd prev_evaluations;
 ```
 
-In `DistFitInput`: one optional field.
+`fitted_on_rank` goes on `DistFitResult` for the same reason, not on
+`FitDiagnostics`.
+
+**How the phases are exposed matters.** The naive reading of the split -- three
+passes back to back over all rows -- materializes every row's package at once,
+which on the busiest rank is gigabytes. Instead `fit_operator` takes an
+optional hook:
 
 ```cpp
-    /// (nrows) predicted per-row work from a previous build, or empty.  Only
-    /// ever a scheduling hint.
-    Eigen::VectorXd row_weight_hint;
+    /// Optional: solve these phase-B packages somehow (dist_fit supplies an
+    /// MPI implementation).  Absent, every row runs the fused A;B;C path
+    /// exactly as today, and no package is ever materialized.
+    std::function<void(std::vector<RowFitProblem>&,
+                       std::vector<RowFitCandidates>&)> solve_hook;
 ```
 
-In `FitDiagnostics`: one field, `fitted_on_rank`, for diagnosis.
+Local rows stay on the fused path, so only migrated rows pay the package and
+the second window gather. This also keeps `operator_fit.hpp` free of MPI.
 
 ## 6. Determinism
 
@@ -261,7 +356,12 @@ Reassignment is bitwise-safe, and the reasons are already in the code:
   `num_probes`, `dim` and the optional global seed only, never from a row
   index or a rank, precisely so "the result cannot depend on scheduling".
 - **A row's fit is a pure function of its package.** Every input crosses as
-  `MPI_DOUBLE`; nothing is recomputed from rank-local state.
+  `MPI_DOUBLE`; nothing is recomputed from rank-local state. This holds ONLY
+  if the package is the full list in section 3, `sigma` included. The seed of
+  the LM stream reads the raw covariance, and reconstructing it from its
+  Cholesky factor on the host is not bit-identical. The perverse-assignment
+  gate pass is what catches an omission here, which is the strongest reason to
+  write that test before the migration rather than after.
 - **Window content and order are already partition-independent.** Membership is
   an exact predicate at the leaf, the window is sorted (`:634-640`), and
   `spike_position` is a binary search into that sorted window (`:685-691`), so
@@ -284,53 +384,125 @@ correctness argument, mechanized.
 
 | repo | change | size |
 |---|---|---|
-| **lgpsf** | phase split in `operator_fit.hpp`, two detail structs | the bulk |
+| **lgpsf** | phase split in `operator_fit.hpp` + the solve hook, two detail structs | the bulk |
 | | `mpi/row_balance.hpp`: the rule and the exchange | ~300-400 lines |
-| | `dist_fit.hpp`: the knob, the hint, the proxy fallback | ~80 lines |
-| | tests: the balanced/perverse gate pass, unit tests of the rule | ~150 lines |
-| | docs note + this plan | |
-| **consumer (lgpsf-hessian)** | pass the tolerance through the config to the public header | ~10 lines |
-| | persist the previous build's per-row work, pass as the hint (optional) | ~30 lines |
+| | `dist_fit.hpp`: the knob, `prev_evaluations`, `fitted_on_rank`, the failure flag | ~120 lines |
+| | tests: balanced / perverse / failure gate passes, unit tests of the rule | ~200 lines |
+| | Python bindings: the two new `DistFitInput` fields and `fitted_on_rank`, mirrored field by field, plus their pytest assertions | ~30 lines |
+| | `docs/` (the coarsening note gains a paragraph) + this plan | |
+| **consumer (lgpsf-hessian)** | pass the tolerance through to the public header | ~10 lines |
+| | keep the previous rung's `evaluations` and pass them back in | ~20 lines |
 | | migrated count and achieved imbalance in the report | ~10 lines |
-| | optional dump column for the fitting rank | ~10 lines |
+| | dump column for the fitting rank: bump `hdr[1]` to 5 and `P`, and update the offline readers | ~20 lines |
 | **application (ymir)** | one option, the numbers on the existing fit log line | ~15 lines |
 
 The consumer keeps its row-gid identity, its triplet handling, its
 symmetrization and its assembly exactly as they are. That is the payoff of
 putting the seam where it is.
 
+**An unstated precondition, now stated:** every rank's `config.row.mode_policy`
+must be the same policy. It is a virtual, un-serializable object
+(`mode_policy.hpp:126-152`) and does not travel with a package. SPMD makes this
+true today; migration makes it load-bearing.
+
 ## 8. Slices
 
+0. **Measure `r`, the resident share.** Two `steady_clock` pairs inside the row
+   body -- one around the coarsening, one around the re-score -- reported
+   alongside `row_seconds`, plus one continental build. Everything downstream
+   is sized by this number and section 1 shows the payoff swinging between
+   twofold and twelvefold across its plausible range. Do this first; it is
+   hours, not days.
 1. **Phase split, no migration.** `operator_fit.hpp` only; the three phases
    run back to back on D1. Acceptance: every existing test passes bitwise,
    including the MPI gate, with no API change.
 2. **The assignment rule.** `balance_rows` as a pure function with serial unit
-   tests for the four properties in section 4. Independent of slice 1; can run
-   in parallel.
+   tests for the properties in section 4, INCLUDING the counterexample there as
+   a regression (the rule must report a predicted makespan above `T`, not
+   claim success). Acceptance also includes re-running section 1's study
+   through the real rule on the recorded dump. Independent of slice 1.
 3. **Migration.** The exchange plus the wiring in `dist_fit`, default off.
    Acceptance: the perverse-assignment gate pass is bit-identical, and the
    balanced pass at `tolerance = 0.1` is bit-identical to the unbalanced one.
 4. **Consumer and application pass-through**, then one continental run with it
    on. Acceptance: the operator, the QC ladder decisions and the CG iteration
    count are unchanged; the fit wall max/mean drops.
-5. **The weight feedback and the locality tie-break**, if the field numbers say
-   the proxy and the previous rung leave anything on the table.
+5. **The locality tie-break and the byte cap**, if the field numbers say they
+   are needed.
 
 Everything through slice 4 keeps the default behaviour bit-identical, so the
 risk sits in one continental run rather than in the library.
 
-## 9. Open questions
+## 9. Risks, decisions and open questions
 
-- **Cell-structure reuse across rungs.** The cells depend only on geometry
-  (`x`, `m2`, centre, frame, eps), not on the probes, so the structure could be
-  computed once per build and only the new probe columns shipped per rung.
-  Today `dist_fit` runs per rung and would recoarsen each time. Worth doing
-  only if profiling says the coarsening itself matters; it is far cheaper than
-  the search.
-- **How much of the re-score to keep on D1.** The 9% residual is what caps the
-  gain. If it ever binds, the alternative is a distributed re-score (the score
-  is a mass-weighted quadrature over the window and is therefore reducible),
-  but that is a much larger change and should not be attempted first.
-- **Threads.** The migrated rows join the host's own rows in one `parallel_for`;
-  rows write disjoint slots, so nothing new is needed. Confirm the row-seconds
-  telemetry still attributes sensibly when a rank's row set is heterogeneous.
+**Failure paths (unresolved, and the way this hangs a job).** Today the try
+block spans A+B+C as one unit (`:658-974`) and the catch clears
+`outcome.window`, zeroes the counters and stores a message (`:965-974`). Three
+things follow, and the first is the dangerous one.
+
+- **Exchange counts must be derived from data, never from the balance plan.**
+  Which rows are packageable is only known AFTER phase A: `attempt[rho] == 0`
+  rows never enter the loop (gated at `:567-570`, `sigma` not SPD at
+  `:573-578`, window covariance not SPD at `:603-610`), and the
+  `window.size() < 2` throw (`:665-670`) and the degenerate-coarsening throw
+  (`:741-753`) both fire inside phase A. A receiver that sized its receives
+  from the globally known plan would deadlock the job on one row failing on
+  one rank.
+- **A throw on a foreign host must travel back** as a status plus a
+  variable-length message, and the owner must then execute the catch semantics
+  locally, including clearing its own window.
+- **A throw that is not per-row scoped** -- `bad_alloc` while packing, above
+  all -- diverges ranks inside a collective sequence and hangs rather than
+  crashes. `fit_operator` contains no MPI today and cannot do this. Wrap the
+  whole migration region so every throw becomes a rank-local flag, `Allreduce`
+  it, and throw after the exchanges complete.
+
+**Sender-side memory, and a byte cap.** The average of 26 MB per rank is
+misleading: the senders are few by construction, since that is what makes them
+overloaded. If ten or twenty ranks hold the moved mass they pack hundreds of
+megabytes each, on a job running 48 ranks per node. The rule balances SECONDS,
+and `weight ~ points x evaluations` means a row with many points and a short
+search is heavy in bytes and light in time. So the assignment needs a byte cap
+per sender and per receiver, sized from `fit_points_rank_max`, which the
+consumer's report already carries; or failing that, send in waves.
+
+**Cell-structure reuse across rungs (open, profiling-gated -- maintainer).**
+The cells depend only on geometry (`x`, `m2`, centre, frame, eps), not on the
+probes, so the structure could be computed once per build and only the new
+probe columns shipped per rung. Today `dist_fit` runs per rung and recoarsens
+each time. The trade is not compute against compute but MEMORY against
+compute: the cell assignment is one integer per window point, the same size as
+the window index list already kept, so caching it across rungs roughly doubles
+that storage -- a few hundred megabytes on the busiest rank. Slice 0's
+coarsening timer settles whether it is worth anything.
+
+**The re-score stays on D1 (DECIDED, maintainer).** Not merely because that is
+where the window is. One purpose of the re-score is to assess how well the
+coarsened fit does on the UNCOARSENED points, and the fit was optimized
+against the coarse cells, so the coarse score is biased by selection rather
+than merely approximate. Scoring on anything the fit was fitted to defeats the
+purpose. If the residual ever binds hard, the two options that PRESERVE that
+purpose are: a distributed re-score (the score is a mass-weighted quadrature
+over the window and is therefore reducible across the ranks holding it -- note
+this is still a FULL-window score, not a coarse one); or scoring both
+finalists on a fresh random subsample of the full window, mass weighted, both
+on the same draw. A fresh subsample is unbiased for the full-window score
+precisely because the fit was not optimized against it, and scoring both
+candidates on one draw cancels most of the noise in what is only ever a
+comparison. Either would need validating against the recorded eps 0.15 case,
+where the coarse score is known to lie.
+
+**Threads (AGREED, maintainer).** The migrated rows join the host's own rows in
+one `parallel_for`; rows write disjoint slots, so nothing new is needed.
+
+**`row_seconds` attribution (open).** After migration, three different things
+want per-row or per-rank seconds: the owner needs per-row seconds as next
+rung's weight input, the scheduler needs per-rank seconds as the initial load,
+and `DistFitResult::seconds_total` (`dist_fit.hpp:208`) stops meaning "this
+rank's wall time". Decide explicitly rather than letting the existing field
+drift in meaning.
+
+**The gate must cover more than the perverse pass.** The perverse assignment
+(`owner + 1 mod size`) is the identity at n = 1, so that pass is only
+meaningful at n >= 2. Add: a row that throws while on a foreign host, a rank
+that owns zero rows, and a row gated out by `attempt`.
