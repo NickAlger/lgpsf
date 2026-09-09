@@ -33,6 +33,7 @@
 #include "lgpsf/operator_fit.hpp"
 #include "lgpsf/probe_fit.hpp"
 #include "lgpsf/probe_moments.hpp"
+#include "lgpsf/row_balance.hpp"
 #include "lgpsf/varpro.hpp"
 #include "lgpsf/whitening.hpp"
 // See dev/architecture.md for the header map and the layering invariant.

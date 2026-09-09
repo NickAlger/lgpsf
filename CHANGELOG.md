@@ -80,6 +80,23 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`balance_rows` (`lgpsf/row_balance.hpp`)**: the assignment rule behind the
+  fitting-only row redistribution — given a predicted work per row and the rank
+  owning each row, which rows should be fitted elsewhere and where. Water
+  filling against `T = max((1 + tolerance) * mean rank load, heaviest row)`:
+  every rank above `T` sheds its largest rows until it is under, and the shed
+  rows go in decreasing weight to the least loaded rank. A pure function of its
+  four arguments — no MPI, no randomness, no allocation-order dependence, ties
+  broken by ascending row index and ascending rank index — so every rank
+  computes the same plan and none of it has to be communicated. `BalancePlan`
+  reports the host of every row, the shed set, the subset that actually crosses
+  a rank boundary, the per-rank predicted load, `target`, and the
+  `predicted_makespan` the plan ACHIEVES. That last one matters: `T` is a
+  target, not a guarantee — shedding moves whole rows, so a rank can shed more
+  than the remaining capacity can absorb, and the guarantee is
+  `makespan <= max(T, mean + heaviest shed row)`. Nothing moves when every rank
+  is already under `T`, so the feature is a no-op on a balanced problem.
+
 - **The per-row work instrument.** For designing a load-balancing scheme from
   measurements: `VarProResult::num_basis_evaluations` counts the O(K) passes
   through the basis (one per `basis(theta)` call including the entry check,

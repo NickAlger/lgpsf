@@ -12,6 +12,7 @@ add_executable(lgpsf_tests
     test_init_dictionary.cpp
     test_coarsen_window.cpp
     test_mode_policy.cpp
+    test_row_balance.cpp
     test_probe_fit.cpp
     test_lg_operator.cpp
     test_operator_fit.cpp
