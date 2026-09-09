@@ -9,6 +9,7 @@ rationale, and the record of threads that have closed. None of it is needed to
 | [`HANDOFF.md`](HANDOFF.md) | Where things stand, what is in flight, what is owed, what is parked. Start here. |
 | [`window-coarsening-plan.md`](window-coarsening-plan.md) | Plan (2026-09-06, not yet implemented): a per-row work bound for the operator fit by graded window coarsening. |
 | [`row-balance-plan.md`](row-balance-plan.md) | Plan (2026-09-08, not yet implemented): fitting-only row redistribution, so one rank's share of the expensive rows stops setting the wall clock. |
+| [`parallel-architecture-revisit.md`](parallel-architecture-revisit.md) | Parked note (2026-09-08): why the row-balance retrofit is intricate, and what a rewrite of the fit's parallel architecture would have to weigh. Not a decision. |
 | [`archive/`](archive/) | Closed threads: completed plans, session records, superseded decisions. Kept for provenance; not current. |
 
 Two neighbours are easy to confuse with this directory:
