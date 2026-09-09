@@ -1459,3 +1459,339 @@ TEST_CASE("the coarsening knobs are validated eagerly, and default to off")
     off_but_bad.coarsen_eps = 0.0;
     CHECK_THROWS_AS(run(op, off_but_bad), std::invalid_argument);
 }
+
+namespace {
+
+using lgpsf::RowDelegate;
+
+/// A delegate that fits the rows it is handed RIGHT HERE, and records what the
+/// protocol showed it.
+///
+/// This is the transparency harness for the row-fitting redistribution
+/// (`dev/row-balance-plan.md`): the MPI half will replace the body of `solve`
+/// with an exchange and `assign` with the water-filling rule, and nothing else
+/// about the protocol changes. So a delegate that ships every row to a foreign
+/// host and then fits it in place must reproduce the undelegated fit bit for
+/// bit -- if it does not, the package is missing something the search reads.
+struct Recorder
+{
+    std::vector<int> hosts;          ///< what `assign` returns; empty = all mine
+    std::vector<int> window_sizes;   ///< what `assign` was shown
+    std::vector<int> rows;           ///< what `solve` was shown
+    int assign_calls = 0;
+    int solve_calls = 0;
+    bool drop_y_hat = false;         ///< leave y_hat for the owner to refill
+    int unsolved = -1;               ///< a row whose slot is left unset
+    std::string unsolved_reason;
+
+    RowDelegate make()
+    {
+        RowDelegate delegate;
+        delegate.self = 0;
+        delegate.assign = [this]( const std::vector<int>& sizes ) {
+            ++assign_calls;
+            window_sizes = sizes;
+            return hosts;
+        };
+        delegate.solve =
+            [this]( const lgpsf::detail::RowFitContext& context,
+                    const std::vector<int>& handed,
+                    const std::vector<lgpsf::detail::RowFitProblem>& problems,
+                    std::vector<lgpsf::detail::RowFitCandidates>& out ) {
+                ++solve_calls;
+                rows = handed;
+                for ( std::size_t i = 0; i < problems.size(); ++i )
+                {
+                    if ( handed[i] == unsolved )
+                    {
+                        // the slot stays unset: this host could not fit it
+                        out[i].failure = unsolved_reason;
+                        continue;
+                    }
+                    out[i] = lgpsf::detail::fit_row_candidates(problems[i], context);
+                    if ( drop_y_hat )
+                    {
+                        out[i].y_hat = Eigen::VectorXd();
+                    }
+                }
+            };
+        return delegate;
+    }
+};
+
+OperatorFit run_with( const Synthetic& op, const OperatorFitConfig& config,
+                      const RowDelegate& delegate )
+{
+    return fit_operator(op.x_cols, op.m1, op.m2, op.V, op.HV, op.sigma, config,
+                        std::nullopt, std::nullopt, op.gate, {}, {}, &delegate);
+}
+
+/// Every number two fits produce, compared exactly -- the model, the windows,
+/// the mode-set registry, the scores, the counters and the failure messages.
+/// Only the wall-clock telemetry is exempt, as in the thread-identity tests.
+void check_same_fit( const OperatorFit& a, const OperatorFit& b )
+{
+    CHECK(same(a.model.theta, b.model.theta));
+    CHECK(same(a.model.mu, b.model.mu));
+    CHECK(same(a.model.L, b.model.L));
+    CHECK(same(a.model.c, b.model.c));
+    CHECK(same(a.model.s, b.model.s));
+    CHECK(same(a.diagnostics.score, b.diagnostics.score));
+    CHECK(same(a.diagnostics.baseline_score, b.diagnostics.baseline_score));
+    CHECK(a.diagnostics.fit_points == b.diagnostics.fit_points);
+    CHECK(a.diagnostics.evaluations == b.diagnostics.evaluations);
+    CHECK(a.diagnostics.candidates == b.diagnostics.candidates);
+    CHECK(same(a.diagnostics.work, b.diagnostics.work));
+    CHECK(a.model.mode_set_id == b.model.mode_set_id);
+    CHECK(a.model.window_indptr == b.model.window_indptr);
+    CHECK(a.model.window_indices == b.model.window_indices);
+    CHECK(a.diagnostics.released == b.diagnostics.released);
+    CHECK(a.diagnostics.failures == b.diagnostics.failures);
+    REQUIRE(a.model.mode_sets.size() == b.model.mode_sets.size());
+    for ( std::size_t i = 0; i < a.model.mode_sets.size(); ++i )
+    {
+        CHECK(a.model.mode_sets[i] == b.model.mode_sets[i]);
+    }
+    REQUIRE(a.diagnostics.status.size() == b.diagnostics.status.size());
+    for ( std::size_t i = 0; i < a.diagnostics.status.size(); ++i )
+    {
+        CHECK(a.diagnostics.status[i] == b.diagnostics.status[i]);
+        CHECK(a.diagnostics.stop_reason[i] == b.diagnostics.stop_reason[i]);
+    }
+}
+
+/// The rows a gate admits, ascending: what a delegate that takes everything
+/// must be handed.
+std::vector<int> gated_rows( const Synthetic& op )
+{
+    std::vector<int> rows;
+    for ( std::size_t r = 0; r < op.gate.size(); ++r )
+    {
+        if ( op.gate[r] )
+        {
+            rows.push_back(static_cast<int>(r));
+        }
+    }
+    return rows;
+}
+
+} // namespace
+
+TEST_CASE("the row delegate is transparent: every row fitted elsewhere")
+{
+    // The acceptance test of the protocol. An identity delegate -- assign
+    // everything to a foreign host, then fit it in place -- must reproduce the
+    // undelegated fit exactly, uncoarsened and coarsened. The coarsened pass is
+    // the one that exercises a package owning a quadrature that is not the
+    // window, and a config that is not the shared one.
+    std::mt19937 gen(41);
+    const Synthetic op = make_operator(gen, 21, 30, 6);
+
+    for ( int coarsen = 0; coarsen < 2; ++coarsen )
+    {
+        const OperatorFitConfig config =
+            coarsen ? coarsening_config(op) : config_for(op);
+        const OperatorFit reference = run(op, config);
+
+        Recorder recorder;
+        recorder.hosts.assign(op.gate.size(), 1);  // self is 0: nothing is local
+        const RowDelegate delegate = recorder.make();
+        const OperatorFit delegated = run_with(op, config, delegate);
+
+        CHECK(recorder.assign_calls == 1);
+        CHECK(recorder.solve_calls == 1);
+
+        // assign sees every row's window size, and 0 for a row that will not
+        // be fitted
+        REQUIRE(recorder.window_sizes.size() == op.gate.size());
+        for ( std::size_t r = 0; r < op.gate.size(); ++r )
+        {
+            CHECK((recorder.window_sizes[r] > 0) == (op.gate[r] != 0));
+        }
+
+        // solve sees exactly the fitted rows, ascending
+        CHECK(recorder.rows == gated_rows(op));
+
+        check_same_fit(reference, delegated);
+    }
+}
+
+TEST_CASE("the row delegate need not send the whitened responses home")
+{
+    // y_hat is a pure function of the package, so a migration may drop it and
+    // let the owner refill it -- which must be bit for bit what the search
+    // would have handed back.
+    std::mt19937 gen(42);
+    const Synthetic op = make_operator(gen, 21, 30, 6);
+    const OperatorFitConfig config = coarsening_config(op);
+    const OperatorFit reference = run(op, config);
+
+    Recorder recorder;
+    recorder.hosts.assign(op.gate.size(), 1);
+    recorder.drop_y_hat = true;
+    const RowDelegate delegate = recorder.make();
+
+    check_same_fit(reference, run_with(op, config, delegate));
+}
+
+TEST_CASE("the row delegate may move only some of the rows")
+{
+    // The mixed path: local rows keep the fused body, delegated rows go the
+    // long way round, and the two must agree row for row.
+    std::mt19937 gen(43);
+    const Synthetic op = make_operator(gen, 21, 30, 6);
+    const OperatorFitConfig config = coarsening_config(op);
+    const OperatorFit reference = run(op, config);
+
+    const std::vector<int> fitted = gated_rows(op);
+    REQUIRE(fitted.size() >= 2u);
+
+    Recorder recorder;
+    recorder.hosts.assign(op.gate.size(), 0);  // self: local by default
+    std::vector<int> expected;
+    for ( std::size_t i = 0; i < fitted.size(); ++i )
+    {
+        if ( i % 2 == 1 )
+        {
+            recorder.hosts[static_cast<std::size_t>(fitted[i])] = 1;
+            expected.push_back(fitted[i]);
+        }
+    }
+    const RowDelegate delegate = recorder.make();
+    const OperatorFit delegated = run_with(op, config, delegate);
+
+    CHECK(recorder.solve_calls == 1);
+    CHECK(recorder.rows == expected);
+    CHECK(recorder.rows.size() < fitted.size());
+    CHECK(!recorder.rows.empty());
+    check_same_fit(reference, delegated);
+}
+
+TEST_CASE("an empty assignment leaves every row where it is")
+{
+    // The escape a caller uses when the balance rule found nothing worth
+    // moving: no package, no solve call, no difference.
+    std::mt19937 gen(44);
+    const Synthetic op = make_operator(gen, 11, 30, 4);
+    const OperatorFitConfig config = config_for(op);
+    const OperatorFit reference = run(op, config);
+
+    Recorder recorder;  // hosts stays empty
+    const RowDelegate delegate = recorder.make();
+    const OperatorFit delegated = run_with(op, config, delegate);
+
+    CHECK(recorder.assign_calls == 1);
+    CHECK(recorder.solve_calls == 0);
+    check_same_fit(reference, delegated);
+}
+
+TEST_CASE("a slot the delegate leaves unset fails that row, and only that row")
+{
+    // A host that could not fit a row must not produce a silent zero: the row
+    // fails on its owner with the host's reason, exactly as a local throw does.
+    std::mt19937 gen(45);
+    const Synthetic op = make_operator(gen, 11, 30, 4);
+    const OperatorFitConfig config = config_for(op);
+    const OperatorFit reference = run(op, config);
+
+    const std::vector<int> fitted = gated_rows(op);
+    REQUIRE(fitted.size() >= 2u);
+    const int victim = fitted.front();
+
+    Recorder recorder;
+    recorder.hosts.assign(op.gate.size(), 1);
+    recorder.unsolved = victim;
+    recorder.unsolved_reason = "the host gave up on this row";
+    const RowDelegate delegate = recorder.make();
+    const OperatorFit fit = run_with(op, config, delegate);
+
+    const std::size_t v = static_cast<std::size_t>(victim);
+    CHECK(fit.diagnostics.status[v] == RowStatus::Failed);
+    REQUIRE(fit.diagnostics.failures.count(victim) == 1u);
+    CHECK(fit.diagnostics.failures.at(victim) == "the host gave up on this row");
+    // the catch semantics of a local failure, to the letter
+    CHECK(fit.model.row_window(victim).empty());
+    CHECK(fit.model.mode_set_id[v] == -1);
+    CHECK(fit.diagnostics.fit_points(victim) == 0);
+    CHECK(fit.diagnostics.evaluations(victim) == 0);
+    CHECK(std::isnan(fit.model.theta(victim, 0)));
+
+    // every other row is untouched by its neighbour's failure
+    for ( std::size_t i = 1; i < fitted.size(); ++i )
+    {
+        const Eigen::Index rho = fitted[i];
+        const std::size_t r = static_cast<std::size_t>(rho);
+        CHECK(fit.diagnostics.status[r] == reference.diagnostics.status[r]);
+        CHECK(same(fit.model.theta.row(rho), reference.model.theta.row(rho)));
+        CHECK(same(fit.model.L.row(rho), reference.model.L.row(rho)));
+        CHECK(fit.diagnostics.score(rho) == reference.diagnostics.score(rho));
+        CHECK(fit.diagnostics.evaluations(rho)
+              == reference.diagnostics.evaluations(rho));
+    }
+
+    // a host that gives no reason still leaves one
+    Recorder mute;
+    mute.hosts.assign(op.gate.size(), 1);
+    mute.unsolved = victim;
+    const RowDelegate mute_delegate = mute.make();
+    const OperatorFit mute_fit = run_with(op, config, mute_delegate);
+    CHECK(mute_fit.diagnostics.status[v] == RowStatus::Failed);
+    REQUIRE(mute_fit.diagnostics.failures.count(victim) == 1u);
+    CHECK(!mute_fit.diagnostics.failures.at(victim).empty());
+    MESSAGE("unsolved row reported: " << mute_fit.diagnostics.failures.at(victim));
+}
+
+TEST_CASE("a row that fails before the search is never handed away")
+{
+    // Which rows are packageable is known only AFTER phase A, never from the
+    // assignment: this row's window cannot be formed, so it fails on its owner
+    // and is not in the batch. A receiver that sized itself from the plan
+    // instead would hang the job on it.
+    std::mt19937 gen(46);
+    Synthetic op = make_operator(gen, 11, 30, 4);
+    const std::vector<int> fitted = gated_rows(op);
+    REQUIRE(fitted.size() >= 2u);
+    const int victim = fitted.front();
+    op.sigma[static_cast<std::size_t>(victim)] =
+        1e-12 * Eigen::MatrixXd::Identity(2, 2);
+
+    const OperatorFitConfig config = config_for(op);
+    const OperatorFit reference = run(op, config);
+    REQUIRE(reference.diagnostics.status[static_cast<std::size_t>(victim)]
+            == RowStatus::Failed);
+
+    Recorder recorder;
+    recorder.hosts.assign(op.gate.size(), 1);
+    const RowDelegate delegate = recorder.make();
+    const OperatorFit delegated = run_with(op, config, delegate);
+
+    std::vector<int> expected(fitted.begin() + 1, fitted.end());
+    CHECK(recorder.rows == expected);
+    CHECK(std::find(recorder.rows.begin(), recorder.rows.end(), victim)
+          == recorder.rows.end());
+    // the failed row is still assigned a host and still reported as failed
+    CHECK(recorder.window_sizes[static_cast<std::size_t>(victim)] >= 0);
+    check_same_fit(reference, delegated);
+}
+
+TEST_CASE("a malformed assignment is refused, not half-applied")
+{
+    // The delegate is a programming interface, so its contract is checked
+    // eagerly: one host per row (or none at all), and a way to solve what it
+    // hands away.
+    std::mt19937 gen(47);
+    const Synthetic op = make_operator(gen, 11, 30, 4);
+    const OperatorFitConfig config = config_for(op);
+
+    Recorder wrong_length;
+    wrong_length.hosts.assign(op.gate.size() - 1u, 1);
+    const RowDelegate short_delegate = wrong_length.make();
+    CHECK_THROWS_AS(run_with(op, config, short_delegate), std::invalid_argument);
+
+    RowDelegate no_solve;
+    no_solve.self = 0;
+    no_solve.assign = [&]( const std::vector<int>& sizes ) {
+        return std::vector<int>(sizes.size(), 1);
+    };
+    CHECK_THROWS_AS(run_with(op, config, no_solve), std::invalid_argument);
+}

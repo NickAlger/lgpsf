@@ -125,6 +125,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <iterator>
 #include <map>
@@ -398,11 +399,33 @@ struct RowOutcome
 /// (`dev/row-balance-plan.md`, sections 3 and 6): no rank-local state is read
 /// below phase A.
 ///
-/// The quadrature is held as NON-OWNING pointers. On an uncoarsened row
-/// `x_fit` IS the full window, and no row may copy its window; the pointees
-/// are the caller's `x_window` / `m2_window` / `z`, or the `CoarseWindow` it
-/// built from them, and both outlive the search. Everything else is small
-/// enough to own (dim x dim, or one value per probe).
+/// The quadrature and the config are reached through ACCESSORS, because a
+/// problem is either a view or a package and the two are the same type:
+///
+///  - `view()` -- the fused path. Nothing is copied: on an uncoarsened row
+///    `x_fit()` IS the full window, which no row may afford to duplicate, and
+///    the pointees (the caller's `x_window` / `m2_window` / `z`, or the
+///    `CoarseWindow` built from them, and the config local) outlive the
+///    search. This is the default and it allocates nothing.
+///  - `adopt()` -- the delegated path. The problem takes ownership by MOVE, so
+///    it outlives the loop iteration that built it. A delegated row is not
+///    fitted here, so its window arrays are dead the moment the package is
+///    built and can be moved from rather than copied; the owner re-gathers
+///    them for the re-score once the fit comes back
+///    (`dev/row-balance-plan.md`, section 3).
+///
+/// Only the accessors are safe: an owning problem's pointer members are not
+/// updated by a copy or a move (they would point into the source), and the
+/// accessors read the storage instead whenever the problem owns it -- which is
+/// what lets a package be moved into a vector, or into an MPI unpack, without
+/// a rule of five.
+///
+/// The config is owned as well as the arrays. It is reached through a pointer
+/// to a per-row `std::optional<ProbeFitConfig>` -- the coarsened row's copy of
+/// `row_config` with the released-centre resolution rule armed -- and that
+/// local dies with the iteration too. `coarsened` is the flag a package would
+/// carry over the wire, the receiving rank rebuilding the copy from it and
+/// from its own `row_config`.
 ///
 /// `sigma` is the row's RAW a-priori covariance and is NOT redundant with
 /// `prior_L`. It seeds the LM stream -- `InitialGuess::sigma` reaches
@@ -411,9 +434,6 @@ struct RowOutcome
 /// bit. A package that shipped only `prior_L` would fit a different row.
 struct RowFitProblem
 {
-    const Eigen::MatrixXd* x_fit = nullptr;   ///< (fit_size, dim)
-    const Eigen::VectorXd* m2_fit = nullptr;  ///< (fit_size,)
-    const Eigen::MatrixXd* z_fit = nullptr;   ///< (fit_size, num_probes)
     int spike_fit = -1;       ///< The spike's cell in the quadrature, or -1
     int num_extra = 0;        ///< 1 with a spike, 0 without
     Eigen::VectorXd y;        ///< (num_probes,) the row's responses
@@ -423,11 +443,82 @@ struct RowFitProblem
     Eigen::VectorXd center;   ///< (dim,)
     bool coarsened = false;   ///< Whether the quadrature is the coarsening
 
-    /// The config the search runs under: the shared `row_config`, or the
-    /// coarsened row's own copy of it with the released-centre resolution
-    /// rule armed. Non-owning like the quadrature; `coarsened` is the flag a
-    /// package would carry, the host rebuilding the copy from it.
-    const ProbeFitConfig* fit_config = nullptr;
+    const Eigen::MatrixXd& x_fit() const   ///< (fit_size, dim)
+    {
+        return owned ? x_store : *x_ref;
+    }
+    const Eigen::VectorXd& m2_fit() const  ///< (fit_size,)
+    {
+        return owned ? m2_store : *m2_ref;
+    }
+    const Eigen::MatrixXd& z_fit() const   ///< (fit_size, num_probes)
+    {
+        return owned ? z_store : *z_ref;
+    }
+    /// The config the search runs under.
+    const ProbeFitConfig& fit_config() const
+    {
+        return owned ? *config_store : *config_ref;
+    }
+    /// Whether this problem carries its own copy of the above.
+    bool owns() const { return owned; }
+
+    /// Point at arrays the caller keeps alive: the fused path, no copy.
+    void view( const Eigen::MatrixXd& x, const Eigen::VectorXd& m2,
+               const Eigen::MatrixXd& z, const ProbeFitConfig& config )
+    {
+        owned = false;
+        x_ref = &x;
+        m2_ref = &m2;
+        z_ref = &z;
+        config_ref = &config;
+    }
+
+    /// Take the arrays over: the delegated path, a package that outlives the
+    /// iteration. Pass rvalues; nothing here needs to be copied.
+    void adopt( Eigen::MatrixXd x, Eigen::VectorXd m2, Eigen::MatrixXd z,
+                ProbeFitConfig config )
+    {
+        x_store = std::move(x);
+        m2_store = std::move(m2);
+        z_store = std::move(z);
+        config_store = std::move(config);
+        owned = true;
+        x_ref = nullptr;
+        m2_ref = nullptr;
+        z_ref = nullptr;
+        config_ref = nullptr;
+    }
+
+private:
+    bool owned = false;
+    const Eigen::MatrixXd* x_ref = nullptr;
+    const Eigen::VectorXd* m2_ref = nullptr;
+    const Eigen::MatrixXd* z_ref = nullptr;
+    const ProbeFitConfig* config_ref = nullptr;
+    Eigen::MatrixXd x_store;
+    Eigen::VectorXd m2_store;
+    Eigen::MatrixXd z_store;
+    std::optional<ProbeFitConfig> config_store;
+};
+
+/// What phase B needs that is the SAME for every row: the mode-set ladder the
+/// baseline is chosen from, the config carrying the hoisted CV split and
+/// jitter table, and the two counting-rule parameter counts.
+///
+/// It is ambient rank-local state, not part of a row's package: the mode
+/// policy is a virtual object and cannot travel, and the split and the jitter
+/// table are built once per `fit_operator` call from the config alone. A
+/// delegate that fits a foreign row uses ITS OWN context, which SPMD makes
+/// identical -- which is why `RowDelegate::solve` is handed one rather than
+/// left to reconstruct the hoisting on its own.
+struct RowFitContext
+{
+    std::vector<std::vector<Mode>> baseline_sets;
+    ProbeFitConfig row_config;    ///< with the hoisted split and jitter table
+    Eigen::Index num_probes = 0;
+    int baseline_params = 0;      ///< the pinned linear fit's parameter count
+    int search_params = 0;        ///< the search's own encoding's count
 };
 
 /// PHASE B's product and PHASE C's input: the two finalists, plus the counters
@@ -438,7 +529,9 @@ struct RowFitProblem
 struct RowFitCandidates
 {
     /// Index into the globally identical `baseline_sets`, so this identifies
-    /// the same mode set on any rank. -1 never leaves phase B: it throws.
+    /// the same mode set on any rank. -1 never leaves phase B: it throws. It
+    /// is therefore also the UNSET marker of a default-constructed slot --
+    /// see `solved()`.
     int baseline_index = -1;
     Eigen::VectorXd theta_baseline;
     Eigen::VectorXd baseline_c;
@@ -453,10 +546,23 @@ struct RowFitCandidates
     int max_modes = 0;  ///< largest mode set the search tried
 
     /// (num_probes,) the whitened responses. Recomputable from the problem's
-    /// `y` and `target_mass`, so a migration would refill it on arrival rather
-    /// than send it; it rides here so the fused path whitens exactly once,
-    /// inside the search timer, as before the phase split.
+    /// `y` and `target_mass`, so a migration need not send it: left EMPTY, the
+    /// owner refills it from the problem before phase C, bit for bit. It rides
+    /// here so the fused path whitens exactly once, inside the search timer,
+    /// as before the phase split.
     Eigen::VectorXd y_hat;
+
+    /// Why this row has no fit, when a delegate could not produce one. The
+    /// owner turns an unsolved slot into a Failed row with exactly the same
+    /// semantics as a local throw, and reports this as the reason if it is
+    /// set; it is how a throw on a foreign host travels home
+    /// (`dev/row-balance-plan.md`, section 9).
+    std::string failure;
+
+    /// Whether this slot carries a fit. A delegate that cannot solve a row
+    /// leaves its slot alone (optionally setting `failure`); the owner fails
+    /// the row rather than shipping a silent zero.
+    bool solved() const { return baseline_index >= 0; }
 };
 
 /// PHASE B: the pinned baseline over the mode-set ladder, then the searched
@@ -466,17 +572,18 @@ struct RowFitCandidates
 /// redistribution moves (`dev/row-balance-plan.md`).
 ///
 /// @throws std::invalid_argument if no mode set passes the counting rule.
-inline RowFitCandidates fit_row_candidates(
-    const RowFitProblem& problem,
-    const std::vector<std::vector<Mode>>& baseline_sets,
-    const ProbeFitConfig& row_config,
-    Eigen::Index num_probes,
-    int baseline_params,
-    int search_params )
+inline RowFitCandidates fit_row_candidates( const RowFitProblem& problem,
+                                            const RowFitContext& context )
 {
-    const Eigen::MatrixXd& x_fit = *problem.x_fit;
-    const Eigen::VectorXd& m2_fit = *problem.m2_fit;
-    const Eigen::MatrixXd& z_fit = *problem.z_fit;
+    const std::vector<std::vector<Mode>>& baseline_sets = context.baseline_sets;
+    const ProbeFitConfig& row_config = context.row_config;
+    const Eigen::Index num_probes = context.num_probes;
+    const int baseline_params = context.baseline_params;
+    const int search_params = context.search_params;
+
+    const Eigen::MatrixXd& x_fit = problem.x_fit();
+    const Eigen::VectorXd& m2_fit = problem.m2_fit();
+    const Eigen::MatrixXd& z_fit = problem.z_fit();
     const Eigen::VectorXd& center = problem.center;
     const double target_mass = problem.target_mass;
     const int num_extra = problem.num_extra;
@@ -552,7 +659,7 @@ inline RowFitCandidates fit_row_candidates(
         prior.label = "sigma0";
         searched = fit_from_probes(
             x_fit, m2_fit, z_fit, problem.y, center, spike_fit,
-            *problem.fit_config, {prior}, target_mass);
+            problem.fit_config(), {prior}, target_mass);
     }
     if ( searched )
     {
@@ -589,14 +696,15 @@ inline RowFitCandidates fit_row_candidates(
 inline void select_row_fit(
     const RowFitProblem& problem,
     const RowFitCandidates& finalists,
+    const RowFitContext& context,
     const Eigen::MatrixXd& x_window,
     const Eigen::VectorXd& m2_window,
     const Eigen::MatrixXd& z,
     int spike_position,
-    const std::vector<std::vector<Mode>>& baseline_sets,
-    const ProbeFitConfig& row_config,
     RowOutcome& outcome )
 {
+    const std::vector<std::vector<Mode>>& baseline_sets = context.baseline_sets;
+    const ProbeFitConfig& row_config = context.row_config;
     const Eigen::Index window_size = x_window.rows();
     const Eigen::VectorXd& center = problem.center;
     const double target_mass = problem.target_mass;
@@ -715,7 +823,82 @@ inline void select_row_fit(
     }
 }
 
+/// The catch semantics of a failed row, in ONE place: no window ships, no
+/// counter survives, and the reason reaches the diagnostics. Used by the
+/// per-row catch and by the owner of a delegated row whose fit did not come
+/// back, so the two cannot drift apart.
+inline void fail_row( RowOutcome& outcome, std::string message )
+{
+    outcome.status = RowStatus::Failed;
+    outcome.failure = std::move(message);
+    outcome.window.clear();
+    outcome.fit_points = 0;
+    outcome.evaluations = 0;
+    outcome.candidates = 0;
+    outcome.max_modes = 0;
+    outcome.coarsen_seconds = 0.0;
+    outcome.search_seconds = 0.0;
+    outcome.rescore_seconds = 0.0;
+}
+
 } // end namespace detail
+
+/// Fit some of the rows SOMEWHERE ELSE.
+///
+/// The optional hook a distributed caller uses to move phase B -- the mode-set
+/// ladder and the LM search -- off the rank that owns a row, because fit cost
+/// per row spans two orders of magnitude and the expensive rows cluster
+/// spatially (`dev/row-balance-plan.md`). Phases A and C do not move: the
+/// deployed support is the full window, so the package is built and the
+/// finalists are re-scored where the row's columns are.
+///
+/// It is TWO callbacks rather than one for a memory reason. Phase A is what
+/// builds a package, and every row's package at once is gigabytes on the
+/// busiest rank, so `assign` is asked before any package exists -- from the
+/// window sizes, which the pre-pass has already computed exactly -- and only
+/// the rows it hands away are ever materialized. With no delegate, or an empty
+/// assignment, the fit runs exactly as it did before this hook existed: one
+/// fused pass, no package, not one extra copy.
+///
+/// Nothing here mentions MPI. The exchange lives entirely behind `solve`.
+struct RowDelegate
+{
+    /// This caller's own index in whatever numbering `assign` returns; a row
+    /// whose host equals it is fitted here. Zero is the natural value for a
+    /// serial delegate that hands rows to a thread pool or to itself.
+    int self = 0;
+
+    /// Called ONCE after the window pre-pass, with every row's window size (0
+    /// for a row that will not be fitted: gated out, or failed before the
+    /// loop). Returns the host of every row, or an EMPTY vector meaning "all
+    /// mine", in which case `solve` is never called. Any other length throws.
+    ///
+    /// This is where a distributed caller runs `balance_rows`. Note that a
+    /// collective `solve` must therefore be all-or-nothing across ranks: a
+    /// full-length assignment on one rank and an empty one on another would
+    /// enter the exchange on one rank only.
+    std::function<std::vector<int>(const std::vector<int>& window_sizes)> assign;
+    /// Called ONCE, after phase A has run for every delegated row, with their
+    /// ascending row indices, their packages, and one output slot each. Called
+    /// even when there is nothing to solve, so an implementation that
+    /// exchanges is entered on every rank.
+    ///
+    /// The implementation is free to solve them anywhere -- `dist_fit` ships
+    /// them to their host, runs `detail::fit_row_candidates` there against the
+    /// HOST's own context, and ships the candidates back. @p context is this
+    /// caller's ambient state (the mode-set ladder, the hoisted CV split and
+    /// jitter table): identical on every rank under SPMD, and not part of a
+    /// row's package because the mode policy is a virtual object that cannot
+    /// travel.
+    ///
+    /// A slot left unset (`RowFitCandidates::solved()` false) fails that row
+    /// on its owner, with `RowFitCandidates::failure` as the reason if it is
+    /// set. Leaving `y_hat` empty is fine: the owner refills it.
+    std::function<void(const detail::RowFitContext& context,
+                       const std::vector<int>& rows,
+                       const std::vector<detail::RowFitProblem>& problems,
+                       std::vector<detail::RowFitCandidates>& out)> solve;
+};
 
 /// Fit the parametric approximation from raw probes and responses.
 ///
@@ -745,6 +928,10 @@ inline void select_row_fit(
 ///                `eval_kernel` has to answer at points that are not mesh
 ///                columns. `init_dictionary.hpp`'s `ellipsoid_from_points`
 ///                converts a hand-picked index set into an admissible one.
+/// @param delegate Optional: fit some rows somewhere else. Unset (the
+///                default) is one fused pass over every row, exactly as
+///                before the hook existed. See `RowDelegate`; the result is
+///                bitwise identical either way, and only wall time moves.
 /// @return        `{model, diagnostics}` -- the operator, and per-row
 ///                provenance that nothing in evaluation reads.
 /// @throws std::invalid_argument if the shapes disagree, if
@@ -763,7 +950,8 @@ inline OperatorFit fit_operator(
     const std::optional<Eigen::MatrixXd>& x_rows = std::nullopt,
     const std::vector<char>& gate = {},
     const std::vector<std::optional<ellipsoid_tree::Ellipsoid>>& window_ellipsoids = {},
-    const std::vector<int>& row_own_col = {} )
+    const std::vector<int>& row_own_col = {},
+    const RowDelegate* delegate = nullptr )
 {
     const int dim = static_cast<int>(x_cols.cols());
     const Eigen::Index num_cols = x_cols.rows();
@@ -850,27 +1038,34 @@ inline OperatorFit fit_operator(
     const MuMode ladder_mode =
         ( config.row.mu == MuPolicy::Free ) ? MuMode::Fitted : MuMode::Pinned;
 
+    // What every row's search shares, in ONE object -- the mode-set ladder,
+    // the config with the hoisted randomness, the counting-rule sizes. It is
+    // also what a delegate is handed, so a row fitted on another rank is
+    // fitted against exactly the state this call would have used.
+    //
     // Each counting rule counts the parameters ACTUALLY BEING FIT, and the two
     // differ. The baseline is a linear fit in the pinned encoding, so it counts
     // N(N+1)/2; the search counts its own stream encoding, which is N(N+3)/2
     // when the center is fitted. Using the larger count for both is safe but
     // wrong: it skips levels the baseline could afford, which makes the
     // a-priori model look worse than it is and the guard fire less often.
-    const int baseline_params = theta_hat_size(dim, MuMode::Pinned);
-    const int search_params = theta_hat_size(dim, ladder_mode);
+    detail::RowFitContext context;
+    context.num_probes = num_probes;
+    context.baseline_params = theta_hat_size(dim, MuMode::Pinned);
+    context.search_params = theta_hat_size(dim, ladder_mode);
 
     // Randomness lives HERE and only here: one split and one jitter table for
     // the whole fit, built before any row is touched, so every row and the
     // baseline score on identical folds and the result cannot depend on
     // scheduling. See the plan's randomness section.
-    ProbeFitConfig row_config = config.row;
-    row_config.split =
+    context.row_config = config.row;
+    context.row_config.split =
         config.seed
             ? kfold_split(static_cast<int>(num_probes), config.row.cv_folds, *config.seed)
             : kfold_split(static_cast<int>(num_probes), config.row.cv_folds);
-    row_config.jitter = jitter_table(theta_hat_size(dim, ladder_mode),
-                                     kMaxModeProposals,
-                                     config.seed ? *config.seed : 0u);
+    context.row_config.jitter = jitter_table(theta_hat_size(dim, ladder_mode),
+                                             kMaxModeProposals,
+                                             config.seed ? *config.seed : 0u);
 
     // The a-priori baseline may never depend on an adaptive trajectory, so the
     // policy is asked for its feedback-blind sets.
@@ -878,9 +1073,11 @@ inline OperatorFit fit_operator(
     baseline_ctx.dim = dim;
     baseline_ctx.num_probes = static_cast<int>(num_probes);
     baseline_ctx.num_extra = num_extra_config;
-    baseline_ctx.num_params = baseline_params;
-    const std::vector<std::vector<Mode>> baseline_sets =
+    baseline_ctx.num_params = context.baseline_params;
+    context.baseline_sets =
         config.row.mode_policy->baseline_sets(baseline_ctx);
+
+    const ProbeFitConfig& row_config = context.row_config;
 
     std::vector<ellipsoid_tree::Ball> points;
     points.reserve(static_cast<std::size_t>(num_cols));
@@ -992,6 +1189,74 @@ inline OperatorFit fit_operator(
             }
         }
     }
+
+    // --- who fits which row -------------------------------------------------
+    //
+    // The delegate is asked exactly HERE, and the position is the whole design
+    // (`dev/row-balance-plan.md`, section 1, fact 2). After the pre-pass, so
+    // every row's window size -- the thing a load-balancing rule needs, and on
+    // the first rung the only thing it has -- is known exactly and for free.
+    // Before phase A, so no package exists yet: phase A is what BUILDS a
+    // package, and asking afterwards would mean every row's package alive at
+    // once, gigabytes on the busiest rank, to hand away a few percent of them.
+    // Running phase A twice instead -- once to weigh, once to keep -- is not
+    // free either: the coarsening alone is a few percent of a wide row.
+    std::vector<int> host;
+    bool delegating = false;
+    if ( delegate && delegate->assign )
+    {
+        std::vector<int> window_sizes(static_cast<std::size_t>(num_rows), 0);
+        for ( Eigen::Index rho = 0; rho < num_rows; ++rho )
+        {
+            if ( attempt[static_cast<std::size_t>(rho)] )
+            {
+                window_sizes[static_cast<std::size_t>(rho)] = static_cast<int>(
+                    outcomes[static_cast<std::size_t>(rho)].window.size());
+            }
+        }
+        host = delegate->assign(window_sizes);
+        if ( !host.empty() )
+        {
+            if ( static_cast<Eigen::Index>(host.size()) != num_rows )
+            {
+                throw std::invalid_argument(
+                    "lgpsf::fit_operator: the row delegate returned "
+                    + std::to_string(host.size()) + " hosts for "
+                    + std::to_string(num_rows)
+                    + " rows (return one per row, or nothing at all)");
+            }
+            if ( !delegate->solve )
+            {
+                throw std::invalid_argument(
+                    "lgpsf::fit_operator: the row delegate assigned hosts but "
+                    "has no solve callback");
+            }
+            delegating = true;
+        }
+    }
+
+    // The rows this call will NOT fit itself, ascending, and the staging slot
+    // each one owns. Only these ever materialize a package; a local row keeps
+    // the fused path and allocates nothing. Slots are handed out in ascending
+    // row order, so the protocol adds no order dependence of its own.
+    std::vector<int> delegated;
+    std::vector<int> slot_of_row;
+    if ( delegating )
+    {
+        slot_of_row.assign(static_cast<std::size_t>(num_rows), -1);
+        for ( Eigen::Index rho = 0; rho < num_rows; ++rho )
+        {
+            const std::size_t r = static_cast<std::size_t>(rho);
+            if ( attempt[r] && host[r] != delegate->self )
+            {
+                slot_of_row[r] = static_cast<int>(delegated.size());
+                delegated.push_back(static_cast<int>(rho));
+            }
+        }
+    }
+    std::vector<detail::RowFitProblem> problems(delegated.size());
+    std::vector<int> spike_of_slot(delegated.size(), -1);
+    std::vector<char> packed(delegated.size(), 0);
 
     ellipsoid_tree::detail::parallel_for(
         0, static_cast<std::ptrdiff_t>(num_rows),
@@ -1139,13 +1404,23 @@ inline OperatorFit fit_operator(
                         coarse_config ? *coarse_config : row_config;
 
                     // PHASE A ends here. Everything the search needs is now in
-                    // one self-contained package -- the quadrature by pointer,
-                    // so an uncoarsened row still fits on its own window with no
-                    // copy -- and nothing below it reads rank-local state.
-                    detail::RowFitProblem problem;
-                    problem.x_fit = &x_fit;
-                    problem.m2_fit = &m2_fit;
-                    problem.z_fit = &z_fit;
+                    // one self-contained package, and nothing below it reads
+                    // rank-local state.
+                    //
+                    // A LOCAL row's package is a view: the quadrature by
+                    // pointer, so an uncoarsened row still fits on its own
+                    // window with no copy. A DELEGATED row's package must
+                    // outlive this iteration, so it takes the arrays over by
+                    // move -- free, because the row is not fitted here and its
+                    // window arrays are dead the moment the package is built.
+                    const int slot = delegating
+                        ? slot_of_row[static_cast<std::size_t>(rho)]
+                        : -1;
+                    detail::RowFitProblem fused;
+                    detail::RowFitProblem& problem =
+                        ( slot >= 0 )
+                            ? problems[static_cast<std::size_t>(slot)]
+                            : fused;
                     problem.spike_fit = spike_fit;
                     problem.num_extra = num_extra;
                     problem.y = y;
@@ -1154,53 +1429,63 @@ inline OperatorFit fit_operator(
                     problem.sigma = covariance;
                     problem.center = center;
                     problem.coarsened = coarsened;
-                    problem.fit_config = &fit_config;
 
-                    // --- PHASE B: the baseline ladder and the searched fit --
-                    //
-                    // From here to the counter harvest nothing reads the full
-                    // window, only the fit's quadrature.  It is the part a
-                    // fitting-only redistribution could move, and it is a pure
-                    // function of `problem` (dev/row-balance-plan.md).
-                    const auto search_start = std::chrono::steady_clock::now();
-                    const detail::RowFitCandidates finalists =
-                        detail::fit_row_candidates(problem, baseline_sets,
-                                                   row_config, num_probes,
-                                                   baseline_params, search_params);
-                    outcome.evaluations = finalists.evaluations;
-                    outcome.candidates = finalists.candidates;
-                    outcome.max_modes = finalists.max_modes;
-                    outcome.search_seconds =
-                        std::chrono::duration<double>(
-                            std::chrono::steady_clock::now()
-                            - search_start).count();
+                    if ( slot >= 0 )
+                    {
+                        // Handed away: phases B and C wait for the delegate.
+                        // Nothing below this point may read x_fit / m2_fit /
+                        // z_fit / x_window / m2_window / z -- they have been
+                        // moved from -- and the flag is set LAST, so a row
+                        // that threw above is not in the batch (which rows are
+                        // packageable is known only after phase A, never from
+                        // the assignment).
+                        problem.adopt(
+                            coarsened ? std::move(coarse.x) : std::move(x_window),
+                            coarsened ? std::move(coarse.m2) : std::move(m2_window),
+                            coarsened ? std::move(coarse.z) : std::move(z),
+                            coarse_config ? std::move(*coarse_config) : row_config);
+                        const std::size_t s = static_cast<std::size_t>(slot);
+                        spike_of_slot[s] = spike_position;
+                        packed[s] = 1;
+                    }
+                    else
+                    {
+                        problem.view(x_fit, m2_fit, z_fit, fit_config);
 
-                    // --- PHASE C: full-window re-score, guard, selection ----
-                    //
-                    // Back on the full window phase A gathered: the deployed
-                    // support is the window, never the coarsening, so this
-                    // phase stays with the row's owner.
-                    const auto rescore_start = std::chrono::steady_clock::now();
-                    detail::select_row_fit(problem, finalists, x_window, m2_window,
-                                           z, spike_position, baseline_sets,
-                                           row_config, outcome);
-                    outcome.rescore_seconds =
-                        std::chrono::duration<double>(
-                            std::chrono::steady_clock::now()
-                            - rescore_start).count();
+                        // --- PHASE B: the baseline ladder and the searched fit --
+                        //
+                        // From here to the counter harvest nothing reads the full
+                        // window, only the fit's quadrature.  It is the part a
+                        // fitting-only redistribution moves, and it is a pure
+                        // function of `problem` (dev/row-balance-plan.md).
+                        const auto search_start = std::chrono::steady_clock::now();
+                        const detail::RowFitCandidates finalists =
+                            detail::fit_row_candidates(problem, context);
+                        outcome.evaluations = finalists.evaluations;
+                        outcome.candidates = finalists.candidates;
+                        outcome.max_modes = finalists.max_modes;
+                        outcome.search_seconds =
+                            std::chrono::duration<double>(
+                                std::chrono::steady_clock::now()
+                                - search_start).count();
+
+                        // --- PHASE C: full-window re-score, guard, selection ----
+                        //
+                        // Back on the full window phase A gathered: the deployed
+                        // support is the window, never the coarsening, so this
+                        // phase stays with the row's owner.
+                        const auto rescore_start = std::chrono::steady_clock::now();
+                        detail::select_row_fit(problem, finalists, context, x_window,
+                                               m2_window, z, spike_position, outcome);
+                        outcome.rescore_seconds =
+                            std::chrono::duration<double>(
+                                std::chrono::steady_clock::now()
+                                - rescore_start).count();
+                    }
                 }
                 catch ( const std::exception& error )
                 {
-                    outcome.status = RowStatus::Failed;
-                    outcome.failure = error.what();
-                    outcome.window.clear();
-                    outcome.fit_points = 0;
-                    outcome.evaluations = 0;
-                    outcome.candidates = 0;
-                    outcome.max_modes = 0;
-                    outcome.coarsen_seconds = 0.0;
-                    outcome.search_seconds = 0.0;
-                    outcome.rescore_seconds = 0.0;
+                    detail::fail_row(outcome, error.what());
                 }
                 outcome.row_seconds =
                     std::chrono::duration<double>(
@@ -1208,6 +1493,133 @@ inline OperatorFit fit_operator(
             }
         },
         config.num_threads);
+
+    // --- the delegated rows: solved elsewhere, finished at home -------------
+    //
+    // Phase C cannot move (the deployed support is the full window, which the
+    // host never receives), so it happens here, after the fits come back. The
+    // full-window arrays are phase A locals and are gone by now, so they are
+    // gathered a second time from `outcome.window`, which persists for the
+    // whole call. That second gather is the price of not keeping every row's
+    // window arrays alive, and it is part of the residual this scheme leaves
+    // with the owner (`dev/row-balance-plan.md`, sections 1 and 3).
+    if ( delegating )
+    {
+        // Compact to the rows phase A actually packaged, ascending. A row that
+        // threw is already a Failed row and is not in the batch: a receiver
+        // that sized itself from the assignment rather than from the data
+        // would hang the job on one row failing on one rank (section 9).
+        std::vector<int> solve_rows;
+        std::vector<int> solve_spike;
+        std::size_t kept = 0;
+        for ( std::size_t i = 0; i < problems.size(); ++i )
+        {
+            if ( !packed[i] )
+            {
+                continue;
+            }
+            if ( kept != i )
+            {
+                problems[kept] = std::move(problems[i]);
+            }
+            solve_rows.push_back(delegated[i]);
+            solve_spike.push_back(spike_of_slot[i]);
+            ++kept;
+        }
+        problems.resize(kept);
+
+        // Called even with nothing to solve: an implementation that exchanges
+        // has to be entered on every rank, including one that sends nothing.
+        std::vector<detail::RowFitCandidates> solved(kept);
+        delegate->solve(context, solve_rows, problems, solved);
+        if ( solved.size() != kept )
+        {
+            throw std::invalid_argument(
+                "lgpsf::fit_operator: the row delegate returned "
+                + std::to_string(solved.size()) + " results for "
+                + std::to_string(kept)
+                + " problems (fill the slots, do not resize them)");
+        }
+
+        ellipsoid_tree::detail::parallel_for(
+            0, static_cast<std::ptrdiff_t>(kept),
+            [&]( std::ptrdiff_t begin, std::ptrdiff_t end ) {
+                for ( std::ptrdiff_t i = begin; i < end; ++i )
+                {
+                    const std::size_t k = static_cast<std::size_t>(i);
+                    const Eigen::Index rho =
+                        static_cast<Eigen::Index>(solve_rows[k]);
+                    detail::RowOutcome& outcome =
+                        outcomes[static_cast<std::size_t>(rho)];
+                    const detail::RowFitProblem& problem = problems[k];
+                    detail::RowFitCandidates& finalists = solved[k];
+                    const auto row_start = std::chrono::steady_clock::now();
+                    try
+                    {
+                        if ( !finalists.solved() )
+                        {
+                            // The delegate could not fit this row. It fails
+                            // exactly as a local throw does -- never a silent
+                            // zero -- and says so.
+                            throw std::runtime_error(
+                                finalists.failure.empty()
+                                    ? std::string("the row delegate returned no "
+                                                  "fit for this row")
+                                    : finalists.failure);
+                        }
+
+                        const std::vector<int>& window = outcome.window;
+                        const Eigen::Index window_size =
+                            static_cast<Eigen::Index>(window.size());
+                        Eigen::MatrixXd x_window(window_size, dim);
+                        Eigen::VectorXd m2_window(window_size);
+                        Eigen::MatrixXd z(window_size, num_probes);
+                        for ( Eigen::Index j = 0; j < window_size; ++j )
+                        {
+                            const int column = window[static_cast<std::size_t>(j)];
+                            x_window.row(j) = x_cols.row(column);
+                            m2_window(j) = m2_diag(column);
+                            z.row(j) = V.row(column);
+                        }
+
+                        // `y_hat` is a pure function of the package, so it
+                        // need not have travelled; refilling it here is bit
+                        // for bit what phase B would have produced.
+                        if ( finalists.y_hat.size() == 0 )
+                        {
+                            finalists.y_hat =
+                                whiten_data(problem.y, problem.target_mass);
+                        }
+
+                        // The counters only the search knows, home with the
+                        // finalists: nothing downstream can recompute them.
+                        outcome.evaluations = finalists.evaluations;
+                        outcome.candidates = finalists.candidates;
+                        outcome.max_modes = finalists.max_modes;
+
+                        const auto rescore_start = std::chrono::steady_clock::now();
+                        detail::select_row_fit(problem, finalists, context, x_window,
+                                               m2_window, z, solve_spike[k], outcome);
+                        outcome.rescore_seconds =
+                            std::chrono::duration<double>(
+                                std::chrono::steady_clock::now()
+                                - rescore_start).count();
+                    }
+                    catch ( const std::exception& error )
+                    {
+                        detail::fail_row(outcome, error.what());
+                    }
+                    // The owner's own seconds for this row: phase A from the
+                    // first pass, plus the re-gather and phase C from this
+                    // one. What the SEARCH cost, wherever it ran, is not
+                    // known here and stays zero in `search_seconds`.
+                    outcome.row_seconds +=
+                        std::chrono::duration<double>(
+                            std::chrono::steady_clock::now() - row_start).count();
+                }
+            },
+            config.num_threads);
+    }
 
     // --- serial gather, in row order ---------------------------------------
     //
