@@ -48,6 +48,20 @@ and `r` is the share of a migrated row's seconds that stays with its owner
 because phases A and C do not move (section 2). With `fit_points` alone the
 rule moves more rows (17,150) and lands at 4.1 at `r = 0.15`.
 
+**MEASURED 2026-09-08: `r = 0.084`, so the outcome is 3.6.** Slice 0 is done.
+Real continental windows were replayed on a laptop with the phase timers on
+(the replayed coarse point count matches the recorded one exactly for every
+row, which is the check that the geometry is faithful); the search alone was
+rescaled to the recorded evaluation count, since the synthetic target
+converges in about 6% of them while the coarsening, the re-score and the
+gather are value-independent and measured directly. Over the rows that would
+migrate, `r` is 0.05 / 0.09 / 0.14 at p10 / p50 / p90 and 0.084 weighted by
+seconds. The bias is conservative: if the field reached larger mode sets than
+the replay, `r` is overstated and the payoff is bigger. So the fit's per-rank
+max/mean goes 22.2 -> 3.6, a rebuild goes from 1,938 s to about 1,110
+(Gauss-Newton) and from 3,554 s to about 1,400 (full Hessian). Method and
+numbers: the maintainer's research repo, `row_balance/`.
+
 **The result is about `1 + 22 r`, so the entire payoff is the residual.** Once
 the search is balanced, what is left sits on the same ranks that were
 overloaded, and it alone sets the makespan. The structural estimate is
@@ -56,8 +70,8 @@ about 3%), which puts the outcome near 4 and a full-Hessian rebuild at roughly
 1,600 s instead of 3,554. But `r` is an ESTIMATE, and it is worse for exactly
 the rows that move: phases A and C scale with the full window while phase B
 scales with the coarse cells, so a heavily coarsened row has a larger `r` than
-the average. **Measuring `r` is slice 0 and gates everything else** -- the
-payoff swings between twelvefold and twofold across the range above.
+the average. Measuring `r` was slice 0; it is done, and the number above is what the rest
+of this document is sized by.
 
 Three facts drive the design.
 
@@ -407,12 +421,12 @@ true today; migration makes it load-bearing.
 
 ## 8. Slices
 
-0. **Measure `r`, the resident share.** Two `steady_clock` pairs inside the row
-   body -- one around the coarsening, one around the re-score -- reported
-   alongside `row_seconds`, plus one continental build. Everything downstream
-   is sized by this number and section 1 shows the payoff swinging between
-   twofold and twelvefold across its plausible range. Do this first; it is
-   hours, not days.
+0. **Measure `r`, the resident share.** DONE 2026-09-08 (lgpsf `2e4e1cd`): three
+   `steady_clock` pairs around the coarsening, the search and the re-score,
+   reported alongside `row_seconds` and exposed to Python; then real
+   continental windows replayed locally against them. `r = 0.084`. No cluster
+   job was needed and none is: once the timers reach the consumer's dump, the
+   next production run confirms them for free.
 1. **Phase split, no migration.** `operator_fit.hpp` only; the three phases
    run back to back on D1. Acceptance: every existing test passes bitwise,
    including the MPI gate, with no API change.
