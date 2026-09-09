@@ -392,6 +392,329 @@ struct RowOutcome
     std::string failure;
 };
 
+/// PHASE A's product and PHASE B's input: everything the mode-set ladder and
+/// the LM search read, and nothing else. A row's fit is a pure function of
+/// this, which is what makes a fitting-only redistribution bitwise safe
+/// (`dev/row-balance-plan.md`, sections 3 and 6): no rank-local state is read
+/// below phase A.
+///
+/// The quadrature is held as NON-OWNING pointers. On an uncoarsened row
+/// `x_fit` IS the full window, and no row may copy its window; the pointees
+/// are the caller's `x_window` / `m2_window` / `z`, or the `CoarseWindow` it
+/// built from them, and both outlive the search. Everything else is small
+/// enough to own (dim x dim, or one value per probe).
+///
+/// `sigma` is the row's RAW a-priori covariance and is NOT redundant with
+/// `prior_L`. It seeds the LM stream -- `InitialGuess::sigma` reaches
+/// `theta_hat_from_sigma`, which is `theta_hat_from_cholesky(chol(sigma))` --
+/// and rebuilding `L L^T` and factoring it again does not return `L` bit for
+/// bit. A package that shipped only `prior_L` would fit a different row.
+struct RowFitProblem
+{
+    const Eigen::MatrixXd* x_fit = nullptr;   ///< (fit_size, dim)
+    const Eigen::VectorXd* m2_fit = nullptr;  ///< (fit_size,)
+    const Eigen::MatrixXd* z_fit = nullptr;   ///< (fit_size, num_probes)
+    int spike_fit = -1;       ///< The spike's cell in the quadrature, or -1
+    int num_extra = 0;        ///< 1 with a spike, 0 without
+    Eigen::VectorXd y;        ///< (num_probes,) the row's responses
+    double target_mass = 0.0;
+    Eigen::MatrixXd prior_L;  ///< (dim, dim) Cholesky factor of sigma
+    Eigen::MatrixXd sigma;    ///< (dim, dim) the RAW covariance -- see above
+    Eigen::VectorXd center;   ///< (dim,)
+    bool coarsened = false;   ///< Whether the quadrature is the coarsening
+
+    /// The config the search runs under: the shared `row_config`, or the
+    /// coarsened row's own copy of it with the released-centre resolution
+    /// rule armed. Non-owning like the quadrature; `coarsened` is the flag a
+    /// package would carry, the host rebuilding the copy from it.
+    const ProbeFitConfig* fit_config = nullptr;
+};
+
+/// PHASE B's product and PHASE C's input: the two finalists, plus the counters
+/// only the search knows. The counters must cross back with the finalists --
+/// they become `FitDiagnostics::evaluations` / `candidates` / `work` and,
+/// circularly, the next rung's scheduling weight -- and nothing downstream can
+/// recompute them.
+struct RowFitCandidates
+{
+    /// Index into the globally identical `baseline_sets`, so this identifies
+    /// the same mode set on any rank. -1 never leaves phase B: it throws.
+    int baseline_index = -1;
+    Eigen::VectorXd theta_baseline;
+    Eigen::VectorXd baseline_c;
+    Eigen::VectorXd baseline_s;
+    double baseline_score = std::numeric_limits<double>::infinity();
+
+    /// The searched fit; unset when no mode set was searchable.
+    std::optional<ProbeFitResult> searched;
+
+    int evaluations = 0;
+    int candidates = 0;
+    int max_modes = 0;  ///< largest mode set the search tried
+
+    /// (num_probes,) the whitened responses. Recomputable from the problem's
+    /// `y` and `target_mass`, so a migration would refill it on arrival rather
+    /// than send it; it rides here so the fused path whitens exactly once,
+    /// inside the search timer, as before the phase split.
+    Eigen::VectorXd y_hat;
+};
+
+/// PHASE B: the pinned baseline over the mode-set ladder, then the searched
+/// fit. Reads only the fit's quadrature -- never the full window -- and
+/// touches no clock, no `RowOutcome` and no caller state beyond the globals
+/// every rank holds identically. This is the phase a fitting-only
+/// redistribution moves (`dev/row-balance-plan.md`).
+///
+/// @throws std::invalid_argument if no mode set passes the counting rule.
+inline RowFitCandidates fit_row_candidates(
+    const RowFitProblem& problem,
+    const std::vector<std::vector<Mode>>& baseline_sets,
+    const ProbeFitConfig& row_config,
+    Eigen::Index num_probes,
+    int baseline_params,
+    int search_params )
+{
+    const Eigen::MatrixXd& x_fit = *problem.x_fit;
+    const Eigen::VectorXd& m2_fit = *problem.m2_fit;
+    const Eigen::MatrixXd& z_fit = *problem.z_fit;
+    const Eigen::VectorXd& center = problem.center;
+    const double target_mass = problem.target_mass;
+    const int num_extra = problem.num_extra;
+    const int spike_fit = problem.spike_fit;
+    const Eigen::Index fit_size = x_fit.rows();
+
+    RowFitCandidates out;
+
+    // --- baseline: a linear fit at sigma[rho], pinned -----------------------
+    const Eigen::MatrixXd z_hat = whiten_probes(z_fit, m2_fit);
+    Eigen::VectorXd y_hat = whiten_data(problem.y, target_mass);
+    Eigen::MatrixXd extra = Eigen::MatrixXd::Zero(fit_size, num_extra);
+    if ( num_extra > 0 )
+    {
+        extra(spike_fit, 0) = 1.0;
+    }
+    const Eigen::MatrixXd e_hat =
+        whiten_extra(extra, target_mass, m2_fit);
+    Eigen::VectorXd theta_baseline =
+        theta_hat_from_cholesky(problem.prior_L);
+
+    double baseline_score = std::numeric_limits<double>::infinity();
+    Eigen::VectorXd baseline_c, baseline_s;
+    int baseline_index = -1;
+    for ( std::size_t set = 0; set < baseline_sets.size(); ++set )
+    {
+        const std::vector<Mode>& modes = baseline_sets[set];
+        if ( static_cast<int>(num_probes)
+             < 2 * (static_cast<int>(modes.size()) + num_extra
+                    + baseline_params) )
+        {
+            continue;
+        }
+        const WhitenedBasis basis(x_fit, target_mass, m2_fit,
+                                  modes, center, MuMode::Pinned);
+        const double score =
+            linear_cv_score(z_hat, y_hat, basis, theta_baseline,
+                            e_hat, row_config.split);
+        if ( score < baseline_score )
+        {
+            baseline_score = score;
+            std::tie(baseline_c, baseline_s) = detail::linear_fit(
+                z_hat, y_hat, basis, theta_baseline, e_hat);
+            baseline_index = static_cast<int>(set);
+        }
+    }
+    if ( baseline_index < 0 )
+    {
+        throw std::invalid_argument(
+            "no mode set passed the counting rule at k="
+            + std::to_string(num_probes));
+    }
+
+    // --- the searched fit -----------------------------------
+    bool searchable = false;
+    for ( const std::vector<Mode>& modes : baseline_sets )
+    {
+        searchable =
+            searchable
+            || static_cast<int>(num_probes)
+                   >= 2 * (static_cast<int>(modes.size()) + num_extra
+                           + search_params);
+    }
+    std::optional<ProbeFitResult> searched;
+    if ( searchable )
+    {
+        // The caller's a-priori shape is passed as the FIRST
+        // guess, so it is tried before the default rungs --
+        // the dictionary the row fit assembles is unchanged
+        // from when `sigma0` was its own parameter.
+        InitialGuess prior;
+        prior.sigma = problem.sigma;
+        prior.label = "sigma0";
+        searched = fit_from_probes(
+            x_fit, m2_fit, z_fit, problem.y, center, spike_fit,
+            *problem.fit_config, {prior}, target_mass);
+    }
+    if ( searched )
+    {
+        out.evaluations = searched->evaluations_total;
+        out.candidates = searched->candidates_tried;
+        for ( const CandidateFit& candidate : searched->candidates )
+        {
+            out.max_modes = std::max(
+                out.max_modes,
+                static_cast<int>(candidate.num_modes()));
+        }
+    }
+
+    // The finalists, and the counters that must travel with them.
+    out.baseline_index = baseline_index;
+    out.baseline_score = baseline_score;
+    out.theta_baseline = std::move(theta_baseline);
+    out.baseline_c = std::move(baseline_c);
+    out.baseline_s = std::move(baseline_s);
+    out.y_hat = std::move(y_hat);
+    out.searched = std::move(searched);
+    return out;
+}
+
+/// PHASE C: the full-window re-score of the finalists, the baseline guard, and
+/// the selection into `outcome`. Runs where the window is -- the deployed
+/// support is the full window, never the coarse one, so this cannot move off
+/// the row's owner -- and reads the full-window arrays phase A already built
+/// (@p x_window, @p m2_window, @p z), never re-gathering them here.
+///
+/// Of @p problem it reads only the owned members (center, prior_L,
+/// target_mass, num_extra, coarsened); the quadrature pointers are phase B's
+/// business and may be dangling by now.
+inline void select_row_fit(
+    const RowFitProblem& problem,
+    const RowFitCandidates& finalists,
+    const Eigen::MatrixXd& x_window,
+    const Eigen::VectorXd& m2_window,
+    const Eigen::MatrixXd& z,
+    int spike_position,
+    const std::vector<std::vector<Mode>>& baseline_sets,
+    const ProbeFitConfig& row_config,
+    RowOutcome& outcome )
+{
+    const Eigen::Index window_size = x_window.rows();
+    const Eigen::VectorXd& center = problem.center;
+    const double target_mass = problem.target_mass;
+    const int num_extra = problem.num_extra;
+    const std::vector<Mode>& baseline_modes =
+        baseline_sets[static_cast<std::size_t>(finalists.baseline_index)];
+    const std::optional<ProbeFitResult>& searched = finalists.searched;
+    const Eigen::VectorXd& y_hat = finalists.y_hat;
+    const Eigen::VectorXd& theta_baseline = finalists.theta_baseline;
+    double baseline_score = finalists.baseline_score;
+
+    // --- full-window re-score of the finalists --------------
+    //
+    // On a coarsened row the scores so far are coarse-
+    // quadrature scores: the search's internal currency. The
+    // guard is taken, and the diagnostics report, the same two
+    // models scored on the FULL window -- one linear_cv_score
+    // each, O(K m), negligible against a fit -- so `score` and
+    // `baseline_score` keep their literal meaning, and an
+    // aliasing artifact (good on the cells, bad on the points)
+    // cannot ship. The coefficients are not refit.
+    double searched_score =
+        searched ? searched->score
+                 : std::numeric_limits<double>::infinity();
+    if ( problem.coarsened )
+    {
+        const Eigen::MatrixXd z_hat_full = whiten_probes(z, m2_window);
+        Eigen::MatrixXd extra_full =
+            Eigen::MatrixXd::Zero(window_size, num_extra);
+        if ( num_extra > 0 )
+        {
+            extra_full(spike_position, 0) = 1.0;
+        }
+        const Eigen::MatrixXd e_hat_full =
+            whiten_extra(extra_full, target_mass, m2_window);
+
+        const WhitenedBasis full_baseline(
+            x_window, target_mass, m2_window, baseline_modes,
+            center, MuMode::Pinned);
+        baseline_score = linear_cv_score(
+            z_hat_full, y_hat, full_baseline, theta_baseline,
+            e_hat_full, row_config.split);
+
+        if ( searched )
+        {
+            // The winner is evaluated in the encoding
+            // fit_from_probes fitted it in: about `center`,
+            // the only centre this row's dictionary uses (the
+            // prior guess carries none; rungs, warm starts and
+            // the release stage all sit at default_mu), with
+            // the centre fitted when the candidate's was --
+            // released, or under MuPolicy::Free, where
+            // `released` stays false by convention. A pinned
+            // re-encoding would drop a released displacement
+            // and score the wrong model.
+            const MuMode winner_mode =
+                ( searched->released
+                  || row_config.mu == MuPolicy::Free )
+                    ? MuMode::Fitted
+                    : MuMode::Pinned;
+            const WhitenedBasis full_winner(
+                x_window, target_mass, m2_window,
+                searched->model.modes, center, winner_mode);
+            searched_score = linear_cv_score(
+                z_hat_full, y_hat, full_winner,
+                to_theta_hat(searched->model.theta, center,
+                             winner_mode),
+                e_hat_full, row_config.split);
+        }
+    }
+
+    // --- the guard ------------------------------------------
+    outcome.baseline_score = baseline_score;
+    if ( searched && searched_score < baseline_score )
+    {
+        outcome.status = RowStatus::Fit;
+        const EllipsoidFrame shipped = searched->model.frame();
+        outcome.theta = searched->model.theta;
+        outcome.mu = shipped.mu;
+        outcome.L = shipped.L;
+        outcome.c = searched->model.c;
+        outcome.modes = searched->model.modes;
+        outcome.s =
+            searched->model.s.size() ? searched->model.s(0) : 0.0;
+        outcome.score = searched_score;
+        outcome.released = searched->released;
+    }
+    else
+    {
+        outcome.status = RowStatus::FallbackBaseline;
+        outcome.theta =
+            to_theta(theta_baseline, center, MuMode::Pinned);
+        outcome.mu = center;
+        outcome.L = problem.prior_L;
+        outcome.c = finalists.baseline_c;
+        outcome.modes = baseline_modes;
+        outcome.s = finalists.baseline_s.size() ? finalists.baseline_s(0) : 0.0;
+        outcome.score = baseline_score;
+        outcome.released = false;
+    }
+    if ( !searched )
+    {
+        outcome.stop = RowStop::SearchInfeasible;
+    }
+    else
+    {
+        switch ( searched->stop_reason )
+        {
+            case StopReason::Target:
+                outcome.stop = RowStop::Target; break;
+            case StopReason::ModePatience:
+                outcome.stop = RowStop::ModePatience; break;
+            case StopReason::Exhausted:
+                outcome.stop = RowStop::Exhausted; break;
+        }
+    }
+}
+
 } // end namespace detail
 
 /// Fit the parametric approximation from raw probes and responses.
@@ -685,6 +1008,11 @@ inline OperatorFit fit_operator(
                 const auto row_start = std::chrono::steady_clock::now();
                 try
                 {
+                    // --- PHASE A: window, quadrature, and the fit package ---
+                    //
+                    // Resolves this row's geometry and gathers its data.  Runs
+                    // where the row's columns are; a redistribution moves what
+                    // comes out of it, not this.
                     const Eigen::VectorXd center = centers.row(rho).transpose();
                     const Eigen::MatrixXd& covariance =
                         sigma[static_cast<std::size_t>(rho)];
@@ -810,202 +1138,52 @@ inline OperatorFit fit_operator(
                     const ProbeFitConfig& fit_config =
                         coarse_config ? *coarse_config : row_config;
 
-                    // --- baseline: a linear fit at sigma[rho], pinned -------
+                    // PHASE A ends here. Everything the search needs is now in
+                    // one self-contained package -- the quadrature by pointer,
+                    // so an uncoarsened row still fits on its own window with no
+                    // copy -- and nothing below it reads rank-local state.
+                    detail::RowFitProblem problem;
+                    problem.x_fit = &x_fit;
+                    problem.m2_fit = &m2_fit;
+                    problem.z_fit = &z_fit;
+                    problem.spike_fit = spike_fit;
+                    problem.num_extra = num_extra;
+                    problem.y = y;
+                    problem.target_mass = target_mass;
+                    problem.prior_L = prior_L;
+                    problem.sigma = covariance;
+                    problem.center = center;
+                    problem.coarsened = coarsened;
+                    problem.fit_config = &fit_config;
+
+                    // --- PHASE B: the baseline ladder and the searched fit --
                     //
-                    // PHASE B begins here: from this point to the counter
-                    // harvest below, nothing reads the full window, only the
-                    // fit's quadrature.  It is the part a fitting-only
-                    // redistribution could move (dev/row-balance-plan.md).
+                    // From here to the counter harvest nothing reads the full
+                    // window, only the fit's quadrature.  It is the part a
+                    // fitting-only redistribution could move, and it is a pure
+                    // function of `problem` (dev/row-balance-plan.md).
                     const auto search_start = std::chrono::steady_clock::now();
-                    const Eigen::MatrixXd z_hat = whiten_probes(z_fit, m2_fit);
-                    const Eigen::VectorXd y_hat = whiten_data(y, target_mass);
-                    Eigen::MatrixXd extra = Eigen::MatrixXd::Zero(fit_size, num_extra);
-                    if ( num_extra > 0 )
-                    {
-                        extra(spike_fit, 0) = 1.0;
-                    }
-                    const Eigen::MatrixXd e_hat =
-                        whiten_extra(extra, target_mass, m2_fit);
-                    const Eigen::VectorXd theta_baseline =
-                        theta_hat_from_cholesky(prior_L);
-
-                    double baseline_score = std::numeric_limits<double>::infinity();
-                    Eigen::VectorXd baseline_c, baseline_s;
-                    const std::vector<Mode>* baseline_modes = nullptr;
-                    for ( const std::vector<Mode>& modes : baseline_sets )
-                    {
-                        if ( static_cast<int>(num_probes)
-                             < 2 * (static_cast<int>(modes.size()) + num_extra
-                                    + baseline_params) )
-                        {
-                            continue;
-                        }
-                        const WhitenedBasis basis(x_fit, target_mass, m2_fit,
-                                                  modes, center, MuMode::Pinned);
-                        const double score =
-                            linear_cv_score(z_hat, y_hat, basis, theta_baseline,
-                                            e_hat, row_config.split);
-                        if ( score < baseline_score )
-                        {
-                            baseline_score = score;
-                            std::tie(baseline_c, baseline_s) = detail::linear_fit(
-                                z_hat, y_hat, basis, theta_baseline, e_hat);
-                            baseline_modes = &modes;
-                        }
-                    }
-                    if ( baseline_modes == nullptr )
-                    {
-                        throw std::invalid_argument(
-                            "no mode set passed the counting rule at k="
-                            + std::to_string(num_probes));
-                    }
-
-                    // --- the searched fit -----------------------------------
-                    bool searchable = false;
-                    for ( const std::vector<Mode>& modes : baseline_sets )
-                    {
-                        searchable =
-                            searchable
-                            || static_cast<int>(num_probes)
-                                   >= 2 * (static_cast<int>(modes.size()) + num_extra
-                                           + search_params);
-                    }
-                    std::optional<ProbeFitResult> searched;
-                    if ( searchable )
-                    {
-                        // The caller's a-priori shape is passed as the FIRST
-                        // guess, so it is tried before the default rungs --
-                        // the dictionary the row fit assembles is unchanged
-                        // from when `sigma0` was its own parameter.
-                        InitialGuess prior;
-                        prior.sigma = covariance;
-                        prior.label = "sigma0";
-                        searched = fit_from_probes(
-                            x_fit, m2_fit, z_fit, y, center, spike_fit,
-                            fit_config, {prior}, target_mass);
-                    }
-                    if ( searched )
-                    {
-                        outcome.evaluations = searched->evaluations_total;
-                        outcome.candidates = searched->candidates_tried;
-                        for ( const CandidateFit& candidate : searched->candidates )
-                        {
-                            outcome.max_modes = std::max(
-                                outcome.max_modes,
-                                static_cast<int>(candidate.num_modes()));
-                        }
-                    }
+                    const detail::RowFitCandidates finalists =
+                        detail::fit_row_candidates(problem, baseline_sets,
+                                                   row_config, num_probes,
+                                                   baseline_params, search_params);
+                    outcome.evaluations = finalists.evaluations;
+                    outcome.candidates = finalists.candidates;
+                    outcome.max_modes = finalists.max_modes;
                     outcome.search_seconds =
                         std::chrono::duration<double>(
                             std::chrono::steady_clock::now()
                             - search_start).count();
-                    const auto rescore_start = std::chrono::steady_clock::now();
 
-                    // --- full-window re-score of the finalists --------------
+                    // --- PHASE C: full-window re-score, guard, selection ----
                     //
-                    // On a coarsened row the scores so far are coarse-
-                    // quadrature scores: the search's internal currency. The
-                    // guard is taken, and the diagnostics report, the same two
-                    // models scored on the FULL window -- one linear_cv_score
-                    // each, O(K m), negligible against a fit -- so `score` and
-                    // `baseline_score` keep their literal meaning, and an
-                    // aliasing artifact (good on the cells, bad on the points)
-                    // cannot ship. The coefficients are not refit.
-                    double searched_score =
-                        searched ? searched->score
-                                 : std::numeric_limits<double>::infinity();
-                    if ( coarsened )
-                    {
-                        const Eigen::MatrixXd z_hat_full = whiten_probes(z, m2_window);
-                        Eigen::MatrixXd extra_full =
-                            Eigen::MatrixXd::Zero(window_size, num_extra);
-                        if ( num_extra > 0 )
-                        {
-                            extra_full(spike_position, 0) = 1.0;
-                        }
-                        const Eigen::MatrixXd e_hat_full =
-                            whiten_extra(extra_full, target_mass, m2_window);
-
-                        const WhitenedBasis full_baseline(
-                            x_window, target_mass, m2_window, *baseline_modes,
-                            center, MuMode::Pinned);
-                        baseline_score = linear_cv_score(
-                            z_hat_full, y_hat, full_baseline, theta_baseline,
-                            e_hat_full, row_config.split);
-
-                        if ( searched )
-                        {
-                            // The winner is evaluated in the encoding
-                            // fit_from_probes fitted it in: about `center`,
-                            // the only centre this row's dictionary uses (the
-                            // prior guess carries none; rungs, warm starts and
-                            // the release stage all sit at default_mu), with
-                            // the centre fitted when the candidate's was --
-                            // released, or under MuPolicy::Free, where
-                            // `released` stays false by convention. A pinned
-                            // re-encoding would drop a released displacement
-                            // and score the wrong model.
-                            const MuMode winner_mode =
-                                ( searched->released
-                                  || row_config.mu == MuPolicy::Free )
-                                    ? MuMode::Fitted
-                                    : MuMode::Pinned;
-                            const WhitenedBasis full_winner(
-                                x_window, target_mass, m2_window,
-                                searched->model.modes, center, winner_mode);
-                            searched_score = linear_cv_score(
-                                z_hat_full, y_hat, full_winner,
-                                to_theta_hat(searched->model.theta, center,
-                                             winner_mode),
-                                e_hat_full, row_config.split);
-                        }
-                    }
-
-                    // --- the guard ------------------------------------------
-                    outcome.baseline_score = baseline_score;
-                    if ( searched && searched_score < baseline_score )
-                    {
-                        outcome.status = RowStatus::Fit;
-                        const EllipsoidFrame shipped = searched->model.frame();
-                        outcome.theta = searched->model.theta;
-                        outcome.mu = shipped.mu;
-                        outcome.L = shipped.L;
-                        outcome.c = searched->model.c;
-                        outcome.modes = searched->model.modes;
-                        outcome.s =
-                            searched->model.s.size() ? searched->model.s(0) : 0.0;
-                        outcome.score = searched_score;
-                        outcome.released = searched->released;
-                    }
-                    else
-                    {
-                        outcome.status = RowStatus::FallbackBaseline;
-                        outcome.theta =
-                            to_theta(theta_baseline, center, MuMode::Pinned);
-                        outcome.mu = center;
-                        outcome.L = prior_L;
-                        outcome.c = baseline_c;
-                        outcome.modes = *baseline_modes;
-                        outcome.s = baseline_s.size() ? baseline_s(0) : 0.0;
-                        outcome.score = baseline_score;
-                        outcome.released = false;
-                    }
-                    if ( !searched )
-                    {
-                        outcome.stop = RowStop::SearchInfeasible;
-                    }
-                    else
-                    {
-                        switch ( searched->stop_reason )
-                        {
-                            case StopReason::Target:
-                                outcome.stop = RowStop::Target; break;
-                            case StopReason::ModePatience:
-                                outcome.stop = RowStop::ModePatience; break;
-                            case StopReason::Exhausted:
-                                outcome.stop = RowStop::Exhausted; break;
-                        }
-                    }
+                    // Back on the full window phase A gathered: the deployed
+                    // support is the window, never the coarsening, so this
+                    // phase stays with the row's owner.
+                    const auto rescore_start = std::chrono::steady_clock::now();
+                    detail::select_row_fit(problem, finalists, x_window, m2_window,
+                                           z, spike_position, baseline_sets,
+                                           row_config, outcome);
                     outcome.rescore_seconds =
                         std::chrono::duration<double>(
                             std::chrono::steady_clock::now()
