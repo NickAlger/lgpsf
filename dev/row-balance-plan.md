@@ -401,6 +401,22 @@ Local rows keep exactly today's fused path and never materialize anything.
 This also keeps `operator_fit.hpp` free of MPI: the exchange lives entirely
 behind `solve`.
 
+**AS BUILT (slice 3 first half, `4085adc`), with three corrections to the
+sketch above.** `RowDelegate` also carries `self`, the caller's own host index,
+which "a host equal to this rank's own index" needs and the sketch omitted.
+`solve` takes a `detail::RowFitContext` first -- the baseline sets, the row
+config carrying the hoisted CV split and jitter table, the probe count and the
+two parameter counts -- because without them the search cannot run at all, and
+rebuilding that hoisting outside `fit_operator` would duplicate the one piece
+of logic the determinism argument rests on; a receiving rank uses its own
+context, which SPMD makes identical. And an output slot needs an UNSET state,
+or a delegate that fails to solve a row ships a silent zero: `solved()` is
+false when `baseline_index < 0`, and `failure` carries a foreign throw's
+message home. `solve` is called even with zero rows, so a collective
+implementation is entered on every rank; an empty return from `assign` means
+"no delegation at all" and skips it, so a collective `assign` must return
+full-length on every rank or on none.
+
 ## 6. Determinism
 
 Reassignment is bitwise-safe, and the reasons are already in the code:
@@ -549,12 +565,26 @@ where the coarse score is known to lie.
 **Threads (AGREED, maintainer).** The migrated rows join the host's own rows in
 one `parallel_for`; rows write disjoint slots, so nothing new is needed.
 
-**`row_seconds` attribution (open).** After migration, three different things
-want per-row or per-rank seconds: the owner needs per-row seconds as next
-rung's weight input, the scheduler needs per-rank seconds as the initial load,
-and `DistFitResult::seconds_total` (`dist_fit.hpp:208`) stops meaning "this
-rank's wall time". Decide explicitly rather than letting the existing field
-drift in meaning.
+**`row_seconds` attribution (DECIDED, for the MPI half).** `row_seconds` keeps
+its meaning: everything attributable to the row, wherever it ran. So the host
+returns its phase-B seconds on `RowFitCandidates` and the owner ADDS them to
+the row's total, leaving `r = 1 - search_seconds / row_seconds` well defined
+and comparable across migrated and resident rows. As built, a delegated row
+has `search_seconds = 0` and `row_seconds` counts only the owner's phases,
+which is what the field must fix. Per-rank wall time is a different quantity:
+the scheduler wants the sum over rows FITTED on a rank, so
+`DistFitResult::seconds_total` must be documented as that, not as "this rank's
+rows".
+
+**Nothing in the interface enforces the failure discipline (open, and it is
+the one that hangs).** A collective `solve` is entered once per `fit_operator`
+call and must run to completion inside it. The "wrap the migration region,
+`Allreduce` a flag, throw only after the exchanges complete" rule of this
+section lives entirely in the delegate's body; a rank that throws out of
+`solve` while its peers are still in an exchange will hang the job. The
+interface cannot prevent that, so the MPI half must be written with it in
+front of mind, and the gate must include a rank that fails while others do
+not.
 
 **The gate must cover more than the perverse pass.** The perverse assignment
 (`owner + 1 mod size`) is the identity at n = 1, so that pass is only
