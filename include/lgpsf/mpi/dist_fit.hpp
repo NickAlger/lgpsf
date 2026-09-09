@@ -128,11 +128,29 @@ struct DistFitInput
     std::size_t balance_bytes_cap =
         RowExchangeOptions().bytes_cap;
 
-    /// Replace the assignment rule (diagnostics and the MPI gate, which needs
-    /// a deliberately perverse assignment; production leaves it empty).
-    /// Given every local row's window size, return every local row's host.
-    /// Setting it turns the redistribution on even at `balance_tolerance` 0,
-    /// and it must be set on every rank or on none.
+    /// BRING YOUR OWN ASSIGNMENT.  Given every local row's window size,
+    /// return every local row's host; empty means the library decides.
+    ///
+    /// `balance_rows` is a heuristic over the one thing the library can see,
+    /// a predicted cost per row.  A caller often knows more -- which rows are
+    /// expensive for a reason the weight does not capture, which ranks share a
+    /// node or a socket, where the columns a row needs already live, or simply
+    /// a partition it has already computed for its own reasons -- and this is
+    /// the seam to say so.  Whatever you return is used as given; the library
+    /// does not second-guess it.
+    ///
+    /// Three requirements, all checked.  It must be set on every rank or on
+    /// none, since the decision to redistribute is collective.  It must return
+    /// one host per local row, in local row order.  And it must be a FUNCTION
+    /// of data every rank agrees on, or the ranks will disagree about who is
+    /// sending to whom: unlike the library's own rule, which every rank
+    /// recomputes identically from allgathered weights, an override cannot be
+    /// reconstructed, so the hosts it returns are allgathered.
+    ///
+    /// Setting it turns the redistribution on even at `balance_tolerance` 0.
+    /// The MPI gate uses it for a deliberately perverse assignment, every row
+    /// hosted by `(owner + 1) mod size`, which is how the bit-identity claim
+    /// is mechanized; that is a use of the seam, not its purpose.
     std::function<std::vector<int>(const std::vector<int>&)> balance_assign;
 };
 

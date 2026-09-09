@@ -297,6 +297,16 @@ mean rank load falls, the largest row does not), so whole-row granularity is
 the eventual limit of this scheme, and getting past it means splitting a row's
 search across ranks -- out of scope here, noted in section 9.
 
+**The caller may override the rule entirely.** `DistFitInput::balance_assign`
+takes a local-row-to-host map and is used as given. The rule here is a
+heuristic over the one thing the library can see, a predicted cost per row; a
+caller often knows more (which ranks share a node, where the columns a row
+needs already live, a partition it computed for its own reasons), and that
+knowledge has nowhere else to enter. Decided 2026-09-08: this is a supported
+extension point, not merely the gate's test hook. The override's hosts are
+allgathered, since unlike the library's own rule they cannot be recomputed
+identically on every rank.
+
 **The locality refinement.** A row worth moving is a wide row, and a wide row's
 window already spans several ranks' territories. Restrict the candidate hosts
 of a row to the ranks whose own columns intersect its window (cheaply: whose
