@@ -124,7 +124,10 @@ struct DistFitInput
     /// The rule balances SECONDS and a row heavy in points but short in
     /// search is heavy in bytes and light in time, so a plan that is fine for
     /// the clock can still be an out-of-memory on the few ranks that are
-    /// senders by construction.  See `RowExchangeOptions::bytes_cap`.
+    /// senders by construction.  A migration that does not fit is fitted by
+    /// its owner instead -- bit for bit the same row, at the cost of the wall
+    /// time the plan meant to save.  See `RowExchangeOptions::bytes_cap` for
+    /// the default and where it comes from.
     std::size_t balance_bytes_cap =
         RowExchangeOptions().bytes_cap;
 
@@ -145,7 +148,7 @@ struct DistFitInput
     /// of data every rank agrees on, or the ranks will disagree about who is
     /// sending to whom: unlike the library's own rule, which every rank
     /// recomputes identically from allgathered weights, an override cannot be
-    /// reconstructed, so the hosts it returns are allgathered.
+    /// reconstructed, and what it returns is used exactly as given.
     ///
     /// Setting it turns the redistribution on even at `balance_tolerance` 0.
     /// The MPI gate uses it for a deliberately perverse assignment, every row
@@ -176,7 +179,7 @@ struct DistFitResult
     /// every row unless `balance_tolerance` moved it.  Always filled, so a
     /// consumer's report and dump column do not have to know whether the
     /// redistribution was on.  A row assigned away but never sent (gated out,
-    /// or it threw in phase A, or the byte cap reverted it) reads as this
+    /// or it threw in phase A, or the byte cap kept it home) reads as this
     /// rank, which is where it was in fact fitted.
     ///
     /// Note what `seconds_total` then is: the sum over the rows this rank
@@ -325,8 +328,6 @@ inline DistFitResult dist_fit( const HaloPlan& plan,
         options.bytes_cap = in.balance_bytes_cap;
         options.coarsen_eps = config.coarsen_eps;
         options.num_threads = config.num_threads;
-        options.dim = dim;
-        options.num_probes = k;
         options.prev_evaluations = in.prev_evaluations;
         options.assign_override = in.balance_assign;
         exchange.reset(new RowExchange(plan.comm, std::move(options)));

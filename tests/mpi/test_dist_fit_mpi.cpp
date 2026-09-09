@@ -43,9 +43,19 @@
 //                   first half of the rows 101x the rest, which is the
 //                   production shape: expensive rows cluster spatially), so a
 //                   large fraction of the rows actually migrate.
-//   balanced-cap    the same plan under a byte cap small enough to revert most
-//                   of it: a capped migration must still be bit-identical, and
-//                   the cap must be reported.
+//   balanced-cap    the same plan under a byte cap far too small to hold it.
+//                   The cap is enforced in `solve` on the packed problem's
+//                   TRUE size, and a migration it drops is not abandoned: the
+//                   owner fits that row itself.  So the pass asserts that the
+//                   cap bit (globally -- a rank that sheds nothing caps
+//                   nothing) and that the answer is still bit-identical.
+//   cap-local       every row hosted by rank 0, under a cap sized as a
+//                   fraction of the problem's exact payload, so a large part
+//                   of a planned migration is fitted at home while the rest
+//                   still moves.  At n >= 3 it is rank 0's INCOMING budget
+//                   that binds, refused on the acknowledgement round; at n = 2
+//                   it is the single sender's outgoing total.  Bitwise
+//                   identity under a heavily capped plan is the claim.
 //   perverse        every row hosted by (owner + 1) mod size.  The strongest
 //                   form of the claim -- nothing stays home -- and the pass
 //                   that catches a package missing a member the search reads.
@@ -143,6 +153,13 @@ struct PassSpec
     bool skewed_weights = false;
     bool perverse = false;
     std::size_t bytes_cap = lgpsf::mpi::RowExchangeOptions().bytes_cap;
+    /// A cap sized as a fraction of the problem's EXACT payload (the wire
+    /// size of every row's package, from the reference's fit points), rather
+    /// than an absolute byte count: what binds is then the same whatever the
+    /// mesh, the probe count or the coarsening do.  0 = use `bytes_cap`.
+    double cap_fraction = 0.0;
+    /// Host every row on rank 0, so one rank receives from all the others.
+    bool all_on_rank0 = false;
 
     /// Rank 0 owns no rows (rank 1 owns its share as well).
     bool empty_first_rank = false;
@@ -152,10 +169,15 @@ struct PassSpec
     int poison_row = -1;
     int gated_row = -1;
 
-    /// Demand that rows actually moved, and (for the capped pass) that the
-    /// byte cap actually bit.  Both are meaningless at one rank.
+    /// Demand that rows actually moved, and (for the capped passes) that the
+    /// byte cap actually bit -- both summed over ranks, since a rank that
+    /// sheds nothing caps nothing.  Meaningless at one rank.
     bool expect_migration = false;
     bool expect_capping = false;
+    /// Demand that the RECEIVE-side budget bit, i.e. that a host refused a
+    /// peer on the acknowledgement round and that peer fitted those rows
+    /// itself.  Needs at least two senders into one host, so n >= 3.
+    bool expect_receiver_capping = false;
 };
 
 } // namespace
@@ -342,6 +364,30 @@ int main( int argc, char** argv )
         MPI_Bcast(ref_fit_points.data(), n, MPI_INT, 0, MPI_COMM_WORLD);
         MPI_Bcast(ref_window_size.data(), n, MPI_INT, 0, MPI_COMM_WORLD);
 
+        // ---- the byte cap, sized from the payload that will actually exist -
+        //
+        // `wire::problem_doubles` is the layout the packer writes, so this is
+        // the exact number of bytes the whole problem would put on the wire if
+        // every row moved.  A cap given as a fraction of it binds the same way
+        // whatever the mesh, the probe count or the coarsening do -- which an
+        // absolute byte count does not.
+        std::size_t bytes_cap = spec.bytes_cap;
+        if ( spec.cap_fraction > 0.0 )
+        {
+            std::size_t payload = 0;
+            for ( int i = 0; i < n; ++i )
+            {
+                payload += sizeof(double)
+                           * lgpsf::mpi::wire::problem_doubles(
+                               static_cast<std::size_t>(
+                                   ref_fit_points[static_cast<std::size_t>(i)]),
+                               2u, static_cast<std::size_t>(k));
+            }
+            bytes_cap = static_cast<std::size_t>(
+                spec.cap_fraction * static_cast<double>(payload));
+            if ( bytes_cap == 0 ) { bytes_cap = 1; }
+        }
+
         // ---- the two partitions ----------------------------------------
         //
         // Columns always split evenly; ROWS may not, so that a rank owning no
@@ -410,7 +456,7 @@ int main( int argc, char** argv )
         if ( spec.balance )
         {
             in.balance_tolerance = spec.tolerance;
-            in.balance_bytes_cap = spec.bytes_cap;
+            in.balance_bytes_cap = bytes_cap;
             if ( spec.skewed_weights )
             {
                 // The production shape: the expensive rows cluster spatially,
@@ -431,6 +477,17 @@ int main( int argc, char** argv )
                 {
                     return std::vector<int>(window_sizes.size(),
                                             (self + 1) % ranks);
+                };
+            }
+            if ( spec.all_on_rank0 )
+            {
+                // Every sender aims at one host, which is what makes the
+                // host's INCOMING budget, not any sender's outgoing one, the
+                // thing that binds.
+                in.balance_assign =
+                    []( const std::vector<int>& window_sizes )
+                {
+                    return std::vector<int>(window_sizes.size(), 0);
                 };
             }
         }
@@ -503,10 +560,6 @@ int main( int argc, char** argv )
         if ( static_cast<int>(res.fitted_on_rank.size()) != nrows )
         {
             ++migration_bad;   // the field must always be filled
-        }
-        if ( spec.expect_capping && size > 1 && res.balance.rows_capped == 0 )
-        {
-            ++migration_bad;   // the cap was supposed to revert something
         }
         if ( spec.balance && spec.perverse )
         {
@@ -692,14 +745,26 @@ int main( int argc, char** argv )
         MPI_Allreduce(dist_counts, dist_sum, 4, MPI_LONG, MPI_SUM,
                       MPI_COMM_WORLD);
         // the redistribution counts
-        long mig_counts[4] = { migrated, migration_bad, res.balance.rows_hosted,
-                               res.balance.bytes_sent };
-        long mig_sum[4] = { 0, 0, 0, 0 };
-        MPI_Allreduce(mig_counts, mig_sum, 4, MPI_LONG, MPI_SUM,
+        long mig_counts[6] = { migrated, migration_bad, res.balance.rows_hosted,
+                               res.balance.bytes_sent,
+                               res.balance.rows_capped_sender,
+                               res.balance.rows_capped_receiver };
+        long mig_sum[6] = { 0, 0, 0, 0, 0, 0 };
+        MPI_Allreduce(mig_counts, mig_sum, 6, MPI_LONG, MPI_SUM,
                       MPI_COMM_WORLD);
         if ( spec.expect_migration && size > 1 && mig_sum[0] == 0 )
         {
             mig_sum[1] += 1;   // the pass was supposed to move rows
+        }
+        // The cap is enforced per rank, so it is the SUM that has to be
+        // non-zero: a rank with nothing to shed caps nothing.
+        if ( spec.expect_capping && size > 1 && mig_sum[4] + mig_sum[5] == 0 )
+        {
+            mig_sum[1] += 1;   // the cap was supposed to keep rows at home
+        }
+        if ( spec.expect_receiver_capping && size > 2 && mig_sum[5] == 0 )
+        {
+            mig_sum[1] += 1;   // ... and on the receive side, specifically
         }
         const long total_bad =
             tot_bad + tot_wsym_bad + tot_fp_bad + mig_sum[1];
@@ -735,12 +800,15 @@ int main( int argc, char** argv )
             if ( spec.balance )
             {
                 std::printf("[%s] redistribution: %ld/%d rows fitted elsewhere "
-                            "(%.1f%%), %ld KB on the wire, %ld capped, "
-                            "predicted imbalance %.3f (target %.4g), "
-                            "%ld protocol mismatches\n",
+                            "(%.1f%%), %ld KB on the wire, %ld rows kept home "
+                            "by the byte cap (%ld sender-side, %ld receiver-"
+                            "side, cap %ld KB), predicted imbalance %.3f "
+                            "(target %.4g), %ld protocol mismatches\n",
                             label, mig_sum[0], n,
                             100.0 * (double)mig_sum[0] / (double)n,
-                            mig_sum[3] >> 10, res.balance.rows_capped,
+                            mig_sum[3] >> 10, mig_sum[4] + mig_sum[5],
+                            mig_sum[4], mig_sum[5],
+                            (long)(bytes_cap >> 10),
                             res.balance.predicted_imbalance, res.balance.target,
                             mig_sum[1]);
             }
@@ -752,7 +820,7 @@ int main( int argc, char** argv )
     long failures = 0;
     // Reserved, not grown: `PassSpec::label` is a plain pointer into these.
     std::vector<std::string> labels;
-    labels.reserve(12);
+    labels.reserve(14);
     for ( int coarse = 0; coarse < ( coarsen_pass ? 2 : 1 ); ++coarse )
     {
         const bool c = ( coarse == 1 );
@@ -762,6 +830,7 @@ int main( int argc, char** argv )
         labels.push_back("G-L2" + suffix);
         labels.push_back("balanced" + suffix);
         labels.push_back("balanced-cap" + suffix);
+        labels.push_back("cap-local" + suffix);
         labels.push_back("perverse" + suffix);
         labels.push_back("failures" + suffix);
         labels.push_back("empty-rank" + suffix);
@@ -785,8 +854,10 @@ int main( int argc, char** argv )
             failures += run_pass(spec);
         }
         {
-            // The same plan under a cap that cannot hold it: most of the
-            // migration reverts, and what is left must still be bit-identical.
+            // The same plan under a cap that cannot hold it.  Nearly every
+            // planned migration is fitted by its owner instead -- which is not
+            // a failure and not a lost row: the answer must still be bitwise
+            // the reference's.
             PassSpec spec;
             spec.label = labels[first + 2].c_str();
             spec.coarsen = c;
@@ -797,12 +868,32 @@ int main( int argc, char** argv )
             spec.expect_capping = true;
             failures += run_pass(spec);
         }
+        {
+            // A cap that keeps a large fraction of a planned migration at
+            // home while the rest still moves: the mixed path, where one rank
+            // fits its own capped rows in the same parallel_for as the foreign
+            // rows it is hosting.  Every row is hosted by rank 0, so at n >= 3
+            // rank 0's incoming budget binds and the refusal rides the
+            // acknowledgement round; at n = 2 the one sender's outgoing total
+            // binds.  0.30 of the whole problem's payload against per-sender
+            // shares of about 1/(n-1) of it is what makes that so.
+            PassSpec spec;
+            spec.label = labels[first + 3].c_str();
+            spec.coarsen = c;
+            spec.balance = true;
+            spec.all_on_rank0 = true;
+            spec.cap_fraction = 0.30;
+            spec.expect_migration = true;
+            spec.expect_capping = true;
+            spec.expect_receiver_capping = true;
+            failures += run_pass(spec);
+        }
         if ( size > 1 )
         {
             // (owner + 1) mod size is the identity at one rank, so this pass
             // is skipped there rather than passed vacuously.
             PassSpec spec;
-            spec.label = labels[first + 3].c_str();
+            spec.label = labels[first + 4].c_str();
             spec.coarsen = c;
             spec.balance = true;
             spec.perverse = true;
@@ -812,7 +903,7 @@ int main( int argc, char** argv )
         }
         {
             PassSpec spec;
-            spec.label = labels[first + 4].c_str();
+            spec.label = labels[first + 5].c_str();
             spec.coarsen = c;
             spec.balance = true;
             spec.perverse = true;
@@ -825,7 +916,7 @@ int main( int argc, char** argv )
         if ( size > 1 )
         {
             PassSpec spec;
-            spec.label = labels[first + 5].c_str();
+            spec.label = labels[first + 6].c_str();
             spec.coarsen = c;
             spec.balance = true;
             spec.tolerance = 1e-9;

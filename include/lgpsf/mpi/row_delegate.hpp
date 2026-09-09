@@ -23,7 +23,7 @@
 /// rank, then ascending local row) and then every rank runs the same pure
 /// `balance_rows` on the same global arrays. No rank sends anyone a host, so
 /// there is no window in which two ranks could hold different plans. The cost
-/// is O(global rows) memory and arithmetic per rank -- two doubles per row
+/// is O(global rows) memory and arithmetic per rank -- one double per row
 /// allgathered, a few megabytes at ten million rows -- which is the same scale
 /// as `dist_wsym`'s row-norm allgather and fine through mid scale.
 ///
@@ -70,7 +70,8 @@
 ///    so a receiver that cannot allocate refuses and the sender skips it. That
 ///    is what makes an allocation failure on the RECEIVE side survivable:
 ///    without the acknowledgement round a receiver would have to hang or
-///    abort, its peers having already been told how much is coming.
+///    abort, its peers having already been told how much is coming. The
+///    receive-side byte budget rides that same round rather than adding one.
 ///  - A foreign throw is per-row and does not fail the job: the message rides
 ///    home in the candidate slot's `failure`, and the owner fails that row
 ///    with exactly the semantics of a local throw.
@@ -80,11 +81,39 @@
 /// in time, so a plan that is fine for the clock can be an out-of-memory: the
 /// senders are few by construction, since being overloaded is what makes them
 /// senders. `RowExchangeOptions::bytes_cap` bounds what one rank packs and
-/// what one rank receives, and is enforced inside `assign` -- before phase A
-/// materializes anything -- on an upper bound of each row's payload (its
-/// WINDOW size, coarsening only ever shrinking it), by reverting the lightest
-/// migrations first. The cap pass is a pure function of the same global arrays
-/// as the plan, so it too is identical on every rank.
+/// what one rank receives, and it is enforced in `solve`, on the TRUE size of
+/// the packed problem -- never on an estimate, because there is no estimate
+/// worth trusting here. Until 2026-09-09 it was enforced in `assign` instead,
+/// on the row's WINDOW size, on the argument that coarsening only ever shrinks
+/// the quadrature. It does -- by ten to fifty times, and hardest on exactly
+/// the widest rows, which are the ones the rule wants to move. Measured on a
+/// 192-rank continental run: 6763 of some 6900 planned migrations reverted,
+/// for a predicted imbalance of 20.62 against an unbalanced 20.7. The cap saw
+/// packages an order of magnitude larger than anything that would have been
+/// sent, and so rejected precisely the rows worth moving.
+///
+///  - A SENDER, holding the packed problems, drops migrations in DECREASING
+///    payload, ties by ascending row index, until its own outgoing total is
+///    within the cap. Decreasing payload frees the cap in the fewest rows; the
+///    tie-break makes the choice a function of the data alone.
+///  - A RECEIVER whose incoming total would exceed the cap refuses whole
+///    peers, largest first, ties by ascending rank, on the acknowledgement
+///    round that is already there for allocation failure -- no new collective.
+///    That round now carries three states rather than two: take it, refused
+///    for the budget, refused because this rank has already failed. The third
+///    exists so that a receiver's `bad_alloc` does not make every one of its
+///    senders redo hundreds of LM searches for a job that is about to throw
+///    anyway.
+///  - A DROPPED ROW IS NOT A FAILURE AND IS NOT LEFT UNSOLVED. Its owner fits
+///    it itself, calling `detail::fit_row_candidates` with the context it is
+///    already holding, in the same `parallel_for` as the foreign rows it
+///    hosts. A row's fit is a pure function of its package, so solving at home
+///    is the same answer to the last bit: the cap costs wall time and nothing
+///    else.
+///
+/// The drops are rank-local decisions and, unlike the plan, need no agreement
+/// -- a drop moves work, never an answer. `assign` is therefore the makespan
+/// plan and nothing else.
 
 #include "lgpsf/operator_fit.hpp"
 #include "lgpsf/row_balance.hpp"
@@ -180,14 +209,27 @@ inline void append( std::vector<double>& buffer, const double* first,
     buffer.insert(buffer.end(), first, first + count);
 }
 
-/// Doubles one packed problem occupies. Also the sizing formula the byte cap
-/// uses, with the WINDOW size in place of `fit_size` -- an upper bound,
-/// because coarsening only ever removes points.
+/// Doubles one packed problem occupies: the layout `pack_problem` writes,
+/// counted. It is also what the byte cap measures -- on the package in hand,
+/// so `fit_size` there is the COARSENED point count that will actually go on
+/// the wire and not a bound on it. The per-point term
+/// `fit_size * (dim + 1 + num_probes)` is the whole of it at any real size.
 inline std::size_t problem_doubles( std::size_t fit_size, std::size_t dim,
                                     std::size_t num_probes )
 {
     return 7u + dim + 2u * dim * dim + num_probes
            + fit_size * (dim + 1u + num_probes);
+}
+
+/// The bytes one built package will put on the wire. Exact: `pack_problem`
+/// writes `problem_doubles` doubles and nothing more.
+inline std::size_t problem_bytes( const lgpsf::detail::RowFitProblem& problem )
+{
+    return sizeof(double)
+           * problem_doubles(
+               static_cast<std::size_t>(problem.x_fit().rows()),
+               static_cast<std::size_t>(problem.x_fit().cols()),
+               static_cast<std::size_t>(problem.z_fit().cols()));
 }
 
 /// OWNER -> HOST. Exactly what `fit_row_candidates` reads, in the order
@@ -442,10 +484,39 @@ struct RowExchangeOptions
     double tolerance = 0.1;
 
     /// Bytes one rank may pack, and bytes one rank may receive, per fit.
-    /// Enforced on an upper bound of the payload before phase A builds
-    /// anything; migrations that do not fit revert to their owner, lightest
-    /// first. See the byte-cap paragraph at the top of this file.
-    std::size_t bytes_cap = static_cast<std::size_t>(64) << 20;
+    /// Enforced in `solve` on the TRUE size of each packed problem; a
+    /// migration that does not fit is fitted by its owner instead, which
+    /// costs wall time and nothing else. See the byte-cap paragraph at the
+    /// top of this file.
+    ///
+    /// **Where 512 MiB comes from.** Two numbers bound it, and the default
+    /// sits between them.
+    ///
+    /// What the traffic is. A package costs
+    /// `8 * fit_points * (dim + 1 + num_probes)` bytes, essentially all of it
+    /// the quadrature. On the 192-rank continental run the plan moves about
+    /// 1.7% of 409545 rows -- the widest ones -- carrying roughly a third of
+    /// the job's fit points, which at the top rung is a few hundred megabytes
+    /// on the busiest senders; and the senders are few by construction, since
+    /// being overloaded is what makes a rank one. The 64 MiB this field
+    /// defaulted to before 2026-09-09 was some five times under that even
+    /// with a correct size, so it would have bound on exactly the runs it was
+    /// meant to leave alone.
+    ///
+    /// What a rank can afford. Production runs 48 ranks on a 192 GB node,
+    /// about 4 GB each. A sender holds the packages phase A built plus the
+    /// pack buffer's copy of them; a receiver holds its receive buffer plus
+    /// the unpacked problems. So a cap of C is roughly 2C of peak, transient,
+    /// and only on the handful of ranks that send or host at all. At 512 MiB
+    /// that is 1 GiB -- a quarter of a rank, briefly -- against a requirement
+    /// of a few hundred megabytes: room for a bigger mesh or a longer probe
+    /// ladder without the cap quietly taking over the schedule, and still far
+    /// below what would take a node down.
+    ///
+    /// It is a backstop, not a policy. It should not bind in the intended
+    /// regime, and `RowExchangeStats::rows_capped_sender` /
+    /// `::rows_capped_receiver` are there to say when it did.
+    std::size_t bytes_cap = static_cast<std::size_t>(512) << 20;
 
     /// `OperatorFitConfig::coarsen_eps` of the fit this delegate serves. The
     /// host needs it to rebuild a coarsened row's `ProbeFitConfig`, which is
@@ -454,10 +525,6 @@ struct RowExchangeOptions
 
     /// `OperatorFitConfig::num_threads`, for fitting the foreign rows.
     int num_threads = 0;
-
-    /// The problem's spatial dimension and probe count, for sizing the cap.
-    int dim = 0;
-    int num_probes = 0;
 
     /// (nrows) the previous rung's per-row WEIGHT, or empty on the first rung.
     /// `fit_points x evaluations` is what the plan calls for -- points alone
@@ -478,15 +545,25 @@ struct RowExchangeOptions
 };
 
 /// What one call's redistribution actually did. Telemetry: nothing reads it.
+/// Every count is THIS RANK's -- reduce them if you want the job's.
 struct RowExchangeStats
 {
     long rows_migrated = 0;   ///< rows this rank sent away
     long rows_hosted = 0;     ///< foreign rows this rank fitted
-    long rows_capped = 0;     ///< migrations the byte cap reverted (global)
+    /// Planned migrations the byte cap sent home, where this rank's own
+    /// outgoing total did not fit (`rows_capped_sender`) and where the host
+    /// refused this rank's packages to stay inside its own incoming budget
+    /// (`rows_capped_receiver`). Both were fitted here instead, bit for bit
+    /// as if they had never been planned away; `rows_capped` is the sum.
+    long rows_capped = 0;
+    long rows_capped_sender = 0;
+    long rows_capped_receiver = 0;
     long bytes_sent = 0;
     long bytes_received = 0;
     double target = 0.0;               ///< the rule's `T`
-    double predicted_imbalance = 1.0;  ///< the plan's max/mean
+    /// The PLAN's max/mean, as `balance_rows` predicted it. It does not know
+    /// about rows the cap later sent home; `rows_capped` is how you tell.
+    double predicted_imbalance = 1.0;
 };
 
 /// The delegate itself. Construct one, hand `delegate()` to `fit_operator`,
@@ -534,8 +611,8 @@ public:
 
     /// (nrows) which rank FITTED each of this rank's rows: this rank for a row
     /// that stayed, including a row that was assigned away but never left
-    /// (gated out, or it threw in phase A, or the byte cap reverted it). Valid
-    /// after the fit; empty before it.
+    /// (gated out, or it threw in phase A, or the byte cap sent it home to be
+    /// fitted here). Valid after the fit; empty before it.
     const std::vector<int>& fitted_on_rank() const { return fitted_on_rank_; }
 
     const RowExchangeStats& stats() const { return stats_; }
@@ -546,6 +623,12 @@ private:
     // Called once, after the window pre-pass and before phase A: the weights
     // are known here and no package exists yet, which is the whole reason the
     // hook is two callbacks (`dev/row-balance-plan.md` section 1, fact 2).
+    //
+    // It produces the makespan plan and NOTHING ELSE. The byte cap used to
+    // live here too, on the window size standing in for a payload that did
+    // not exist yet; it was off by the coarsening ratio, which is largest on
+    // exactly the rows worth moving, so it is now enforced in `solve` on the
+    // real packages. See the byte-cap paragraph at the top of this file.
     std::vector<int> assign( const std::vector<int>& window_sizes )
     {
         const int nrows = static_cast<int>(window_sizes.size());
@@ -578,7 +661,7 @@ private:
         std::string why;
 
         // ---- the weights ------------------------------------------------
-        std::vector<double> mine(static_cast<std::size_t>(2 * nrows), 0.0);
+        std::vector<double> mine(static_cast<std::size_t>(nrows), 0.0);
         {
             const bool have_previous = options_.prev_evaluations.size() > 0;
             if ( have_previous
@@ -613,9 +696,7 @@ private:
                     }
                     weight = 0.0;
                 }
-                mine[static_cast<std::size_t>(2 * i)] = weight;
-                mine[static_cast<std::size_t>(2 * i + 1)] =
-                    static_cast<double>(window);
+                mine[static_cast<std::size_t>(i)] = weight;
             }
         }
 
@@ -632,33 +713,13 @@ private:
         const int nglobal = displs[static_cast<std::size_t>(size_)];
         offset_ = displs[static_cast<std::size_t>(rank_)];
 
-        std::vector<double> gathered(static_cast<std::size_t>(2 * nglobal),
-                                     0.0);
-        {
-            std::vector<int> pair_counts(static_cast<std::size_t>(size_)),
-                pair_displs(static_cast<std::size_t>(size_));
-            for ( int r = 0; r < size_; ++r )
-            {
-                pair_counts[static_cast<std::size_t>(r)] =
-                    2 * counts[static_cast<std::size_t>(r)];
-                pair_displs[static_cast<std::size_t>(r)] =
-                    2 * displs[static_cast<std::size_t>(r)];
-            }
-            MPI_Allgatherv(mine.data(), 2 * nrows, MPI_DOUBLE, gathered.data(),
-                           pair_counts.data(), pair_displs.data(), MPI_DOUBLE,
-                           comm_);
-        }
+        // One double per row: the weight. The window size used to ride along
+        // for the cap's benefit and no longer needs to.
+        std::vector<double> weights(static_cast<std::size_t>(nglobal), 0.0);
+        MPI_Allgatherv(mine.data(), nrows, MPI_DOUBLE, weights.data(),
+                       counts.data(), displs.data(), MPI_DOUBLE, comm_);
 
-        std::vector<double> weights(static_cast<std::size_t>(nglobal));
-        std::vector<int> windows(static_cast<std::size_t>(nglobal));
         std::vector<int> owners(static_cast<std::size_t>(nglobal), 0);
-        for ( int i = 0; i < nglobal; ++i )
-        {
-            weights[static_cast<std::size_t>(i)] =
-                gathered[static_cast<std::size_t>(2 * i)];
-            windows[static_cast<std::size_t>(i)] = static_cast<int>(
-                gathered[static_cast<std::size_t>(2 * i + 1)]);
-        }
         for ( int r = 0; r < size_; ++r )
         {
             for ( int i = displs[static_cast<std::size_t>(r)];
@@ -670,12 +731,18 @@ private:
 
         // ---- the plan: the same pure function of the same arrays, on every
         //      rank, so no host is ever communicated ------------------------
-        std::vector<int> hosts;
-        if ( options_.assign_override )
+        const bool overridden = static_cast<bool>(options_.assign_override);
+        std::vector<int> hosts;   // global; the rule's
+        std::vector<int> local;   // this rank's; an override's
+        if ( overridden )
         {
-            // The override is local, so unlike the rule it HAS to be gathered
-            // before the cap below can see what each receiver is being sent.
-            std::vector<int> local = options_.assign_override(window_sizes);
+            // Used exactly as returned. It was allgathered while the byte cap
+            // lived in `assign` and had to see what every receiver was being
+            // sent; the cap is in `solve` now, where the sender and the
+            // receiver each decide from what they are actually holding, so
+            // nothing here needs the global picture and the collective is
+            // gone with the need for it.
+            local = options_.assign_override(window_sizes);
             if ( static_cast<int>(local.size()) != nrows )
             {
                 failed = 1;
@@ -700,9 +767,6 @@ private:
                     host = rank_;
                 }
             }
-            hosts.assign(static_cast<std::size_t>(nglobal), 0);
-            MPI_Allgatherv(local.data(), nrows, MPI_INT, hosts.data(),
-                           counts.data(), displs.data(), MPI_INT, comm_);
         }
         else
         {
@@ -725,94 +789,13 @@ private:
             }
         }
 
-        // ---- the byte cap ------------------------------------------------
-        //
-        // Same global arrays, same deterministic pass, so this too is
-        // identical on every rank without anyone being told anything. The
-        // lightest migrations revert first: they are the ones whose loss costs
-        // the least balance.
-        {
-            const std::size_t dim =
-                static_cast<std::size_t>(std::max(options_.dim, 0));
-            const std::size_t num_probes =
-                static_cast<std::size_t>(std::max(options_.num_probes, 0));
-            if ( dim == 0 || num_probes == 0 )
-            {
-                failed = 1;
-                if ( why.empty() )
-                {
-                    why = "RowExchangeOptions::dim and ::num_probes must be "
-                          "set, or the byte cap cannot be sized";
-                }
-            }
-            std::vector<int> order;
-            for ( int i = 0; i < nglobal; ++i )
-            {
-                if ( hosts[static_cast<std::size_t>(i)]
-                     != owners[static_cast<std::size_t>(i)] )
-                {
-                    order.push_back(i);
-                }
-            }
-            // Lightest first, ties by ascending row: a total order, so every
-            // rank reverts the same rows.
-            std::stable_sort(order.begin(), order.end(),
-                             [&weights]( int a, int b )
-                             {
-                                 return weights[static_cast<std::size_t>(a)]
-                                        < weights[static_cast<std::size_t>(b)];
-                             });
-            std::vector<std::size_t> packed(
-                static_cast<std::size_t>(size_), 0u);
-            std::vector<std::size_t> received(
-                static_cast<std::size_t>(size_), 0u);
-            for ( auto it = order.rbegin(); it != order.rend(); ++it )
-            {
-                const std::size_t i = static_cast<std::size_t>(*it);
-                const std::size_t bytes =
-                    sizeof(double)
-                    * wire::problem_doubles(
-                        static_cast<std::size_t>(std::max(windows[i], 0)), dim,
-                        num_probes);
-                const std::size_t from = static_cast<std::size_t>(owners[i]);
-                const std::size_t to = static_cast<std::size_t>(hosts[i]);
-                if ( packed[from] + bytes > options_.bytes_cap
-                     || received[to] + bytes > options_.bytes_cap )
-                {
-                    hosts[i] = owners[i];
-                    ++stats_.rows_capped;
-                    continue;
-                }
-                packed[from] += bytes;
-                received[to] += bytes;
-            }
-            // Reverting rows changes the loads, so the reported prediction is
-            // recomputed from the hosts that survived rather than left as the
-            // rule's.
-            if ( stats_.rows_capped > 0 && !weights.empty() )
-            {
-                std::vector<double> load(static_cast<std::size_t>(size_), 0.0);
-                double total = 0.0;
-                for ( int i = 0; i < nglobal; ++i )
-                {
-                    load[static_cast<std::size_t>(
-                        hosts[static_cast<std::size_t>(i)])] +=
-                        weights[static_cast<std::size_t>(i)];
-                    total += weights[static_cast<std::size_t>(i)];
-                }
-                const double mean = total / size_;
-                const double makespan =
-                    *std::max_element(load.begin(), load.end());
-                stats_.predicted_imbalance =
-                    ( mean > 0.0 ) ? makespan / mean : 1.0;
-            }
-        }
-
         // ---- my slice ----------------------------------------------------
         for ( int i = 0; i < nrows; ++i )
         {
             const std::size_t r = static_cast<std::size_t>(i);
-            host_[r] = hosts[static_cast<std::size_t>(offset_ + i)];
+            host_[r] = overridden
+                           ? local[r]
+                           : hosts[static_cast<std::size_t>(offset_ + i)];
             // A row nobody will fit is pinned home whatever the plan says, so
             // it can never be handed a slot. `fit_operator` also refuses to
             // delegate it; belt and braces, and it keeps `fitted_on_rank`
@@ -842,6 +825,11 @@ private:
     // local failure never throws until the last exchange has completed on
     // every rank; and a receiver that cannot allocate refuses rather than
     // vanishing from an exchange its peers have already sized.
+    //
+    // It is also where the byte cap lives, because this is the first place a
+    // rank holds the thing being sent rather than a guess at its size. A row
+    // the cap keeps home is fitted here, in the same `parallel_for` as the
+    // foreign rows, and is bit for bit the row it would have been anywhere.
     void solve( const lgpsf::detail::RowFitContext& context,
                 const std::vector<int>& rows,
                 const std::vector<lgpsf::detail::RowFitProblem>& problems,
@@ -856,13 +844,69 @@ private:
         ProbeFitConfig coarse_config = context.row_config;
         coarse_config.resolution_eps = options_.coarsen_eps;
 
-        // ---- pack (may throw: bad_alloc, above all) ----------------------
+        // ---- the sender's byte budget, then pack -------------------------
+        //
+        // The packages exist now, so their size is a fact rather than an
+        // estimate. Drop in DECREASING payload -- fewest rows to get under the
+        // cap -- and break ties by ascending row, so the set dropped is a
+        // function of the data and of nothing else. A dropped row is not a
+        // failure: it goes in `at_home` and is fitted below.
+        //
+        // Both the budget and the packing are inside one try, because a
+        // `bad_alloc` in either has to become the flag rather than a throw
+        // through a collective. If either fails this rank sends nothing and
+        // fits nothing extra: the job is going to throw at the reduction.
+        std::vector<char> at_home(problems.size(), 0);
+        std::vector<int> local_slots;   // slots this rank will fit itself
         std::vector<std::vector<double>> send_buffer(peers);
         std::vector<std::vector<int>> send_slots(peers);
         try
         {
+            // Reserved HERE, inside the guard: every later `push_back` into it
+            // happens outside a try, and a reallocation there would be a throw
+            // in the middle of the exchange sequence.
+            local_slots.reserve(problems.size());
+            std::vector<std::size_t> bytes(problems.size(), 0u);
+            std::size_t outgoing = 0u;
             for ( std::size_t k = 0; k < problems.size(); ++k )
             {
+                bytes[k] = wire::problem_bytes(problems[k]);
+                outgoing += bytes[k];
+            }
+            if ( outgoing > options_.bytes_cap )
+            {
+                std::vector<int> order(problems.size());
+                for ( std::size_t k = 0; k < order.size(); ++k )
+                {
+                    order[k] = static_cast<int>(k);
+                }
+                std::sort(order.begin(), order.end(),
+                          [&bytes, &rows]( int a, int b )
+                          {
+                              const std::size_t ba =
+                                  bytes[static_cast<std::size_t>(a)];
+                              const std::size_t bb =
+                                  bytes[static_cast<std::size_t>(b)];
+                              if ( ba != bb ) { return ba > bb; }
+                              return rows[static_cast<std::size_t>(a)]
+                                     < rows[static_cast<std::size_t>(b)];
+                          });
+                for ( int k : order )
+                {
+                    if ( outgoing <= options_.bytes_cap ) { break; }
+                    at_home[static_cast<std::size_t>(k)] = 1;
+                    outgoing -= bytes[static_cast<std::size_t>(k)];
+                }
+            }
+
+            for ( std::size_t k = 0; k < problems.size(); ++k )
+            {
+                if ( at_home[k] )
+                {
+                    local_slots.push_back(static_cast<int>(k));
+                    ++stats_.rows_capped_sender;
+                    continue;
+                }
                 const int row = rows[k];
                 const int host =
                     ( row >= 0 && row < static_cast<int>(host_.size()) )
@@ -884,21 +928,13 @@ private:
         {
             failed = 1;
             why = error.what();
-            clear_buffers(send_buffer);
-            for ( std::vector<int>& slots : send_slots )
-            {
-                std::vector<int>().swap(slots);
-            }
+            drop_everything(send_buffer, send_slots, local_slots, stats_);
         }
         catch ( ... )
         {
             failed = 1;
             why = "an unknown exception while packing";
-            clear_buffers(send_buffer);
-            for ( std::vector<int>& slots : send_slots )
-            {
-                std::vector<int>().swap(slots);
-            }
+            drop_everything(send_buffer, send_slots, local_slots, stats_);
         }
 
         // ---- counts, DERIVED FROM THE BUFFERS ----------------------------
@@ -931,18 +967,68 @@ private:
         MPI_Alltoall(send_counts.data(), 2, MPI_INT, recv_counts.data(), 2,
                      MPI_INT, comm_);
 
-        // ---- allocate, then say whether we can take it -------------------
+        // ---- the receiver's byte budget, allocate, then say whether we can
+        //      take it -----------------------------------------------------
         //
         // The acknowledgement is what makes a receive-side allocation failure
         // survivable: the counts are already out, so a receiver that simply
         // threw would leave its senders blocked in an Isend nobody will match.
+        // The INCOMING BYTE BUDGET rides that same round rather than adding
+        // one of its own -- a receiver over the cap refuses whole peers,
+        // largest first and ties by ascending rank, and each refused sender
+        // then fits those rows itself.
+        //
+        // So the round carries three states, because the two refusals mean
+        // different things to a sender:
+        //    1  take it;
+        //    0  refused for the budget -- fit those rows at home;
+        //   -1  refused because this rank has already failed -- do not bother,
+        //       the reduction at the end of this function throws on every rank
+        //       and an LM search run for it would be minutes wasted.
+        // Everything that reads these values therefore tests `> 0`, never
+        // truthiness.
         std::vector<std::vector<double>> recv_buffer(peers);
         std::vector<int> accept(peers, 1), peer_accepts(peers, 0);
         try
         {
+            std::size_t incoming = 0u;
+            std::vector<int> order;
+            order.reserve(peers);
             for ( std::size_t r = 0; r < peers; ++r )
             {
                 if ( recv_counts[2 * r + 1] > 0 )
+                {
+                    incoming += sizeof(double)
+                                * static_cast<std::size_t>(
+                                    recv_counts[2 * r + 1]);
+                    order.push_back(static_cast<int>(r));
+                }
+            }
+            if ( incoming > options_.bytes_cap )
+            {
+                std::sort(order.begin(), order.end(),
+                          [&recv_counts]( int a, int b )
+                          {
+                              const int ca = recv_counts[
+                                  2 * static_cast<std::size_t>(a) + 1];
+                              const int cb = recv_counts[
+                                  2 * static_cast<std::size_t>(b) + 1];
+                              if ( ca != cb ) { return ca > cb; }
+                              return a < b;
+                          });
+                for ( int r : order )
+                {
+                    if ( incoming <= options_.bytes_cap ) { break; }
+                    accept[static_cast<std::size_t>(r)] = 0;
+                    incoming -= sizeof(double)
+                                * static_cast<std::size_t>(
+                                    recv_counts[2 * static_cast<std::size_t>(r)
+                                                + 1]);
+                }
+            }
+            for ( std::size_t r = 0; r < peers; ++r )
+            {
+                if ( accept[r] > 0 && recv_counts[2 * r + 1] > 0 )
                 {
                     recv_buffer[r].resize(
                         static_cast<std::size_t>(recv_counts[2 * r + 1]));
@@ -958,7 +1044,7 @@ private:
                       "migrated rows";
             }
             clear_buffers(recv_buffer);
-            accept.assign(peers, 0);
+            accept.assign(peers, -1);
         }
         MPI_Alltoall(accept.data(), 1, MPI_INT, peer_accepts.data(), 1, MPI_INT,
                      comm_);
@@ -968,7 +1054,8 @@ private:
                  peer_accepts, accept, /*tag=*/8301, /*stride=*/2);
         for ( std::size_t r = 0; r < peers; ++r )
         {
-            if ( send_counts[2 * r + 1] > 0 && peer_accepts[r] )
+            if ( send_slots[r].empty() ) { continue; }
+            if ( peer_accepts[r] > 0 )
             {
                 for ( int slot : send_slots[r] )
                 {
@@ -981,6 +1068,24 @@ private:
                 stats_.bytes_sent += static_cast<long>(
                     sizeof(double) * send_buffer[r].size());
             }
+            else if ( peer_accepts[r] == 0 )
+            {
+                // Refused for the host's INCOMING budget. The rows are still
+                // ours and are fitted below, exactly as if they had never been
+                // planned away; `fitted_on_rank_` already says this rank. The
+                // slot list is dropped with them, so a reply that cannot exist
+                // could not overwrite an answer we are about to compute.
+                for ( int slot : send_slots[r] )
+                {
+                    local_slots.push_back(slot);   // reserved above: no throw
+                }
+                stats_.rows_capped_receiver +=
+                    static_cast<long>(send_slots[r].size());
+                std::vector<int>().swap(send_slots[r]);
+            }
+            // peer_accepts[r] < 0: that rank has already failed and every rank
+            // throws at the reduction. The rows come home unsolved, which is
+            // what a failed row is.
         }
         // The packages are on the wire; the copies are dead weight from here,
         // and the peak is what the cap is about.
@@ -991,7 +1096,7 @@ private:
         std::vector<std::vector<lgpsf::detail::RowFitCandidates>> answer(peers);
         for ( std::size_t r = 0; r < peers; ++r )
         {
-            const int expected = accept[r] ? recv_counts[2 * r] : 0;
+            const int expected = ( accept[r] > 0 ) ? recv_counts[2 * r] : 0;
             if ( expected <= 0 ) { continue; }
             // Pre-filled with a failure, so a row we cannot unpack still gets
             // an answer with a reason instead of silence.
@@ -1033,7 +1138,10 @@ private:
         }
 
         // One flat job list, so the foreign rows of every source share one
-        // parallel_for -- the same way a rank's own rows do.
+        // parallel_for -- the same way a rank's own rows do. The rows the byte
+        // cap kept at home (source -1, index a slot in `problems` / `out`) join
+        // it: this rank has to fit them and there is no reason to do it in a
+        // second pass.
         std::vector<std::pair<int, int>> jobs;
         for ( std::size_t r = 0; r < peers; ++r )
         {
@@ -1041,6 +1149,10 @@ private:
             {
                 jobs.emplace_back(static_cast<int>(r), static_cast<int>(i));
             }
+        }
+        for ( int slot : local_slots )
+        {
+            jobs.emplace_back(-1, slot);
         }
         try
         {
@@ -1050,10 +1162,48 @@ private:
                 {
                     for ( std::ptrdiff_t j = begin; j < end; ++j )
                     {
-                        const std::size_t source = static_cast<std::size_t>(
-                            jobs[static_cast<std::size_t>(j)].first);
+                        const int from =
+                            jobs[static_cast<std::size_t>(j)].first;
                         const std::size_t index = static_cast<std::size_t>(
                             jobs[static_cast<std::size_t>(j)].second);
+                        if ( from < 0 )
+                        {
+                            // A row the byte cap kept home. Same function, same
+                            // context, the same package that would have gone on
+                            // the wire, so the answer is the foreign host's to
+                            // the last bit -- that identity is what makes the
+                            // cap a wall-time knob rather than a correctness
+                            // one. `y_hat` is kept rather than dropped: nothing
+                            // has to travel, so there is nothing to refill.
+                            lgpsf::detail::RowFitCandidates& home = out[index];
+                            const auto home_start =
+                                std::chrono::steady_clock::now();
+                            try
+                            {
+                                home = lgpsf::detail::fit_row_candidates(
+                                    problems[index], context);
+                            }
+                            catch ( const std::exception& error )
+                            {
+                                // A per-row throw here is the row throwing at
+                                // home, so it reads exactly as it would with no
+                                // delegate at all: no "[fitted on rank]".
+                                home = lgpsf::detail::RowFitCandidates();
+                                home.failure = error.what();
+                            }
+                            catch ( ... )
+                            {
+                                home = lgpsf::detail::RowFitCandidates();
+                                home.failure = "an unknown exception";
+                            }
+                            home.search_seconds =
+                                std::chrono::duration<double>(
+                                    std::chrono::steady_clock::now()
+                                    - home_start).count();
+                            continue;
+                        }
+                        const std::size_t source =
+                            static_cast<std::size_t>(from);
                         lgpsf::detail::RowFitCandidates& slot =
                             answer[source][index];
                         const auto start = std::chrono::steady_clock::now();
@@ -1221,6 +1371,11 @@ private:
             }
         }
 
+        // What the cap cost this rank, in rows. Rank-local, like every other
+        // count here: reduce them if you want the job's.
+        stats_.rows_capped =
+            stats_.rows_capped_sender + stats_.rows_capped_receiver;
+
         // ---- the flag, reduced AFTER the last exchange -------------------
         //
         // This is the line section 9 is about. Every rank has now completed
@@ -1241,7 +1396,8 @@ private:
     /// One `Irecv`/`Isend`/`Waitall` round. Sends only where the peer said it
     /// had room, receives only where we did -- the two conditions are the same
     /// acknowledgement seen from the two ends, so no message is ever posted
-    /// without its match.
+    /// without its match. The acknowledgement is a THREE-state int on the
+    /// package round (see `solve`), so the test is `> 0`, not truthiness.
     void exchange( const std::vector<std::vector<double>>& send_buffer,
                    const std::vector<int>& send_counts,
                    std::vector<std::vector<double>>& recv_buffer,
@@ -1254,7 +1410,7 @@ private:
         for ( std::size_t r = 0; r < peers; ++r )
         {
             const int count = recv_counts[stride * r + 1];
-            if ( count > 0 && accept[r] && !recv_buffer[r].empty() )
+            if ( count > 0 && accept[r] > 0 && !recv_buffer[r].empty() )
             {
                 requests.emplace_back();
                 MPI_Irecv(recv_buffer[r].data(), count, MPI_DOUBLE,
@@ -1264,7 +1420,7 @@ private:
         for ( std::size_t r = 0; r < peers; ++r )
         {
             const int count = send_counts[stride * r + 1];
-            if ( count > 0 && peer_accepts[r] )
+            if ( count > 0 && peer_accepts[r] > 0 )
             {
                 requests.emplace_back();
                 MPI_Isend(const_cast<double*>(send_buffer[r].data()), count,
@@ -1292,6 +1448,24 @@ private:
         {
             std::vector<double>().swap(buffer);
         }
+    }
+
+    /// A rank whose packing failed sends nothing AND fits nothing extra. The
+    /// reduction at the end of `solve` throws on every rank, so an LM search
+    /// run for a capped row here would be minutes of work for an answer that
+    /// is never read.
+    static void drop_everything( std::vector<std::vector<double>>& send_buffer,
+                                 std::vector<std::vector<int>>& send_slots,
+                                 std::vector<int>& local_slots,
+                                 RowExchangeStats& stats )
+    {
+        clear_buffers(send_buffer);
+        for ( std::vector<int>& slots : send_slots )
+        {
+            std::vector<int>().swap(slots);
+        }
+        std::vector<int>().swap(local_slots);
+        stats.rows_capped_sender = 0;
     }
 
     MPI_Comm comm_ = MPI_COMM_NULL;
