@@ -250,12 +250,26 @@ Properties, all worth a unit test:
 
 - **No migration when balanced.** If every `L_r <= T` the set is empty and the
   scheme is a no-op, which is what a defaulted-on library feature must do.
-- **Bound.** This is list scheduling onto machines with pre-existing loads, so
-  the honest guarantee is `makespan <= sum_i w_i / m + max_{moved} w_i`,
-  roughly a 2-approximation. It is NOT Graham's 4/3: that bound is for an
-  empty schedule.
-- **Determinism.** Ties broken by row global id; the rule is a pure function of
-  the weight vector, the ownership map and `eps`.
+- **Bound.** `makespan <= max( T , sum_i w_i / m + max_{moved} w_i )`.
+  CORRECTED 2026-09-08 (slice 2): an earlier version of this document claimed
+  the second term alone, which is false, because a rank already under `T` is
+  never touched and its load walks into the makespan whatever moved. One row
+  of 10 on rank 0, two hundred rows of 0.06 on rank 1 and an empty rank 2 at
+  `eps = 0.1` gives a makespan of 10 against a claimed 7.393. It is also NOT
+  Graham's 4/3, which is for an empty schedule.
+- **Determinism.** Ties between rows go to the lower row index; ties between
+  candidate HOSTS go to the lower rank index (compare loads, not `T - load`:
+  the subtraction can round two distinct loads to one capacity). The rule is a
+  pure function of the weight vector, the ownership map, `m` and `eps`.
+- **One summation order.** A rank must be judged against exactly the load the
+  plan reports for it. Summing a rank's rows in one order internally and
+  reporting another differs in the last bits, and that let a rank within an ulp
+  of `T` shed a row the published numbers say it should have kept, in 5 of
+  260,000 random instances.
+- **Two moved sets, not one.** "A row may be placed back on its own owner"
+  leaves "moved" ambiguous, and only one reading makes the bound hold. The plan
+  reports both: the rows step 1 SELECTED, and the subset whose host differs
+  from its owner, which is what the exchange must size itself from.
 
 **`T` is a target, not a guarantee.** Step 1 sheds WHOLE rows until a rank is
 under `T`, so it sheds more than the overflow, and the remaining capacity can
@@ -295,8 +309,11 @@ It can, however, cost memory: see the byte cap in section 9.
 
 ## 5. The API
 
-New header `include/lgpsf/mpi/row_balance.hpp`, above `dist_fit.hpp` in the
-layering and below nothing else in the MPI layer.
+New header `include/lgpsf/row_balance.hpp`, namespace `lgpsf`. NOT under
+`mpi/` (as an earlier version of this document said): the rule has no MPI
+dependency and has to be unit-testable from the serial suite, which does not
+link MPI. The exchange, in slice 3, does live in the MPI layer and includes
+this.
 
 ```cpp
 namespace lgpsf::mpi {
