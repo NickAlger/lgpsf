@@ -17,8 +17,16 @@
 /// the fitted values — is independent of the rank layout.  With
 /// partition-independent probes and exact responses the fitted operator
 /// is bitwise identical at every rank count (gate G-L2).
+///
+/// `balance_tolerance` (off by default) adds a fitting-only redistribution:
+/// the LM search of the rows on the busiest ranks runs wherever there is
+/// capacity and the answers come home, leaving the halo, the assembly and
+/// every number in the result untouched — see `mpi/row_delegate.hpp` and
+/// `dev/row-balance-plan.md`.  Wall time is the only thing it moves, and the
+/// gate demands the same bitwise agreement with the redistribution on.
 
 #include "lgpsf/mpi/halo_exchange.hpp"
+#include "lgpsf/mpi/row_delegate.hpp"
 #include "lgpsf/operator_fit.hpp"
 #include "lgpsf/lg_operator.hpp"
 
@@ -26,6 +34,9 @@
 #include <Eigen/Sparse>
 
 #include <algorithm>
+#include <cstddef>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <vector>
@@ -78,6 +89,51 @@ struct DistFitInput
     std::vector<Eigen::MatrixXd> sigma;       ///< (nrows) a-priori covariances
     std::vector<long>            row_own_gid; ///< (nrows) own column gid or -1
     Eigen::MatrixXd              HV_local;    ///< (nrows, k) responses
+
+    // ---- fitting-only row redistribution (dev/row-balance-plan.md) ------
+    //
+    // Wall time only: the fit of a row is a pure function of the package that
+    // travels with it, so the operator is BITWISE identical whether or not a
+    // row was fitted somewhere else.  Every field here is collective -- it
+    // must hold the same value on every rank, and `dist_fit` checks the ones
+    // that decide whether the exchange happens at all, because a rank that
+    // disagrees hangs the job rather than answering differently.
+
+    /// The water-filling rule's imbalance tolerance.  0 (the default) is OFF:
+    /// no delegate is built and the fit runs exactly as it did before this
+    /// existed, bit for bit.  (One four-double reduction happens either way,
+    /// to catch the ranks disagreeing about whether to redistribute at all --
+    /// see the body.)  0.1 is a sane value when it is on; note that a
+    /// tolerance of 0 would otherwise MEAN "target a perfectly even split",
+    /// which is the meaning "off" displaces.
+    double balance_tolerance = 0.0;
+
+    /// (nrows) the previous rung's per-row WEIGHT for the rule, or empty on
+    /// the first rung (where the window size is used, being the only thing
+    /// available before any fit has run).  The plan's weight is
+    /// `fit_points x evaluations` -- `diagnostics.fit_points(r) *
+    /// diagnostics.evaluations(r)` from the previous rung's result, which
+    /// correlates 0.94 in log with the row's seconds against 0.62 for points
+    /// alone.  Both factors are exact and free there; only the evaluation
+    /// count is a prediction, and a misprediction costs wall time, never
+    /// correctness.  Any monotone proxy for the row's fit seconds is
+    /// accepted, since only the order and the ratios enter the rule.
+    Eigen::VectorXd prev_evaluations;
+
+    /// Bytes one rank may pack, and bytes one rank may receive, per fit.
+    /// The rule balances SECONDS and a row heavy in points but short in
+    /// search is heavy in bytes and light in time, so a plan that is fine for
+    /// the clock can still be an out-of-memory on the few ranks that are
+    /// senders by construction.  See `RowExchangeOptions::bytes_cap`.
+    std::size_t balance_bytes_cap =
+        RowExchangeOptions().bytes_cap;
+
+    /// Replace the assignment rule (diagnostics and the MPI gate, which needs
+    /// a deliberately perverse assignment; production leaves it empty).
+    /// Given every local row's window size, return every local row's host.
+    /// Setting it turns the redistribution on even at `balance_tolerance` 0,
+    /// and it must be set on every rank or on none.
+    std::function<std::vector<int>(const std::vector<int>&)> balance_assign;
 };
 
 /// What the rank gets back: the fit over (its rows) x (own + halo
@@ -97,6 +153,21 @@ struct DistFitResult
     double                      work_max_row = 0.0;    ///< max over rows of FitDiagnostics::work
     double                      seconds_total = 0.0;   ///< sum of FitDiagnostics::row_seconds (telemetry, not deterministic)
     double                      seconds_max_row = 0.0; ///< max over rows of FitDiagnostics::row_seconds (telemetry)
+
+    /// (nrows) which rank FITTED each of this rank's rows -- this rank for
+    /// every row unless `balance_tolerance` moved it.  Always filled, so a
+    /// consumer's report and dump column do not have to know whether the
+    /// redistribution was on.  A row assigned away but never sent (gated out,
+    /// or it threw in phase A, or the byte cap reverted it) reads as this
+    /// rank, which is where it was in fact fitted.
+    ///
+    /// Note what `seconds_total` then is: the sum over the rows this rank
+    /// OWNS, each including the search wherever it ran.  Per-rank wall time is
+    /// the sum over the rows a rank FITTED, which is a different set.
+    std::vector<int>            fitted_on_rank;
+
+    /// How the redistribution went, when it was on.  Telemetry.
+    RowExchangeStats            balance;
 };
 
 /// The SPMD fit.  `windows` must be the object handed to `halo_plan`
@@ -188,12 +259,74 @@ inline DistFitResult dist_fit( const HaloPlan& plan,
             static_cast<int>(it - out.col_gids.begin());
     }
 
+    // ---- who fits which row --------------------------------------------
+    //
+    // Off by default: `delegate` stays null and `fit_operator` takes exactly
+    // the path it took before the hook existed, down to the bit.  The one
+    // reduction below runs anyway, and deliberately -- the decision to
+    // delegate must be UNANIMOUS, because a rank that opts out while its peers
+    // opt in does not give a different answer, it hangs the job, and "off
+    // here, on there" is precisely the disagreement that has to be caught.
+    // Four doubles, once per rung, against a collective the caller is already
+    // paying for.
+    int rank = 0;
+    MPI_Comm_rank(plan.comm, &rank);
+    out.fitted_on_rank.assign(static_cast<std::size_t>(nrows), rank);
+
+    const bool wants_balance =
+        in.balance_tolerance > 0.0 || static_cast<bool>(in.balance_assign);
+    {
+        const double tolerance = in.balance_tolerance;
+        double probe[4] = { tolerance, -tolerance,
+                            wants_balance ? 1.0 : 0.0,
+                            wants_balance ? 0.0 : 1.0 };
+        double seen[4] = { 0.0, 0.0, 0.0, 0.0 };
+        MPI_Allreduce(probe, seen, 4, MPI_DOUBLE, MPI_MAX, plan.comm);
+        if ( seen[2] > 0.0 && seen[3] > 0.0 )
+        {
+            throw std::invalid_argument(
+                "lgpsf::mpi::dist_fit: the row redistribution is requested on "
+                "some ranks and not others (balance_tolerance / "
+                "balance_assign); it is collective and must agree");
+        }
+        if ( wants_balance && seen[0] != -seen[1] )
+        {
+            throw std::invalid_argument(
+                "lgpsf::mpi::dist_fit: balance_tolerance differs across ranks; "
+                "it is collective and must agree");
+        }
+    }
+
+    std::unique_ptr<RowExchange> exchange;
+    RowDelegate delegate;
+    const RowDelegate* delegate_ptr = nullptr;
+    if ( wants_balance )
+    {
+        RowExchangeOptions options;
+        options.tolerance = in.balance_tolerance;
+        options.bytes_cap = in.balance_bytes_cap;
+        options.coarsen_eps = config.coarsen_eps;
+        options.num_threads = config.num_threads;
+        options.dim = dim;
+        options.num_probes = k;
+        options.prev_evaluations = in.prev_evaluations;
+        options.assign_override = in.balance_assign;
+        exchange.reset(new RowExchange(plan.comm, std::move(options)));
+        delegate = exchange->delegate();
+        delegate_ptr = &delegate;
+    }
+
     // ---- the fit (windows explicit => halo/window agreement) -----------
     std::vector<std::optional<ellipsoid_tree::Ellipsoid>> window_opt(
         windows.begin(), windows.end());
     out.fit = fit_operator(x_comb, in.m1_local, m2_comb, V_comb, in.HV_local,
                            in.sigma, config, in.x_rows, in.x_rows, {},
-                           window_opt, row_own_col);
+                           window_opt, row_own_col, delegate_ptr);
+    if ( exchange )
+    {
+        out.fitted_on_rank = exchange->fitted_on_rank();
+        out.balance = exchange->stats();
+    }
     for ( int r = 0; r < nrows; ++r )
     {
         out.window_candidates +=

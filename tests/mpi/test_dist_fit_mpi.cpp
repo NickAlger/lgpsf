@@ -26,8 +26,43 @@
 // eps 0.2 -> 0 / 20305, 0.5 -> 10 / 20290, 1.0 -> 289 / 19592,
 // 2.0 -> 564 / 13046, 4.0 -> 564 / 12056.  So 0.2 fires the trigger
 // without merging a single cell (the copy path only); 2.0 is the value at
-// which the accumulation path is exercised on most rows.  Without the flag
-// the run is the original single pass.
+// which the accumulation path is exercised on most rows.  With the flag
+// every pass below runs twice, plain and coarsened.
+//
+// ---------------------------------------------------------------------------
+// THE ROW-REDISTRIBUTION PASSES (dev/row-balance-plan.md, slice 3)
+//
+// `DistFitInput::balance_tolerance` moves the LM search of some rows to
+// another rank and brings the answers back.  A row's fit is a pure function of
+// the package that travels with it, so the operator must be BITWISE identical
+// to the undelegated one -- that claim, and the failure discipline of the
+// plan's section 9, are what these passes mechanize.  Each runs against the
+// SAME serial reference as G-L2 and demands the same zero mismatches:
+//
+//   balanced        a tolerance of 0 with deliberately skewed weights (the
+//                   first half of the rows 101x the rest, which is the
+//                   production shape: expensive rows cluster spatially), so a
+//                   large fraction of the rows actually migrate.
+//   balanced-cap    the same plan under a byte cap small enough to revert most
+//                   of it: a capped migration must still be bit-identical, and
+//                   the cap must be reported.
+//   perverse        every row hosted by (owner + 1) mod size.  The strongest
+//                   form of the claim -- nothing stays home -- and the pass
+//                   that catches a package missing a member the search reads.
+//                   Vacuous at n = 1 (the identity), so it is SKIPPED there
+//                   rather than passed.
+//   failures        the perverse assignment plus two poisoned rows: one whose
+//                   response carries a NaN, so its fit THROWS on the foreign
+//                   host and the message must come home attributed to that
+//                   row; and one whose sigma is not positive definite, so it
+//                   is never attempted and must never be handed a slot.  The
+//                   job must not hang, and the migrated count must equal the
+//                   attempted rows exactly.
+//   empty-rank      rank 0 owns no rows at all (it still owns columns, and
+//                   still runs the reference).  It is then the emptiest host
+//                   and receives; n >= 2 only.
+//
+// ---------------------------------------------------------------------------
 //
 // Not wired into CMake yet (needs an MPI toolchain); build + run:
 //   mpicxx -O2 -std=c++17 -pthread -I../../include \
@@ -35,7 +70,7 @@
 //       test_dist_fit_mpi.cpp -o test_dist_fit_mpi
 //   mpiexec -n 1 ./test_dist_fit_mpi && mpiexec -n 2 ./test_dist_fit_mpi \
 //       && mpiexec -n 4 ./test_dist_fit_mpi
-//   (same three with `--coarsen` for the second pass)
+//   (same three with `--coarsen` for the coarsened half)
 
 #include "lgpsf/mpi/dist_fit.hpp"
 #include "lgpsf/mpi/dist_wsym.hpp"
@@ -45,7 +80,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace {
@@ -88,6 +125,39 @@ double hashed_uniform( unsigned long seed, long a, long b )
     return (double)(z >> 11) / 9007199254740992.0;
 }
 
+/// One comparison of the distributed fit against the serial reference. The
+/// row-redistribution knobs are part of the spec, so every pass is the same
+/// comparison against the same reference with only the schedule moved.
+struct PassSpec
+{
+    const char* label = "G-L2";
+    bool coarsen = false;
+
+    /// Turn the redistribution on. `perverse` replaces the rule with "every
+    /// row on (owner + 1) mod size"; otherwise the water-filling rule runs at
+    /// `tolerance` over the skewed weights (or window sizes, if unset).
+    bool balance = false;
+    /// `dist_fit` reads 0 as OFF, so a pass that wants the rule to target a
+    /// perfectly even split asks for the smallest tolerance that is still on.
+    double tolerance = 0.0;
+    bool skewed_weights = false;
+    bool perverse = false;
+    std::size_t bytes_cap = lgpsf::mpi::RowExchangeOptions().bytes_cap;
+
+    /// Rank 0 owns no rows (rank 1 owns its share as well).
+    bool empty_first_rank = false;
+
+    /// A row whose response carries a NaN, so its FIT throws wherever it runs;
+    /// and a row whose sigma is not SPD, so it is never attempted at all.
+    int poison_row = -1;
+    int gated_row = -1;
+
+    /// Demand that rows actually moved, and (for the capped pass) that the
+    /// byte cap actually bit.  Both are meaningless at one rank.
+    bool expect_migration = false;
+    bool expect_capping = false;
+};
+
 } // namespace
 
 int main( int argc, char** argv )
@@ -97,7 +167,7 @@ int main( int argc, char** argv )
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    // ---- command line: the coarsened second pass is opt-in --------------
+    // ---- command line: the coarsened half is opt-in ---------------------
     bool   coarsen_pass  = false;
     int    coarsen_above = 20;
     double coarsen_eps   = 2.0;
@@ -194,9 +264,43 @@ int main( int argc, char** argv )
     // ---- one pass: serial reference on rank 0, distributed fit on
     //      contiguous gid blocks, bitwise comparison.  Returns the total
     //      mismatch count (collective). ---------------------------------
-    const auto run_pass = [&]( const lgpsf::OperatorFitConfig& cfg,
-                               const char* label ) -> long
+    const auto run_pass = [&]( const PassSpec& spec ) -> long
     {
+        const char* label = spec.label;
+        lgpsf::OperatorFitConfig cfg = config;
+        if ( spec.coarsen )
+        {
+            cfg.coarsen_above = coarsen_above;
+            cfg.coarsen_eps = coarsen_eps;
+        }
+
+        // ---- the injected pathologies, identical on both sides ---------
+        //
+        // A row that FAILS must fail the same way in the reference and in the
+        // distributed fit -- that is the point: a foreign host throwing is not
+        // supposed to change the answer, only where the throw happened.
+        std::vector<Eigen::MatrixXd> sigma_pass = sigma_all;
+        if ( spec.gated_row >= 0 )
+        {
+            // Not positive definite: fit_operator's pre-pass never attempts
+            // this row, so its window size is 0 and no assignment may hand it
+            // a slot.
+            Eigen::MatrixXd bad(2, 2);
+            bad << 1e-4, 0.0, 0.0, -1e-4;
+            sigma_pass[static_cast<std::size_t>(spec.gated_row)] = bad;
+        }
+        const auto poisoned_response =
+            [&]( int i, Eigen::Ref<Eigen::VectorXd> out )
+        {
+            response_row(i, out);
+            if ( i == spec.poison_row )
+            {
+                // Every mode set then scores NaN, no baseline is selected, and
+                // phase B throws -- wherever phase B is running.
+                out(0) = std::numeric_limits<double>::quiet_NaN();
+            }
+        };
+
         // ---- serial reference on rank 0, broadcast ---------------------
         // (square legacy path: columns in global order, identity own dofs)
         std::vector<double> ref_vals;   // dense n*n row-major, zeros elsewhere
@@ -209,11 +313,11 @@ int main( int argc, char** argv )
             Eigen::VectorXd row(k);
             for ( int i = 0; i < n; ++i )
             {
-                response_row(i, row);
+                poisoned_response(i, row);
                 HV_all.row(i) = row.transpose();
             }
             const lgpsf::OperatorFit ref_fit = lgpsf::fit_operator(
-                x_all, m_all, m_all, V_all, HV_all, sigma_all, cfg);
+                x_all, m_all, m_all, V_all, HV_all, sigma_pass, cfg);
             const Eigen::SparseMatrix<double> B_ref = lgpsf::assemble_sparse(
                 ref_fit.model, tau_assemble, lgpsf::Symmetrize::None,
                 cfg.num_threads);
@@ -238,37 +342,99 @@ int main( int argc, char** argv )
         MPI_Bcast(ref_fit_points.data(), n, MPI_INT, 0, MPI_COMM_WORLD);
         MPI_Bcast(ref_window_size.data(), n, MPI_INT, 0, MPI_COMM_WORLD);
 
-        // ---- distributed fit on contiguous gid blocks ------------------
-        const int rstart = (n * rank) / size;
-        const int rend   = (n * (rank + 1)) / size;
-        const int nloc   = rend - rstart;
+        // ---- the two partitions ----------------------------------------
+        //
+        // Columns always split evenly; ROWS may not, so that a rank owning no
+        // rows -- and rows whose own column dof lives on another rank -- are
+        // exercised.
+        const int cstart = (n * rank) / size;
+        const int cend   = (n * (rank + 1)) / size;
+        const int nloc   = cend - cstart;
+
+        std::vector<long> row_ranges(static_cast<std::size_t>(size) + 1);
+        for ( int r = 0; r <= size; ++r )
+        {
+            row_ranges[static_cast<std::size_t>(r)] = (long)(n * r) / size;
+        }
+        if ( spec.empty_first_rank && size > 1 )
+        {
+            row_ranges[1] = 0;   // rank 0 owns nothing; rank 1 owns its share
+        }
+        const int rstart =
+            static_cast<int>(row_ranges[static_cast<std::size_t>(rank)]);
+        const int rend =
+            static_cast<int>(row_ranges[static_cast<std::size_t>(rank) + 1]);
+        const int nrows = rend - rstart;
 
         lgpsf::mpi::DistFitInput in;
-        in.x_local = x_all.middleRows(rstart, nloc);
-        in.m2_local = m_all.segment(rstart, nloc);
-        in.V_local = V_all.middleRows(rstart, nloc);
+        in.x_local = x_all.middleRows(cstart, nloc);
+        in.m2_local = m_all.segment(cstart, nloc);
+        in.V_local = V_all.middleRows(cstart, nloc);
         in.col_gids.resize(static_cast<std::size_t>(nloc));
         for ( int i = 0; i < nloc; ++i )
         {
-            in.col_gids[static_cast<std::size_t>(i)] = rstart + i;
+            in.col_gids[static_cast<std::size_t>(i)] = cstart + i;
         }
-        in.x_rows = in.x_local;
-        in.m1_local = in.m2_local;
-        in.sigma.assign(sigma_all.begin() + rstart,
-                        sigma_all.begin() + rend);
-        in.row_own_gid = in.col_gids;
-        in.HV_local.resize(nloc, k);
+        in.x_rows = x_all.middleRows(rstart, nrows);
+        in.m1_local = m_all.segment(rstart, nrows);
+        in.sigma.assign(sigma_pass.begin() + rstart, sigma_pass.begin() + rend);
+        in.row_own_gid.resize(static_cast<std::size_t>(nrows));
+        for ( int i = 0; i < nrows; ++i )
+        {
+            in.row_own_gid[static_cast<std::size_t>(i)] = rstart + i;
+        }
+        in.HV_local.resize(nrows, k);
         {
             Eigen::VectorXd row(k);
-            for ( int i = 0; i < nloc; ++i )
+            for ( int i = 0; i < nrows; ++i )
             {
-                response_row(rstart + i, row);
+                poisoned_response(rstart + i, row);
                 in.HV_local.row(i) = row.transpose();
             }
         }
 
+        // The window ellipsoids go to `halo_plan` as well as to the fit, so
+        // they are built from a SANITIZED sigma: a row the fit will refuse
+        // still needs a sane footprint for the halo geometry, and what makes
+        // the fit refuse it is `in.sigma`, which keeps the indefinite matrix.
+        std::vector<Eigen::MatrixXd> sigma_window = in.sigma;
+        if ( spec.gated_row >= rstart && spec.gated_row < rend )
+        {
+            sigma_window[static_cast<std::size_t>(spec.gated_row - rstart)] =
+                sigma_all[static_cast<std::size_t>(spec.gated_row)];
+        }
         const std::vector<ellipsoid_tree::Ellipsoid> windows =
-            lgpsf::mpi::make_window_ellipsoids(in.x_rows, in.sigma, cfg);
+            lgpsf::mpi::make_window_ellipsoids(in.x_rows, sigma_window, cfg);
+
+        // ---- the redistribution knobs ----------------------------------
+        if ( spec.balance )
+        {
+            in.balance_tolerance = spec.tolerance;
+            in.balance_bytes_cap = spec.bytes_cap;
+            if ( spec.skewed_weights )
+            {
+                // The production shape: the expensive rows cluster spatially,
+                // so the ranks owning the first half of the mesh are the ones
+                // that have to shed.
+                in.prev_evaluations = Eigen::VectorXd::Ones(nrows);
+                for ( int i = 0; i < nrows; ++i )
+                {
+                    in.prev_evaluations(i) =
+                        ( rstart + i < n / 2 ) ? 101.0 : 1.0;
+                }
+            }
+            if ( spec.perverse )
+            {
+                const int self = rank, ranks = size;
+                in.balance_assign =
+                    [self, ranks]( const std::vector<int>& window_sizes )
+                {
+                    return std::vector<int>(window_sizes.size(),
+                                            (self + 1) % ranks);
+                };
+            }
+        }
+
         const lgpsf::mpi::HaloPlan plan =
             lgpsf::mpi::halo_plan(MPI_COMM_WORLD, windows, in.x_local,
                                   in.col_gids, /*k_cut=*/32);
@@ -279,7 +445,7 @@ int main( int argc, char** argv )
         long bad = 0, checked = 0;
         {
             // distributed entries must match the reference exactly...
-            std::vector<double> mine(static_cast<std::size_t>(nloc) * n, 0.0);
+            std::vector<double> mine(static_cast<std::size_t>(nrows) * n, 0.0);
             for ( int outer = 0; outer < res.B_local.outerSize(); ++outer )
             {
                 for ( Eigen::SparseMatrix<double>::InnerIterator
@@ -293,7 +459,7 @@ int main( int argc, char** argv )
             }
             // ...and vice versa (no missing / extra entries): compare the
             // full dense row images
-            for ( int i = 0; i < nloc; ++i )
+            for ( int i = 0; i < nrows; ++i )
             {
                 for ( int j = 0; j < n; ++j )
                 {
@@ -311,7 +477,7 @@ int main( int argc, char** argv )
         // ---- the fit's quadrature, row by row: fit_points and window
         //      size must agree with the serial fit; count what coarsened --
         long fp_bad = 0, rows_coarsened = 0, rows_zero = 0;
-        for ( int i = 0; i < nloc; ++i )
+        for ( int i = 0; i < nrows; ++i )
         {
             const int fp = res.fit.diagnostics.fit_points(i);
             const int ws = static_cast<int>(res.fit.model.row_window(i).size());
@@ -323,6 +489,118 @@ int main( int argc, char** argv )
             if ( fp == 0 ) { ++rows_zero; }            // gated / failed
             else if ( fp < ws ) { ++rows_coarsened; }  // the trigger fired AND cells merged
         }
+
+        // ---- what the redistribution did, and what it must have done ---
+        long migrated = 0, migration_bad = 0, attempted = 0;
+        for ( int i = 0; i < nrows; ++i )
+        {
+            if ( res.fitted_on_rank[static_cast<std::size_t>(i)] != rank )
+            {
+                ++migrated;
+            }
+            if ( rstart + i != spec.gated_row ) { ++attempted; }
+        }
+        if ( static_cast<int>(res.fitted_on_rank.size()) != nrows )
+        {
+            ++migration_bad;   // the field must always be filled
+        }
+        if ( spec.expect_capping && size > 1 && res.balance.rows_capped == 0 )
+        {
+            ++migration_bad;   // the cap was supposed to revert something
+        }
+        if ( spec.balance && spec.perverse )
+        {
+            // The host's phase-B seconds must come home: `row_seconds` means
+            // everything attributable to the row wherever it ran, so it can
+            // never be less than the search alone, and the searches that ran
+            // elsewhere cannot all have taken no time at all.
+            double foreign_search = 0.0;
+            for ( int i = 0; i < nrows; ++i )
+            {
+                const double row_s = res.fit.diagnostics.row_seconds(i);
+                const double search_s = res.fit.diagnostics.search_seconds(i);
+                if ( search_s > row_s ) { ++migration_bad; }
+                if ( res.fitted_on_rank[static_cast<std::size_t>(i)] != rank )
+                {
+                    foreign_search += search_s;
+                }
+            }
+            if ( size > 1 && migrated > 0 && !(foreign_search > 0.0) )
+            {
+                ++migration_bad;
+            }
+            // Nothing may stay home except what was never attempted: the
+            // migrated count is DERIVED FROM THE DATA and must equal exactly
+            // the rows phase A packaged.
+            if ( size > 1 && res.balance.rows_migrated != attempted )
+            {
+                ++migration_bad;
+                std::printf("[%s] rank %d: %ld rows migrated, %ld attempted\n",
+                            label, rank, res.balance.rows_migrated, attempted);
+            }
+            // The gated row must never have been handed a slot.
+            if ( spec.gated_row >= rstart && spec.gated_row < rend )
+            {
+                const std::size_t local =
+                    static_cast<std::size_t>(spec.gated_row - rstart);
+                if ( res.fitted_on_rank[local] != rank ) { ++migration_bad; }
+                if ( res.fit.diagnostics.status[local]
+                     != lgpsf::RowStatus::Failed )
+                {
+                    ++migration_bad;
+                }
+                const auto found =
+                    res.fit.diagnostics.failures.find(spec.gated_row - rstart);
+                if ( found == res.fit.diagnostics.failures.end()
+                     || found->second.find("positive definite")
+                            == std::string::npos )
+                {
+                    ++migration_bad;
+                }
+                else
+                {
+                    std::printf("[%s] rank %d: gated row %d never assigned a "
+                                "slot, \"%s\"\n", label, rank, spec.gated_row,
+                                found->second.c_str());
+                }
+            }
+            // The poisoned row throws where it is FITTED; the message must
+            // come home attributed to that row, and the job must not hang.
+            if ( spec.poison_row >= rstart && spec.poison_row < rend )
+            {
+                const std::size_t local =
+                    static_cast<std::size_t>(spec.poison_row - rstart);
+                if ( size > 1 && res.fitted_on_rank[local] == rank )
+                {
+                    ++migration_bad;   // it was supposed to leave
+                }
+                if ( res.fit.diagnostics.status[local]
+                     != lgpsf::RowStatus::Failed )
+                {
+                    ++migration_bad;
+                }
+                const auto found =
+                    res.fit.diagnostics.failures.find(spec.poison_row - rstart);
+                if ( found == res.fit.diagnostics.failures.end()
+                     || found->second.empty() )
+                {
+                    ++migration_bad;
+                }
+                else
+                {
+                    if ( size > 1
+                         && found->second.find("[fitted on rank ")
+                                == std::string::npos )
+                    {
+                        ++migration_bad;   // it must say where it threw
+                    }
+                    std::printf("[%s] rank %d: poisoned row %d came home as "
+                                "\"%s\"\n", label, rank, spec.poison_row,
+                                found->second.c_str());
+                }
+            }
+        }
+
         // ---- distributed weighted symmetrization vs serial, bitwise ----
         long wsym_bad = 0;
         {
@@ -373,21 +651,16 @@ int main( int argc, char** argv )
                         it.value()});
                 }
             }
-            std::vector<long> row_ranges(static_cast<std::size_t>(size) + 1);
-            for ( int r = 0; r <= size; ++r )
-            {
-                row_ranges[static_cast<std::size_t>(r)] = (long)(n * r) / size;
-            }
             const std::vector<lgpsf::mpi::GlobalTriplet> mine =
                 lgpsf::mpi::dist_weighted_symmetrize(MPI_COMM_WORLD, rows_local,
                                                      row_ranges);
-            std::vector<double> got(static_cast<std::size_t>(nloc) * n, 0.0);
+            std::vector<double> got(static_cast<std::size_t>(nrows) * n, 0.0);
             for ( const lgpsf::mpi::GlobalTriplet& t : mine )
             {
                 got[static_cast<std::size_t>(t.row - rstart) * n
                     + static_cast<std::size_t>(t.col)] = t.value;
             }
-            for ( int i = 0; i < nloc; ++i )
+            for ( int i = 0; i < nrows; ++i )
             {
                 for ( int j = 0; j < n; ++j )
                 {
@@ -418,7 +691,18 @@ int main( int argc, char** argv )
         long dist_sum[4] = { 0, 0, 0, 0 };
         MPI_Allreduce(dist_counts, dist_sum, 4, MPI_LONG, MPI_SUM,
                       MPI_COMM_WORLD);
-        const long total_bad = tot_bad + tot_wsym_bad + tot_fp_bad;
+        // the redistribution counts
+        long mig_counts[4] = { migrated, migration_bad, res.balance.rows_hosted,
+                               res.balance.bytes_sent };
+        long mig_sum[4] = { 0, 0, 0, 0 };
+        MPI_Allreduce(mig_counts, mig_sum, 4, MPI_LONG, MPI_SUM,
+                      MPI_COMM_WORLD);
+        if ( spec.expect_migration && size > 1 && mig_sum[0] == 0 )
+        {
+            mig_sum[1] += 1;   // the pass was supposed to move rows
+        }
+        const long total_bad =
+            tot_bad + tot_wsym_bad + tot_fp_bad + mig_sum[1];
         if ( rank == 0 )
         {
             if ( cfg.coarsen_above > 0 )
@@ -442,37 +726,119 @@ int main( int argc, char** argv )
                             ser_coarsened, n, ser_zero, ser_window, ser_fit,
                             dist_sum[0], n, dist_sum[1], dist_sum[2],
                             dist_sum[3]);
-                std::printf("[%s] n=%d ranks=%d: %ld entries checked, %ld fit + "
-                            "%ld wsym + %ld fit_points/window-size mismatches "
-                            "(BITWISE), halo candidates total %ld\n",
-                            label, n, size, tot_checked, tot_bad, tot_wsym_bad,
-                            tot_fp_bad, halo_sum);
             }
-            else
+            std::printf("[%s] n=%d ranks=%d: %ld entries checked, %ld fit + "
+                        "%ld wsym + %ld fit_points/window-size mismatches "
+                        "(BITWISE), halo candidates total %ld\n",
+                        label, n, size, tot_checked, tot_bad, tot_wsym_bad,
+                        tot_fp_bad, halo_sum);
+            if ( spec.balance )
             {
-                std::printf("[%s] n=%d ranks=%d: %ld entries checked, %ld fit + "
-                            "%ld wsym mismatches (BITWISE), halo candidates total "
-                            "%ld\n",
-                            label, n, size, tot_checked, tot_bad, tot_wsym_bad,
-                            halo_sum);
-                if ( tot_fp_bad != 0 )
-                {
-                    std::printf("[%s] %ld fit_points/window-size mismatches\n",
-                                label, tot_fp_bad);
-                }
+                std::printf("[%s] redistribution: %ld/%d rows fitted elsewhere "
+                            "(%.1f%%), %ld KB on the wire, %ld capped, "
+                            "predicted imbalance %.3f (target %.4g), "
+                            "%ld protocol mismatches\n",
+                            label, mig_sum[0], n,
+                            100.0 * (double)mig_sum[0] / (double)n,
+                            mig_sum[3] >> 10, res.balance.rows_capped,
+                            res.balance.predicted_imbalance, res.balance.target,
+                            mig_sum[1]);
             }
             std::printf("[%s] %s\n", label, total_bad == 0 ? "PASS" : "FAIL");
         }
         return total_bad;
     };
 
-    long failures = run_pass(config, "G-L2");
-    if ( coarsen_pass )
+    long failures = 0;
+    // Reserved, not grown: `PassSpec::label` is a plain pointer into these.
+    std::vector<std::string> labels;
+    labels.reserve(12);
+    for ( int coarse = 0; coarse < ( coarsen_pass ? 2 : 1 ); ++coarse )
     {
-        lgpsf::OperatorFitConfig coarse_config = config;
-        coarse_config.coarsen_above = coarsen_above;
-        coarse_config.coarsen_eps = coarsen_eps;
-        failures += run_pass(coarse_config, "G-L2 coarsened");
+        const bool c = ( coarse == 1 );
+        const std::string suffix = c ? " coarsened" : "";
+        // The labels outlive the passes: `PassSpec::label` is a plain pointer.
+        const std::size_t first = labels.size();
+        labels.push_back("G-L2" + suffix);
+        labels.push_back("balanced" + suffix);
+        labels.push_back("balanced-cap" + suffix);
+        labels.push_back("perverse" + suffix);
+        labels.push_back("failures" + suffix);
+        labels.push_back("empty-rank" + suffix);
+
+        {
+            PassSpec spec;
+            spec.label = labels[first + 0].c_str();
+            spec.coarsen = c;
+            failures += run_pass(spec);
+        }
+        {
+            // A tolerance of 0 targets a perfectly even split; the weights are
+            // skewed 101:1 across the mesh, so the low ranks must shed.
+            PassSpec spec;
+            spec.label = labels[first + 1].c_str();
+            spec.coarsen = c;
+            spec.balance = true;
+            spec.tolerance = 1e-9;
+            spec.skewed_weights = true;
+            spec.expect_migration = true;
+            failures += run_pass(spec);
+        }
+        {
+            // The same plan under a cap that cannot hold it: most of the
+            // migration reverts, and what is left must still be bit-identical.
+            PassSpec spec;
+            spec.label = labels[first + 2].c_str();
+            spec.coarsen = c;
+            spec.balance = true;
+            spec.tolerance = 1e-9;
+            spec.skewed_weights = true;
+            spec.bytes_cap = 64u * 1024u;
+            spec.expect_capping = true;
+            failures += run_pass(spec);
+        }
+        if ( size > 1 )
+        {
+            // (owner + 1) mod size is the identity at one rank, so this pass
+            // is skipped there rather than passed vacuously.
+            PassSpec spec;
+            spec.label = labels[first + 3].c_str();
+            spec.coarsen = c;
+            spec.balance = true;
+            spec.perverse = true;
+            spec.bytes_cap = static_cast<std::size_t>(-1);
+            spec.expect_migration = true;
+            failures += run_pass(spec);
+        }
+        {
+            PassSpec spec;
+            spec.label = labels[first + 4].c_str();
+            spec.coarsen = c;
+            spec.balance = true;
+            spec.perverse = true;
+            spec.bytes_cap = static_cast<std::size_t>(-1);
+            spec.poison_row = 7;    // throws in phase B, wherever it runs
+            spec.gated_row = 13;    // never attempted at all
+            spec.expect_migration = ( size > 1 );
+            failures += run_pass(spec);
+        }
+        if ( size > 1 )
+        {
+            PassSpec spec;
+            spec.label = labels[first + 5].c_str();
+            spec.coarsen = c;
+            spec.balance = true;
+            spec.tolerance = 1e-9;
+            spec.skewed_weights = true;
+            spec.empty_first_rank = true;
+            spec.expect_migration = true;
+            failures += run_pass(spec);
+        }
+    }
+    if ( rank == 0 )
+    {
+        std::printf("[gate] ranks=%d: %s (%ld mismatches)\n", size,
+                    failures == 0 ? "ALL PASS" : "FAILURES", failures);
     }
     MPI_Finalize();
     return failures == 0 ? 0 : 1;

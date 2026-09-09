@@ -322,7 +322,11 @@ struct FitDiagnostics
     /// `1 - search_seconds / row_seconds`.  Like `row_seconds` these vary run
     /// to run and across thread counts, are read by no decision and no
     /// output, and are excluded from the bit-identity tests.  0 where the
-    /// phase did not run.
+    /// phase did not run.  Under a row delegate `search_seconds` is measured
+    /// on whatever rank fitted the row and is included in that row's
+    /// `row_seconds` here, so the resident share stays comparable between a
+    /// migrated row and a resident one; per-rank WALL time is then the sum
+    /// over the rows a rank FITTED, which is not the same set.
     Eigen::VectorXd coarsen_seconds;
     Eigen::VectorXd search_seconds;
     Eigen::VectorXd rescore_seconds;
@@ -558,6 +562,17 @@ struct RowFitCandidates
     /// set; it is how a throw on a foreign host travels home
     /// (`dev/row-balance-plan.md`, section 9).
     std::string failure;
+
+    /// TELEMETRY: seconds phase B spent, MEASURED WHERE IT RAN. Left 0 by
+    /// `fit_row_candidates` itself, which touches no clock; a delegate that
+    /// solves a row elsewhere fills it, and the owner both reports it as the
+    /// row's `search_seconds` and ADDS it into `row_seconds`. That keeps
+    /// `row_seconds` meaning "everything attributable to this row, wherever it
+    /// ran", so the resident share `1 - search_seconds / row_seconds` stays
+    /// comparable between a migrated row and a resident one
+    /// (`dev/row-balance-plan.md`, section 9). Set it even for a row that
+    /// FAILED on the host: the seconds were still spent.
+    double search_seconds = 0.0;
 
     /// Whether this slot carries a fit. A delegate that cannot solve a row
     /// leaves its slot alone (optionally setting `failure`); the owner fails
@@ -876,7 +891,11 @@ struct RowDelegate
     /// This is where a distributed caller runs `balance_rows`. Note that a
     /// collective `solve` must therefore be all-or-nothing across ranks: a
     /// full-length assignment on one rank and an empty one on another would
-    /// enter the exchange on one rank only.
+    /// enter the exchange on one rank only. The ONE case where that is not the
+    /// caller's problem is a caller with no rows at all, where an empty return
+    /// is the full-length one: `solve` is entered there too (given a `solve`
+    /// to enter), because a rank that owns nothing still has to show up to its
+    /// peers' collectives.
     std::function<std::vector<int>(const std::vector<int>& window_sizes)> assign;
     /// Called ONCE, after phase A has run for every delegated row, with their
     /// ascending row indices, their packages, and one output slot each. Called
@@ -893,7 +912,9 @@ struct RowDelegate
     ///
     /// A slot left unset (`RowFitCandidates::solved()` false) fails that row
     /// on its owner, with `RowFitCandidates::failure` as the reason if it is
-    /// set. Leaving `y_hat` empty is fine: the owner refills it.
+    /// set. Leaving `y_hat` empty is fine: the owner refills it. Filling
+    /// `RowFitCandidates::search_seconds` is how the time phase B spent
+    /// elsewhere reaches the row's `row_seconds`.
     std::function<void(const detail::RowFitContext& context,
                        const std::vector<int>& rows,
                        const std::vector<detail::RowFitProblem>& problems,
@@ -1001,7 +1022,11 @@ inline OperatorFit fit_operator(
         throw std::invalid_argument(
             "lgpsf::fit_operator: x_rows must have one coordinate per row");
     }
-    if ( config.spike && x_rows && row_own_col.empty() )
+    // With no rows at all there is nothing to say, and an empty `row_own_col`
+    // is then the correct full-length answer rather than an omission. A
+    // distributed caller hits this the moment one rank owns no rows, which is
+    // ordinary at high rank counts.
+    if ( config.spike && x_rows && row_own_col.empty() && num_rows > 0 )
     {
         throw std::invalid_argument(
             "lgpsf::fit_operator: the spike needs to know each row's own column "
@@ -1215,7 +1240,14 @@ inline OperatorFit fit_operator(
             }
         }
         host = delegate->assign(window_sizes);
-        if ( !host.empty() )
+        // "Empty means all mine" has one hole, and it is a HANG rather than a
+        // missed optimization: a caller with NO ROWS cannot return a
+        // full-length assignment, because full length is zero, so it would be
+        // the one participant that skips `solve` -- which is exactly where a
+        // collective delegate's exchanges are. With no rows the two readings
+        // differ in nothing else, so the safe one is taken, provided there is
+        // a `solve` to enter at all.
+        if ( !host.empty() || ( num_rows == 0 && delegate->solve ) )
         {
             if ( static_cast<Eigen::Index>(host.size()) != num_rows )
             {
@@ -1593,9 +1625,14 @@ inline OperatorFit fit_operator(
 
                         // The counters only the search knows, home with the
                         // finalists: nothing downstream can recompute them.
+                        // `search_seconds` is one of them -- the clock ran on
+                        // whatever rank fitted the row, and the row's total
+                        // below adds it back, so `row_seconds` still means
+                        // everything attributable to the row wherever it ran.
                         outcome.evaluations = finalists.evaluations;
                         outcome.candidates = finalists.candidates;
                         outcome.max_modes = finalists.max_modes;
+                        outcome.search_seconds = finalists.search_seconds;
 
                         const auto rescore_start = std::chrono::steady_clock::now();
                         detail::select_row_fit(problem, finalists, context, x_window,
@@ -1609,13 +1646,15 @@ inline OperatorFit fit_operator(
                     {
                         detail::fail_row(outcome, error.what());
                     }
-                    // The owner's own seconds for this row: phase A from the
-                    // first pass, plus the re-gather and phase C from this
-                    // one. What the SEARCH cost, wherever it ran, is not
-                    // known here and stays zero in `search_seconds`.
+                    // The row's seconds: phase A from the first pass, the
+                    // re-gather and phase C from this one, and phase B from
+                    // wherever it ran. A failed row keeps the last term too --
+                    // the seconds were spent -- even though `fail_row` has
+                    // zeroed the `search_seconds` breakdown.
                     outcome.row_seconds +=
                         std::chrono::duration<double>(
-                            std::chrono::steady_clock::now() - row_start).count();
+                            std::chrono::steady_clock::now() - row_start).count()
+                        + finalists.search_seconds;
                 }
             },
             config.num_threads);

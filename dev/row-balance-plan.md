@@ -417,6 +417,48 @@ implementation is entered on every rank; an empty return from `assign` means
 "no delegation at all" and skips it, so a collective `assign` must return
 full-length on every rank or on none.
 
+**AS BUILT (slice 3 second half), `include/lgpsf/mpi/row_delegate.hpp`.**
+`lgpsf::mpi::RowExchange` is the delegate: construct it on a communicator, hand
+`delegate()` to `fit_operator`, read `fitted_on_rank()` afterwards. `dist_fit`
+builds one when `DistFitInput::balance_tolerance > 0` and otherwise passes no
+delegate at all. What travels, and why, is documented at the top of that
+header; what the exchange does about failure is section 9 below, mechanized.
+Six things this sketch got wrong or left out, all found by building it:
+
+1. **A rank with NO ROWS could not participate.** Its full-length assignment IS
+   the empty vector, so "empty means all mine" made it the one rank that skips
+   `solve` -- which is where the collectives are. That is a hang, not a missed
+   optimization, and an idle rank is an ordinary thing at high rank counts.
+   `fit_operator` now reads an empty return from a zero-row caller as
+   full-length and enters `solve` anyway (given a `solve` to enter).
+2. **A rank with no rows could not be fitted at all**, redistribution or none:
+   `fit_operator` refuses a spiked fit with separate row coordinates unless
+   `row_own_col` is non-empty, and with no rows the empty vector is the
+   full-length answer again. That check now reads the length rather than the
+   emptiness. It is a pre-existing hole in `dist_fit` that the gate's
+   zero-row pass found on its first run.
+3. **`prev_evaluations` carries the WEIGHT, not the evaluation count.** The
+   weight the rule wants is `fit_points x evaluations`, and `dist_fit` cannot
+   form that product: it has the window sizes, not the previous rung's coarse
+   point counts, and with coarsening on the two differ by an order of magnitude
+   for exactly the rows that migrate. The caller has both factors for free in
+   the previous rung's diagnostics, so it passes the product. The field keeps
+   the name this document gave it; its documentation says what it holds.
+4. **The host's phase-B seconds needed somewhere to ride**, so
+   `RowFitCandidates::search_seconds` exists. The owner reports it as the row's
+   `search_seconds` and ADDS it into `row_seconds`, which is the attribution
+   section 9 decided on.
+5. **`assign` needs the failure discipline too**, not just `solve`. Its inputs
+   are rank-local (the weight vector's length, an override's length), so a
+   throw there is a throw on one rank inside a sequence of collectives. It
+   carries the same flag and reduces it after its last collective.
+6. **The decision to delegate is itself collective.** A rank that leaves
+   `balance_tolerance` at 0 while its peers set it does not produce a different
+   answer, it hangs the job, so `dist_fit` reduces the decision (and the
+   tolerance) before building anything. That reduction runs even when the
+   feature is off, because "off here, on there" is exactly the case it exists
+   to catch.
+
 ## 6. Determinism
 
 Reassignment is bitwise-safe, and the reasons are already in the code:
@@ -585,6 +627,42 @@ section lives entirely in the delegate's body; a rank that throws out of
 interface cannot prevent that, so the MPI half must be written with it in
 front of mind, and the gate must include a rank that fails while others do
 not.
+
+**HOW THE DISCIPLINE WAS ENFORCED (slice 3 second half).** Both callbacks are
+written as one region with a rank-local `failed` flag and one `MPI_Allreduce`
+of it AFTER the last exchange; nothing throws before that reduction except a
+condition every rank decides identically. Three things beyond the plan were
+needed:
+
+- **Exchange counts come from the buffers**, in both directions and in rows AND
+  in doubles. A rank whose packing threw sends nothing at all and says so, and
+  a receiver that could not unpack still answers one record per row it was
+  sent, so a short answer degrades to failed rows rather than to a wait.
+- **An acknowledgement round after the counts.** Counts alone make a
+  RECEIVE-side allocation failure unsurvivable: the senders have already been
+  told how much is coming, so a receiver that threw would leave them in an
+  `Isend` nobody matches. Each direction is therefore counts -> allocate ->
+  "can you take it?" -> payload, and a refusing receiver's senders skip it. The
+  rows then come home unsolved, which is a failed row, and the flag makes every
+  rank throw anyway.
+- **A cap on the MPI count itself.** `bytes_cap` is a knob, and MPI counts are
+  `int`, so an oversized buffer is turned into the collective failure rather
+  than into a truncated message.
+
+**THE BYTE CAP AS BUILT.** Enforced inside `assign`, before phase A
+materializes anything, on an upper bound of each row's payload -- its WINDOW
+size, since coarsening only ever shrinks the quadrature -- with the lightest
+migrations reverted first, as a pure function of the same global arrays the
+plan is, so every rank reverts the same rows. The default is 64 MiB per rank
+per direction. It is sized by MEMORY HEADROOM rather than by the 26 MB average
+of section 2, because the average is exactly the misleading number: the senders
+are few, so the cap is meant to bind on them. A sender holds the packages phase
+A built plus its copy of them in the pack buffer, a receiver its receive buffer
+plus the unpacked problems, so 64 MiB is about 128 MiB of peak per rank per
+direction -- roughly 6% of a rank's memory at 48 ranks on a 192 GB node, and
+above the whole job's average traffic, so it does not bind in the intended
+regime. `fit_points_rank_max` was not needed: the window size is already an
+upper bound and is already known where the decision is made.
 
 **The gate must cover more than the perverse pass.** The perverse assignment
 (`owner + 1 mod size`) is the identity at n = 1, so that pass is only
