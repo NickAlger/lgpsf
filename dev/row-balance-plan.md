@@ -78,17 +78,26 @@ Three facts drive the design.
 1. **The tail is thin.** The top 1% of rows hold 21% of the fit points, the
    top 2% hold 32%, the top 5% hold 49%. A few percent of the rows carry a
    third of the work.
-2. **No predictor is needed for the points.** `outcome.fit_points` is the
-   exact coarse cell count and is set at `operator_fit.hpp:763`, at the end of
-   phase A, before anything expensive runs -- and phase A must run on the
-   owner anyway before a package can exist. So the assignment is computed
-   AFTER phase A from exact counts. (A design that assigned before phase A
-   would need a predictor: the window size, known right after the dual-tree
-   descent, or a local proxy from the window ellipsoid's area and the node
-   density, which tracks the coarse count at log-correlation 0.96. Neither is
-   necessary, and both were dropped.) Note also that the cell structure
-   depends only on geometry and `coarsen_eps`, so `fit_points` is IDENTICAL
-   across the rungs of one build: after rung 1 it is known exactly for free.
+2. **The weight is known before phase A, and must be.** REVISED for slice 3.
+   Assigning after phase A would mean every row's package exists at once,
+   which on the busiest rank is gigabytes -- phase A is what BUILDS the
+   package. And phase A cannot run twice for free: the coarsening is about 4%
+   of a wide row's time, so a throwaway counting pass would push the resident
+   share from 0.084 to about 0.12 and cost a third of the payoff. So the
+   assignment is computed right after the window pre-pass, which already runs
+   for every row in one dual-tree descent before the fit loop
+   (`operator_fit.hpp:542-643`), from quantities that are exact and free
+   there:
+   - **rung 1**: the WINDOW size, `outcome.window.size()`. Exact, already
+     computed, no coarsening needed.
+   - **rungs 2 and up**: the previous rung's `fit_points x evaluations` for
+     the same row. The cell structure depends only on geometry and
+     `coarsen_eps`, so `fit_points` is IDENTICAL across the rungs of one
+     build -- after rung 1 the coarse count is known exactly, for free, and
+     only the evaluation count is a prediction.
+   The local proxy (window ellipsoid area times node density) is not needed
+   and is dropped; it was an estimate OF the window size, which we simply
+   have.
 3. **History supplies the other half.** Points alone correlate 0.62 in log
    with row seconds; `fit_points x evaluations` correlates 0.94. `dist_fit` is
    called once per rung and the halo is not rebuilt for this scheme, so the
@@ -295,11 +304,10 @@ territory bounding box meets the window ellipsoid's box) and pick the one with
 the most capacity among those. Makespan is primary, halo and locality are the
 tie-break. Defer to a later slice if it complicates the first one.
 
-**The weights.** The assignment is computed AFTER phase A, so
-`outcome.fit_points` is exact for every row (`operator_fit.hpp:763`). The
-weight is that count times the previous rung's `evaluations` for the same row
-where a previous rung exists, and the count alone on rung 1. No proxy, no
-caller-supplied hint, no state carried between builds. Anchor each rank's
+**The weights.** The assignment is computed right after the window pre-pass
+and before phase A (see section 1, fact 2). The weight is the window size on
+rung 1, and the previous rung's `fit_points x evaluations` for the same row on
+rungs 2 and up. No proxy, no state carried between builds. Anchor each rank's
 initial load on the previous rung's MEASURED per-rank seconds rather than on
 the sum of predicted weights, when a previous rung exists.
 
@@ -362,21 +370,36 @@ over.
 `fitted_on_rank` goes on `DistFitResult` for the same reason, not on
 `FitDiagnostics`.
 
-**How the phases are exposed matters.** The naive reading of the split -- three
-passes back to back over all rows -- materializes every row's package at once,
-which on the busiest rank is gigabytes. Instead `fit_operator` takes an
-optional hook:
+**How the phases are exposed matters.** Materializing every row's package at
+once is gigabytes on the busiest rank, and phase A is what builds a package.
+So `fit_operator` takes an optional TWO-CALLBACK delegate, and only delegated
+rows ever have a package:
 
 ```cpp
-    /// Optional: solve these phase-B packages somehow (dist_fit supplies an
-    /// MPI implementation).  Absent, every row runs the fused A;B;C path
-    /// exactly as today, and no package is ever materialized.
-    std::function<void(std::vector<RowFitProblem>&,
-                       std::vector<RowFitCandidates>&)> solve_hook;
+struct RowDelegate
+{
+    /// Called ONCE after the window pre-pass, with every row's window size
+    /// (0 for a row that will not be fitted).  Returns the host of each row;
+    /// an entry equal to this rank's own index means "fit it here".  This is
+    /// where the caller runs balance_rows.  Absent => every row is local.
+    std::function<std::vector<int>(const std::vector<int>& window_sizes)> assign;
+
+    /// Called ONCE after phase A of the delegated rows, with their problems
+    /// in row order and an output slot each.  The implementation is free to
+    /// solve them anywhere -- dist_fit ships them to their host, runs
+    /// detail::fit_row_candidates there, and ships the candidates back.
+    std::function<void(const std::vector<int>& rows,
+                       const std::vector<RowFitProblem>& problems,
+                       std::vector<RowFitCandidates>& out)> solve;
+};
 ```
 
-Local rows stay on the fused path, so only migrated rows pay the package and
-the second window gather. This also keeps `operator_fit.hpp` free of MPI.
+The loop becomes: pre-pass; `assign`; then per row, phase A followed
+immediately by B and C fused when the row is local, or phase A and a packed
+problem when it is not; then `solve`; then phase C for the delegated rows.
+Local rows keep exactly today's fused path and never materialize anything.
+This also keeps `operator_fit.hpp` free of MPI: the exchange lives entirely
+behind `solve`.
 
 ## 6. Determinism
 
