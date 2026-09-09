@@ -579,14 +579,53 @@ things follow, and the first is the dangerous one.
   whole migration region so every throw becomes a rank-local flag, `Allreduce`
   it, and throw after the exchanges complete.
 
-**Sender-side memory, and a byte cap.** The average of 26 MB per rank is
-misleading: the senders are few by construction, since that is what makes them
-overloaded. If ten or twenty ranks hold the moved mass they pack hundreds of
-megabytes each, on a job running 48 ranks per node. The rule balances SECONDS,
-and `weight ~ points x evaluations` means a row with many points and a short
-search is heavy in bytes and light in time. So the assignment needs a byte cap
-per sender and per receiver, sized from `fit_points_rank_max`, which the
-consumer's report already carries; or failing that, send in waves.
+**Sender-side memory, and the byte cap (SUPERSEDED 2026-09-09 -- read this,
+not what the paragraph used to say).** The average bytes per rank is a
+misleading number: the senders are few by construction, since being overloaded
+is what makes them senders, so a plan fine for the clock can be an
+out-of-memory. That much stands. Everything this document said about HOW to
+bound it was wrong, and a continental run proved it:
+
+- It said the ASSIGNMENT needs the cap, enforced before phase A materializes
+  anything, on the window size as an upper bound of the payload, reverting the
+  lightest migrations first, as a pure function of the global arrays so every
+  rank reverts the same rows. Every clause of that is now false.
+- The closing claim -- "`fit_points_rank_max` was not needed: the window size
+  is already an upper bound and is already known where the decision is made"
+  -- is the defect stated as a conclusion. The window size IS an upper bound,
+  but a ten- to fiftyfold one on exactly the rows the rule wants to move,
+  because a package carries coarsened CELLS. So a cap built on it rejects the
+  expensive rows and keeps the cheap ones. Measured: 6,763 of ~6,900 planned
+  migrations reverted, predicted imbalance 20.62 against an unbalanced 20.7.
+  The earlier instinct, size it from `fit_points_rank_max`, named the right
+  quantity; the error was insisting the decision be made in the one place
+  where only window sizes exist.
+- Neither did this document list the option that turned out to be right, and
+  which is cheaper than both the ones it did list (a cap in the rule, or
+  sending in waves): **do not send it, fit it at home.** The owner is holding
+  the package; solving it locally is bit-identical by the same argument that
+  licenses sending it away.
+
+As built (`040a23c`): `assign` produces the makespan plan and nothing else;
+the cap lives in `solve`, on exactly the bytes `pack_problem` will write; a
+dropped row is fitted by its owner in the same `parallel_for` as the foreign
+rows; the receive-side budget rides the acknowledgement round, now tri-state
+(take it / refused for budget / refused because this rank has failed). Drops
+are rank-local and need no agreement -- a drop moves WORK, never an answer --
+so the sender drops heaviest first, ties by ascending row, and the receiver
+refuses whole peers heaviest first, ties by ascending rank. Default 512 MiB,
+about 2C of transient peak on the few ranks that send or host.
+
+**Section 3 and this section contradicted each other, and the code followed
+this one.** Section 3 already said the payload is the coarse cells, one
+paragraph before pointing at a cap that measured the window. A cross-reference
+would have caught it before a 192-rank run did.
+
+**The counters are rank-local.** `rows_migrated`, `rows_capped` and
+`bytes_sent` are per rank; only `predicted_imbalance` is the plan's and global.
+A consumer that reports them must reduce them, which lgpsf-hessian did not do
+at first, so the first continental run printed rank 0's share beside a global
+capped count.
 
 **Cell-structure reuse across rungs (open, profiling-gated -- maintainer).**
 The cells depend only on geometry (`x`, `m2`, centre, frame, eps), not on the
