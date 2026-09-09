@@ -1067,6 +1067,17 @@ PYBIND11_MODULE(lgpsf, m)
                       "clock seconds of each row's fit block (window gather "
                       "to guard). Read by no decision; not bit-identical "
                       "across runs or thread counts. 0 for gated rows.")
+        .def_readonly("coarsen_seconds", &FitDiagnostics::coarsen_seconds,
+                      "(R,) float: TELEMETRY -- seconds in the graded "
+                      "coarsening alone. 0 where the row was not coarsened.")
+        .def_readonly("search_seconds", &FitDiagnostics::search_seconds,
+                      "(R,) float: TELEMETRY -- seconds in the mode-set "
+                      "ladder and its searches, i.e. everything that reads "
+                      "only the coarse quadrature. The resident share of a "
+                      "row is 1 - search_seconds / row_seconds.")
+        .def_readonly("rescore_seconds", &FitDiagnostics::rescore_seconds,
+                      "(R,) float: TELEMETRY -- seconds in the full-window "
+                      "re-score of the finalists and its guard.")
         .def_property_readonly("status",
                                []( const FitDiagnostics& d )
                                { return codes_of(d.status); },

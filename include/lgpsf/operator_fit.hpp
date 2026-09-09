@@ -308,6 +308,23 @@ struct FitDiagnostics
     /// the baseline's CV score) is not in it. Deterministic, like its
     /// factors. 0 where the search did not run.
     Eigen::VectorXd work;
+    /// (R_all,) TELEMETRY, NOT DETERMINISTIC: the phase split of
+    /// `row_seconds`, `std::chrono::steady_clock`, for the load-balance
+    /// study.  `coarsen_seconds` is the graded coarsening alone,
+    /// `search_seconds` the mode-set ladder and its Levenberg-Marquardt
+    /// searches (everything that reads only the coarse quadrature), and
+    /// `rescore_seconds` the full-window re-score of the finalists with its
+    /// guard.  What `row_seconds` holds beyond the three is the window
+    /// gather, the whitening and the bookkeeping.  Only `search_seconds`
+    /// could move to another rank under a fitting-only redistribution
+    /// (`dev/row-balance-plan.md`), so the resident share is
+    /// `1 - search_seconds / row_seconds`.  Like `row_seconds` these vary run
+    /// to run and across thread counts, are read by no decision and no
+    /// output, and are excluded from the bit-identity tests.  0 where the
+    /// phase did not run.
+    Eigen::VectorXd coarsen_seconds;
+    Eigen::VectorXd search_seconds;
+    Eigen::VectorXd rescore_seconds;
     /// (R_all,) TELEMETRY, NOT DETERMINISTIC: wall-clock seconds of the row's
     /// fit block inside the parallel loop -- from the window gather to the
     /// guard, `std::chrono::steady_clock` -- for the load-balance study.
@@ -369,6 +386,9 @@ struct RowOutcome
     int candidates = 0;
     int max_modes = 0;      ///< largest mode set the search tried
     double row_seconds = 0.0;
+    double coarsen_seconds = 0.0;
+    double search_seconds = 0.0;
+    double rescore_seconds = 0.0;
     std::string failure;
 };
 
@@ -742,10 +762,16 @@ inline OperatorFit fit_operator(
                         {
                             protected_positions.push_back(spike_position);
                         }
+                        const auto coarsen_start =
+                            std::chrono::steady_clock::now();
                         coarse = coarsen_window(
                             x_window, m2_window, z, protected_positions, center,
                             window_frame[static_cast<std::size_t>(rho)],
                             config.coarsen_eps);
+                        outcome.coarsen_seconds =
+                            std::chrono::duration<double>(
+                                std::chrono::steady_clock::now()
+                                - coarsen_start).count();
                         if ( coarse.x.rows() < 2 )
                         {
                             // Only coincident points can do this (the spike
@@ -785,6 +811,12 @@ inline OperatorFit fit_operator(
                         coarse_config ? *coarse_config : row_config;
 
                     // --- baseline: a linear fit at sigma[rho], pinned -------
+                    //
+                    // PHASE B begins here: from this point to the counter
+                    // harvest below, nothing reads the full window, only the
+                    // fit's quadrature.  It is the part a fitting-only
+                    // redistribution could move (dev/row-balance-plan.md).
+                    const auto search_start = std::chrono::steady_clock::now();
                     const Eigen::MatrixXd z_hat = whiten_probes(z_fit, m2_fit);
                     const Eigen::VectorXd y_hat = whiten_data(y, target_mass);
                     Eigen::MatrixXd extra = Eigen::MatrixXd::Zero(fit_size, num_extra);
@@ -863,6 +895,11 @@ inline OperatorFit fit_operator(
                                 static_cast<int>(candidate.num_modes()));
                         }
                     }
+                    outcome.search_seconds =
+                        std::chrono::duration<double>(
+                            std::chrono::steady_clock::now()
+                            - search_start).count();
+                    const auto rescore_start = std::chrono::steady_clock::now();
 
                     // --- full-window re-score of the finalists --------------
                     //
@@ -969,6 +1006,10 @@ inline OperatorFit fit_operator(
                                 outcome.stop = RowStop::Exhausted; break;
                         }
                     }
+                    outcome.rescore_seconds =
+                        std::chrono::duration<double>(
+                            std::chrono::steady_clock::now()
+                            - rescore_start).count();
                 }
                 catch ( const std::exception& error )
                 {
@@ -979,6 +1020,9 @@ inline OperatorFit fit_operator(
                     outcome.evaluations = 0;
                     outcome.candidates = 0;
                     outcome.max_modes = 0;
+                    outcome.coarsen_seconds = 0.0;
+                    outcome.search_seconds = 0.0;
+                    outcome.rescore_seconds = 0.0;
                 }
                 outcome.row_seconds =
                     std::chrono::duration<double>(
@@ -1024,6 +1068,9 @@ inline OperatorFit fit_operator(
     diagnostics.candidates = Eigen::VectorXi::Zero(num_rows);
     diagnostics.work = Eigen::VectorXd::Zero(num_rows);
     diagnostics.row_seconds = Eigen::VectorXd::Zero(num_rows);
+    diagnostics.coarsen_seconds = Eigen::VectorXd::Zero(num_rows);
+    diagnostics.search_seconds = Eigen::VectorXd::Zero(num_rows);
+    diagnostics.rescore_seconds = Eigen::VectorXd::Zero(num_rows);
     fit.mode_set_id.assign(static_cast<std::size_t>(num_rows), -1);
     diagnostics.stop_reason.assign(static_cast<std::size_t>(num_rows), RowStop::None);
     diagnostics.released.assign(static_cast<std::size_t>(num_rows), 0);
@@ -1046,6 +1093,9 @@ inline OperatorFit fit_operator(
                                 * static_cast<double>(outcome.evaluations)
                                 * static_cast<double>(outcome.max_modes);
         diagnostics.row_seconds(rho) = outcome.row_seconds;
+        diagnostics.coarsen_seconds(rho) = outcome.coarsen_seconds;
+        diagnostics.search_seconds(rho) = outcome.search_seconds;
+        diagnostics.rescore_seconds(rho) = outcome.rescore_seconds;
 
         fit.window_indptr[static_cast<std::size_t>(rho) + 1] =
             fit.window_indptr[static_cast<std::size_t>(rho)]
