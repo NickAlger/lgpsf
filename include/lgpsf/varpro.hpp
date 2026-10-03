@@ -52,6 +52,7 @@
 #include <vector>
 
 #include <Eigen/Dense>
+#include "lgpsf/detail/svd.hpp"
 
 #include "lgpsf/detail/levenberg_marquardt.hpp"
 #include "lgpsf/exceptions.hpp"
@@ -163,7 +164,7 @@ inline Eigen::MatrixXd orthonormal_range( const Eigen::Ref<const Eigen::MatrixXd
     {
         return Eigen::MatrixXd::Zero(B.rows(), 0);
     }
-    Eigen::BDCSVD<Eigen::MatrixXd> svd(B, Eigen::ComputeThinU);
+    const Eigen::JacobiSVD<Eigen::MatrixXd> svd = detail::thin_svd_u(B);
     const Eigen::VectorXd& sigma = svd.singularValues();
     if ( sigma.size() == 0 || sigma(0) == 0.0 )
     {
@@ -306,8 +307,7 @@ inline InnerSolve inner_solve( const Eigen::MatrixXd& A_tilde,
         // cutoff and the minimum-norm solution exist for
     }
 
-    Eigen::BDCSVD<Eigen::MatrixXd> svd(equilibrated,
-                                       Eigen::ComputeThinU | Eigen::ComputeThinV);
+    const Eigen::JacobiSVD<Eigen::MatrixXd> svd = detail::thin_svd(equilibrated);
     const Eigen::VectorXd& sigma = svd.singularValues();
     const double sigma_max = ( sigma.size() > 0 ) ? sigma(0) : 0.0;
     const double tol = static_cast<double>(std::max(equilibrated.rows(), num_modes))
@@ -728,9 +728,7 @@ VarProResult fit_varpro(
     }
     else
     {
-        result.s = reduced.extra_block()
-                       .bdcSvd(Eigen::ComputeThinU | Eigen::ComputeThinV)
-                       .solve(target);
+        result.s = detail::thin_svd(reduced.extra_block()).solve(target);
     }
     result.residual = target - reduced.extra_block() * result.s;
     result.cost = 0.5 * result.residual.squaredNorm();

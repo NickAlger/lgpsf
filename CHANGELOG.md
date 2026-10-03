@@ -8,6 +8,20 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Every SVD in the library is now Eigen's `JacobiSVD`** (`detail/svd.hpp`,
+  `detail::thin_svd` / `thin_svd_u`), replacing `BDCSVD` in the VarPro inner
+  solve, the Levenberg-Marquardt step, the cross-validation folds, the
+  orthonormal range and the linear baseline fits. Eigen 3.4.0's divide-and-
+  conquer SVD aborts inside `perturbCol0` (an index assertion on its internal
+  permutation) on some rank-deficient inputs with repeated or zero singular
+  values; a wedge ladder without the angular cap reaches such fold design
+  matrices at 100 probes on real data. The matrices here are at most a few
+  hundred by a few dozen, where one-sided Jacobi costs the same and has no such
+  path. Full-rank results change only at round-off (the two algorithms agree to
+  working precision); rank-deficient minimum-norm solutions are the same
+  mathematical object computed differently. The test suite (224 cases) passes
+  unchanged. (2026-10-03)
+
 - **`OperatorFitConfig::coarsen_above` now defaults to `3000` (was `0`, off).**
   The graded window coarsening is on by default: a row whose fit window holds
   more than 3,000 points is fitted on graded cells instead of the raw window,

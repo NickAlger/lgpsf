@@ -137,6 +137,7 @@
 #include <vector>
 
 #include <Eigen/Dense>
+#include "lgpsf/detail/svd.hpp"
 #include <Eigen/Sparse>
 #include <ellipsoid_tree/detail/parallel_for.hpp>
 #include <ellipsoid_tree/geometry.hpp>
@@ -366,7 +367,7 @@ inline std::pair<Eigen::VectorXd, Eigen::VectorXd> linear_fit(
         design.rightCols(e_hat.cols()) = z_hat.transpose() * e_hat;
     }
     const Eigen::VectorXd all =
-        design.bdcSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(y_hat);
+        detail::thin_svd(design).solve(y_hat);
     return {all.head(values.cols()), all.tail(e_hat.cols())};
 }
 

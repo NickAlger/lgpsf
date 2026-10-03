@@ -71,6 +71,7 @@
 #include <vector>
 
 #include <Eigen/Dense>
+#include "lgpsf/detail/svd.hpp"
 
 #include "lgpsf/ellipsoid_transform.hpp"
 #include "lgpsf/exceptions.hpp"
@@ -449,8 +450,7 @@ double linear_cv_score( const Eigen::Ref<const Eigen::MatrixXd>& z_hat,
             ( qr.rank() == train.cols() )
                 ? Eigen::VectorXd(qr.solve(target))
                 : Eigen::VectorXd(
-                      train.bdcSvd(Eigen::ComputeThinU | Eigen::ComputeThinV)
-                          .solve(target));
+                      detail::thin_svd(train).solve(target));
         for ( Eigen::Index i = 0; i < fold.validation.size(); ++i )
         {
             const Eigen::Index row = fold.validation(i);
@@ -813,7 +813,7 @@ inline ProbeFitResult fit_from_probes(
         }
 
         const Eigen::VectorXd coefficients =
-            design.bdcSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(y_hat);
+            detail::thin_svd(design).solve(y_hat);
         const Eigen::VectorXd residual = y_hat - design * coefficients;
         const Eigen::MatrixXd range = detail::orthonormal_range(design);
 

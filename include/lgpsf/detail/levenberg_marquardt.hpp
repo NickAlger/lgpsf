@@ -52,6 +52,7 @@
 #include <utility>
 
 #include <Eigen/Dense>
+#include "lgpsf/detail/svd.hpp"
 
 namespace lgpsf {
 
@@ -137,8 +138,7 @@ inline TrustRegionStep solve_trust_region(
     {
         scaled.col(j) /= scale(j);
     }
-    Eigen::BDCSVD<Eigen::MatrixXd> svd(scaled,
-                                       Eigen::ComputeThinU | Eigen::ComputeThinV);
+    const Eigen::JacobiSVD<Eigen::MatrixXd> svd = detail::thin_svd(scaled);
     const Eigen::VectorXd& sigma = svd.singularValues();
     const Eigen::VectorXd g = svd.matrixU().transpose() * f;
     const Eigen::Index rank_slots = sigma.size();
