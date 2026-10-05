@@ -525,3 +525,92 @@ TEST_CASE("malformed inputs are rejected eagerly")
     CHECK_THROWS_AS(pullback(frame, Eigen::MatrixXd::Zero(4, 3)),
                     std::invalid_argument);
 }
+
+TEST_CASE("clamping a frame's axes leaves a frame inside the range alone")
+{
+    // log-diagonal (0.30, 0.22), one off-diagonal entry: axes well inside [0.05, 5]
+    Eigen::VectorXd block(3);
+    block << std::log(0.30), std::log(0.22), 0.05;
+    const auto clamped = lgpsf::clamp_frame_axes(block, 2, 0.05, 5.0);
+    REQUIRE(clamped.has_value());
+    CHECK_FALSE(clamped->moved);
+
+    // the re-encoded block describes the same ellipsoid, to round-off
+    const Eigen::VectorXd mu0 = Eigen::VectorXd::Zero(2);
+    const EllipsoidFrame before = unpack_theta_hat(block, mu0, MuMode::Pinned);
+    const EllipsoidFrame after = unpack_theta_hat(clamped->block, mu0, MuMode::Pinned);
+    const Eigen::MatrixXd sigma_before = before.L * before.L.transpose();
+    const Eigen::MatrixXd sigma_after = after.L * after.L.transpose();
+    CHECK((sigma_before - sigma_after).cwiseAbs().maxCoeff()
+          <= 1e-14 * sigma_before.cwiseAbs().maxCoeff());
+
+    // and the axes it reports are that ellipsoid's, ascending
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(sigma_before);
+    CHECK(clamped->axes(0) == doctest::Approx(std::sqrt(eig.eigenvalues()(0))).epsilon(1e-12));
+    CHECK(clamped->axes(1) == doctest::Approx(std::sqrt(eig.eigenvalues()(1))).epsilon(1e-12));
+}
+
+TEST_CASE("clamping keeps the principal directions and moves only the axes outside the range")
+{
+    // a rotated ellipsoid, axes 4.0 and 0.5 at 30 degrees; the ceiling is 1.5
+    const double angle = 0.5235987755982988;
+    Eigen::Matrix2d U;
+    U << std::cos(angle), -std::sin(angle), std::sin(angle), std::cos(angle);
+    Eigen::Vector2d axes(4.0, 0.5);
+    const Eigen::Matrix2d sigma = U * axes.cwiseAbs2().asDiagonal() * U.transpose();
+    const Eigen::Matrix2d L = sigma.llt().matrixL();
+    Eigen::VectorXd block(3);
+    block << std::log(L(0, 0)), std::log(L(1, 1)), L(1, 0);
+
+    const auto clamped = lgpsf::clamp_frame_axes(block, 2, 0.1, 1.5);
+    REQUIRE(clamped.has_value());
+    CHECK(clamped->moved);
+    CHECK(clamped->axes(0) == doctest::Approx(0.5).epsilon(1e-12));  // untouched
+    CHECK(clamped->axes(1) == doctest::Approx(1.5).epsilon(1e-12));  // the ceiling
+
+    const EllipsoidFrame frame =
+        unpack_theta_hat(clamped->block, Eigen::VectorXd::Zero(2), MuMode::Pinned);
+    const Eigen::Matrix2d expected =
+        U * Eigen::Vector2d(1.5, 0.5).cwiseAbs2().asDiagonal() * U.transpose();
+    CHECK((frame.L * frame.L.transpose() - expected).cwiseAbs().maxCoeff() <= 1e-12);
+}
+
+TEST_CASE("clamping tames a frame whose covariance cannot be represented")
+{
+    // The frame a runaway search actually shipped: one diagonal entry at the
+    // edge of overflow, the other at round-off, L L^T = inf. It decodes (the
+    // diagonal is finite and positive), which is how it got as far as it did.
+    Eigen::VectorXd block(3);
+    block << std::log(6.0e306), std::log(9.7e-16), 1.065e3;
+    const Eigen::VectorXd mu0 = Eigen::VectorXd::Zero(2);
+    const EllipsoidFrame runaway = unpack_theta_hat(block, mu0, MuMode::Pinned);
+    CHECK_FALSE((runaway.L * runaway.L.transpose()).allFinite());
+
+    const double lo = 0.02, hi = 36.0;
+    const auto clamped = lgpsf::clamp_frame_axes(block, 2, lo, hi);
+    REQUIRE(clamped.has_value());
+    CHECK(clamped->moved);
+    CHECK(clamped->axes(0) == doctest::Approx(lo).epsilon(1e-12));
+    CHECK(clamped->axes(1) == doctest::Approx(hi).epsilon(1e-12));
+
+    const EllipsoidFrame frame = unpack_theta_hat(clamped->block, mu0, MuMode::Pinned);
+    const Eigen::MatrixXd sigma = frame.L * frame.L.transpose();
+    REQUIRE(sigma.allFinite());
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(sigma);
+    CHECK(std::sqrt(eig.eigenvalues()(1)) == doctest::Approx(hi).epsilon(1e-10));
+    CHECK(std::sqrt(eig.eigenvalues()(0)) == doctest::Approx(lo).epsilon(1e-6));
+}
+
+TEST_CASE("clamping refuses what it cannot project, and a malformed range")
+{
+    Eigen::VectorXd block = Eigen::VectorXd::Zero(3);
+    CHECK_THROWS_AS(lgpsf::clamp_frame_axes(block, 2, 0.0, 1.0), std::invalid_argument);
+    CHECK_THROWS_AS(lgpsf::clamp_frame_axes(block, 2, 2.0, 1.0), std::invalid_argument);
+    CHECK_THROWS_AS(lgpsf::clamp_frame_axes(
+                        block, 2, 1.0, std::numeric_limits<double>::infinity()),
+                    std::invalid_argument);
+
+    // a log-diagonal past overflow does not decode to a finite L: nothing to project
+    block(0) = 800.0;
+    CHECK_FALSE(lgpsf::clamp_frame_axes(block, 2, 0.1, 1.0).has_value());
+}

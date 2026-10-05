@@ -1,4 +1,25 @@
-# Degenerate fitted frames can ship (known problem, 2026-10-04; not fixed)
+# Degenerate fitted frames can ship (known problem, 2026-10-04; a fix exists, OFF by default)
+
+> **Status, evening of 2026-10-04.** Decided by the maintainer and implemented the same day, behind two
+> options that default to off (`ProbeFitConfig::frame_ceiling`, `frame_floor`), so every existing fit is
+> bit-identical until they are switched on:
+> - **`frame_ceiling > 0`**: when no candidate of a row's search is admissible, the best one is no longer
+>   passed on as it is. Its semi-axes are clamped into `[frame_floor * spacing, frame_ceiling * window
+>   radius]` (`clamp_frame_axes`: on the Cholesky factor, never the covariance), its linear coefficients
+>   re-solved at the clamped frame with a truncated SVD (`kClampRcond` = 1e-10), its score recomputed; it
+>   wins with `StopReason::Clamped` and the baseline guard decides whether it ships. Tentative value 1.0,
+>   the admissibility bound itself.
+> - **`frame_floor > 0`**: a lower admissibility bound on the smallest semi-axis, in local point spacings
+>   (`local_spacing`). Tentative value 0.1: a guard against collapse, not a resolution requirement.
+> - Not done: bounding the search itself (a runaway still spends its iterations), and making
+>   `assemble_sparse` refuse a non-finite kernel ellipsoid on its own (candidate fix 4 below; still worth
+>   doing).
+> - The defaults stay off until an A/B on real operators (held-out QC at fixed probe counts, baseline
+>   and clamped counts, fit time). One data point from the unit test: a target whose true ellipsoid is
+>   2.1 window radii scores 6e-15 unclamped, 2.4e-2 clamped at one radius, 9e-4 at two. So where the
+>   window is NOT conservative the ceiling costs accuracy, and its value is a real choice.
+>
+> The rest of this note is the record of the problem and of the discussion, as written before the fix.
 
 A searched row fit can pass the baseline guard with an ellipsoid frame that has collapsed, exploded,
 or overflowed. Usually that is harmless. Rarely it puts an entry of order 1e11 on the operator's

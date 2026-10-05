@@ -171,7 +171,11 @@ enum class RowStop
     Target,
     ModePatience,
     Exhausted,
-    SearchInfeasible  ///< No mode set passed the counting rule for a search.
+    SearchInfeasible,  ///< No mode set passed the counting rule for a search.
+    /// The search found no admissible candidate; its result is the clamped
+    /// fallback of `ProbeFitConfig::frame_ceiling` (whether THAT shipped is
+    /// `status`, as for any searched fit).
+    Clamped
 };
 
 inline const char* to_string( RowStatus status )
@@ -835,6 +839,8 @@ inline void select_row_fit(
                 outcome.stop = RowStop::ModePatience; break;
             case StopReason::Exhausted:
                 outcome.stop = RowStop::Exhausted; break;
+            case StopReason::Clamped:
+                outcome.stop = RowStop::Clamped; break;
         }
     }
 }

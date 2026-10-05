@@ -237,16 +237,17 @@ orientation but not its scale**, and scale is what the circle rungs actually
 rescue. That is why sixty unanimous frog results pointed the wrong way on one
 of the four knobs, and why the field-scale check was not a formality.
 
-## Known problem, not fixed: degenerate fitted frames can ship (2026-10-04)
+## Degenerate fitted frames: a fix exists, OFF by default; the A/B is owed (2026-10-04)
 
-A searched row fit can pass the baseline guard with a frame that has collapsed, exploded or
-overflowed (0.3 to 0.4% of rows at 10 probes in one production fit, a few hundredths of a percent at
-25 to 50). Mostly harmless; in one row of 400,000 the covariance `L L^T` overflowed, the assembly
-dropped the row's smooth part and kept its spike, and the diagonal read 8.6e11. A held-out QC sees
-it; a fit at a fixed probe count would not. Deliberately left as is while runs that depend on the
-present behaviour are in flight; the mechanism, the counts and four candidate fixes are in
-[`degenerate-frames-note.md`](degenerate-frames-note.md). Do it next time the fit is touched, and
-make the assembly refuse a non-finite kernel ellipsoid whatever else is chosen.
+A searched row fit could pass the baseline guard with a frame that had collapsed, exploded or
+overflowed: `select` fell back to the whole pool when no candidate was admissible, and the best
+inadmissible one went on as it was (1 to 2% of the rows of a production fit; in one row of 400,000
+the covariance overflowed and the assembled diagonal read 8.6e11). `ProbeFitConfig::frame_ceiling`
+(clamp the fallback's axes, re-solve its linear coefficients, re-score) and `frame_floor` (a lower
+admissibility bound on the minor axis) fix it; both default to OFF, so nothing changes until they
+are set (tentative values 1.0 and 0.1). Owed before the defaults flip: the A/B on real operators,
+and `assemble_sparse` refusing a non-finite kernel ellipsoid on its own. The record:
+[`degenerate-frames-note.md`](degenerate-frames-note.md).
 
 ## Parked
 

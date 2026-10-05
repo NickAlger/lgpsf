@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <set>
 #include <vector>
@@ -879,4 +880,188 @@ TEST_CASE("the resolution rule rejects a needle at a released, displaced centre"
     CHECK_THROWS_AS(fit_from_probes(cw.x, cw.m2, cw.z, y, mu0, cw.protected_cells.front(),
                                     bad, {at_needle}, mass),
                     std::invalid_argument);
+}
+
+TEST_CASE("with nothing admissible, frame_ceiling clamps the best candidate and re-solves")
+{
+    // The oversized target again: an ellipsoid three times the window, so no
+    // candidate passes the containment rule and `select` falls back to the pool.
+    std::mt19937 gen(13);
+    const Target target = make_target(gen, 2, 40, 0.0, true);
+    const double radius = lgpsf::window_radius(target.x, target.mu0);
+    ProbeFitConfig config =
+        basic_config(std::make_shared<FixedSet>(target.modes, "truth"));
+
+    const ProbeFitResult off =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, config, {}, target.mass);
+    for ( const CandidateFit& candidate : off.candidates )
+    {
+        REQUIRE_FALSE(candidate.admissible);  // the premise of this test
+    }
+    const CandidateFit& raw = off.candidates[static_cast<std::size_t>(off.winner)];
+    CHECK(raw.axes.maxCoeff() > radius);
+    CHECK(off.stop_reason != StopReason::Clamped);
+
+    for ( const double ceiling : {1.0, 2.0} )
+    {
+        CAPTURE(ceiling);
+        config.frame_ceiling = ceiling;
+        const ProbeFitResult on =
+            fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                            target.spike_index, config, {}, target.mass);
+
+        // the search itself is untouched: the same candidates, then one more
+        REQUIRE(on.candidates.size() == off.candidates.size() + 1);
+        for ( std::size_t i = 0; i < off.candidates.size(); ++i )
+        {
+            CHECK(on.candidates[i].model.theta == off.candidates[i].model.theta);
+            CHECK(on.candidates[i].score == off.candidates[i].score);
+            CHECK_FALSE(on.candidates[i].clamped);
+        }
+        CHECK(on.stop_reason == StopReason::Clamped);
+        CHECK(on.winner == static_cast<int>(on.candidates.size()) - 1);
+        const CandidateFit& clamped = on.candidates.back();
+        CHECK(clamped.clamped);
+        CHECK(clamped.label == "clamp(" + raw.label + ")");
+        CHECK(clamped.evaluations == 0);
+
+        // the frame is on the ceiling, in the raw winner's directions
+        CHECK(clamped.axes.maxCoeff() <= ceiling * radius * (1.0 + 1e-12));
+        CHECK(clamped.axes.maxCoeff()
+              == doctest::Approx(std::min(raw.axes.maxCoeff(), ceiling * radius)).epsilon(1e-10));
+        CHECK(clamped.admissible == (clamped.axes.maxCoeff() <= radius * (1.0 + 1e-12)));
+        const lgpsf::EllipsoidFrame frame = on.model.frame();
+        CHECK((frame.L * frame.L.transpose()).allFinite());
+
+        // the coefficients are the least-squares solution AT that frame ...
+        const WhitenedBasis basis(target.x, target.mass, target.m2_diag,
+                                  on.model.modes, target.mu0, MuMode::Pinned);
+        const Eigen::VectorXd theta_hat =
+            lgpsf::to_theta_hat(on.model.theta, target.mu0, MuMode::Pinned);
+        Eigen::MatrixXd extra = Eigen::MatrixXd::Zero(target.x.rows(), 1);
+        extra(target.spike_index, 0) = 1.0;
+        const Eigen::MatrixXd e_hat = whiten_extra(extra, target.mass, target.m2_diag);
+        const Eigen::MatrixXd z_hat = whiten_probes(target.z, target.m2_diag);
+        const Eigen::VectorXd y_hat = lgpsf::whiten_data(target.y, target.mass);
+        Eigen::MatrixXd design(z_hat.cols(), on.model.c.size() + 1);
+        design.leftCols(on.model.c.size()) = z_hat.transpose() * basis(theta_hat).values();
+        design.rightCols(1) = z_hat.transpose() * e_hat;
+        Eigen::VectorXd all(on.model.c.size() + 1);
+        all << on.model.c, on.model.s;
+        const Eigen::VectorXd normal = design.transpose() * (y_hat - design * all);
+        CHECK(normal.cwiseAbs().maxCoeff()
+              <= 1e-8 * design.cwiseAbs().maxCoeff() * y_hat.norm());
+
+        // ... and the score is the cross-validation score there
+        const double score = linear_cv_score(
+            z_hat, y_hat, basis, theta_hat, e_hat,
+            lgpsf::kfold_split(static_cast<int>(target.z.cols()), config.cv_folds));
+        CHECK(on.score == score);
+        MESSAGE("ceiling " << ceiling << ": raw axes " << raw.axes.transpose()
+                           << " score " << raw.score << " -> clamped axes "
+                           << clamped.axes.transpose() << " score " << on.score);
+    }
+}
+
+TEST_CASE("frame_ceiling does nothing to a row that has an admissible candidate")
+{
+    std::mt19937 gen(5);
+    const Target target = make_target(gen);
+    ProbeFitConfig config =
+        basic_config(std::make_shared<ShellLadder>(std::vector<int>{0, 2}));
+    config.mu = MuPolicy::PinnedThenRelease;
+    const ProbeFitResult off =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, config, {}, target.mass);
+    config.frame_ceiling = 1.0;
+    const ProbeFitResult on =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, config, {}, target.mass);
+
+    CHECK(on.candidates.size() == off.candidates.size());
+    CHECK(on.winner == off.winner);
+    CHECK(on.stop_reason == off.stop_reason);
+    CHECK(on.score == off.score);
+    CHECK(on.model.theta == off.model.theta);
+    CHECK(on.model.c == off.model.c);
+    CHECK(on.model.s == off.model.s);
+}
+
+TEST_CASE("frame_floor makes a collapsed minor axis inadmissible, and the clamp honours it")
+{
+    // A floor of two spacings sits above the target's true minor axis (0.22
+    // against a spacing of 1/7), far tighter than the guard is meant to be --
+    // which is what makes the rule fire on every well-converged candidate here.
+    std::mt19937 gen(5);
+    const Target target = make_target(gen);
+    const double radius = lgpsf::window_radius(target.x, target.mu0);
+    const double spacing = lgpsf::local_spacing(target.x, target.mu0);
+    ProbeFitConfig config =
+        basic_config(std::make_shared<FixedSet>(target.modes, "truth"));
+    config.frame_floor = 2.0;
+    const double floor_axis = config.frame_floor * spacing;
+    REQUIRE(floor_axis > 0.22);
+
+    const ProbeFitResult result =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, config, {}, target.mass);
+    int below = 0;
+    for ( const CandidateFit& candidate : result.candidates )
+    {
+        if ( candidate.axes.size() == 0 )
+        {
+            continue;
+        }
+        const bool expected = candidate.axes.maxCoeff() <= radius
+                              && candidate.axes.minCoeff() >= floor_axis;
+        CHECK(candidate.admissible == expected);
+        below += ( candidate.axes.maxCoeff() <= radius
+                   && candidate.axes.minCoeff() < floor_axis ) ? 1 : 0;
+    }
+    CHECK(below > 0);  // the floor, and not the ceiling, did the excluding
+
+    // with the clamp on and nothing admissible, the fallback sits on the floor
+    if ( std::none_of(result.candidates.begin(), result.candidates.end(),
+                      []( const CandidateFit& c ) { return c.admissible; }) )
+    {
+        config.frame_ceiling = 1.0;
+        const ProbeFitResult clamped =
+            fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                            target.spike_index, config, {}, target.mass);
+        CHECK(clamped.stop_reason == StopReason::Clamped);
+        const CandidateFit& winner = clamped.candidates.back();
+        CHECK(winner.axes.minCoeff() >= floor_axis * (1.0 - 1e-10));
+        CHECK(winner.axes.maxCoeff() <= radius * (1.0 + 1e-12));
+        CHECK(winner.admissible);
+        MESSAGE("floor " << floor_axis << ": clamped axes " << winner.axes.transpose());
+    }
+    else
+    {
+        MESSAGE("an admissible candidate survived the floor; the clamp half of this "
+                "test did not run");
+    }
+}
+
+TEST_CASE("the frame bounds are validated eagerly")
+{
+    std::mt19937 gen(5);
+    const Target target = make_target(gen);
+    ProbeFitConfig config =
+        basic_config(std::make_shared<FixedSet>(target.modes, "truth"));
+    const auto run = [&] {
+        return fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                               target.spike_index, config, {}, target.mass);
+    };
+    config.frame_floor = -0.1;
+    CHECK_THROWS_AS(run(), std::invalid_argument);
+    config.frame_floor = std::numeric_limits<double>::quiet_NaN();
+    CHECK_THROWS_AS(run(), std::invalid_argument);
+    config.frame_floor = 0.0;
+    config.frame_ceiling = std::numeric_limits<double>::infinity();
+    CHECK_THROWS_AS(run(), std::invalid_argument);
+    config.frame_ceiling = std::numeric_limits<double>::quiet_NaN();
+    CHECK_THROWS_AS(run(), std::invalid_argument);
+    config.frame_ceiling = -1.0;  // off, by its sign
+    CHECK_NOTHROW(run());
 }

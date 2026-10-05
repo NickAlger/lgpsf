@@ -236,7 +236,12 @@ enum class StopReason
 {
     Target,        ///< An admissible candidate met `target_score`.
     ModePatience,  ///< The mode ladder stopped improving.
-    Exhausted      ///< The policy ran out of proposals.
+    Exhausted,     ///< The policy ran out of proposals.
+    /// No candidate was admissible, and the winner is the best one with its
+    /// frame clamped into the admissible range and its linear coefficients
+    /// re-solved (`ProbeFitConfig::frame_ceiling`). Says how the winner was
+    /// made, on top of the search having run to its end.
+    Clamped
 };
 
 inline const char* to_string( StopReason reason )
@@ -246,6 +251,7 @@ inline const char* to_string( StopReason reason )
         case StopReason::Target:       return "target";
         case StopReason::ModePatience: return "mode_patience";
         case StopReason::Exhausted:    return "exhausted";
+        case StopReason::Clamped:      return "clamped";
     }
     return "unknown";
 }
@@ -296,6 +302,42 @@ struct ProbeFitConfig
     /// centre. Pinned candidates are untouched. `fit_operator` sets this to
     /// its `coarsen_eps` on the rows it coarsens. Finite and >= 0.
     double resolution_eps = 0.0;
+
+    /// Lower admissibility bound on a candidate's SMALLEST semi-axis, in units
+    /// of the local point spacing at the centre (`local_spacing`); 0 (the
+    /// default) is no bound, the behaviour before this option existed.
+    ///
+    /// A frame whose minor axis has collapsed far below the spacing is a
+    /// delta on the points: its column of the design is the spike's column,
+    /// and the search's coefficients for the two are a cancelling pair of
+    /// arbitrary size. Such a candidate predicts the held-out folds as well as
+    /// "a diagonal entry" does, so cross-validation alone lets it win. With a
+    /// positive value it is inadmissible, like a frame larger than the window.
+    /// This is a guard against collapse, NOT a resolution requirement: a
+    /// kernel can honestly be narrower than the spacing across its long axis
+    /// (a value near 1 would exclude most rows of an under-resolved operator),
+    /// so the tentative value is 0.1. Finite and >= 0.
+    double frame_floor = 0.0;
+
+    /// What happens when NO candidate is admissible. Non-positive (the
+    /// default): every candidate is allowed and the best-scoring one wins as it
+    /// is -- the behaviour before this option existed, and the way a frame far larger than
+    /// its window, up to an overflowed one, could ship (dev/degenerate-frames-
+    /// note.md). Positive: the best-scoring candidate's semi-axes are clamped
+    /// into `[frame_floor * spacing, frame_ceiling * window radius]`, a
+    /// released centre is brought back inside the window, the LINEAR
+    /// coefficients are re-solved at the clamped frame (a truncated SVD, so a
+    /// mode the spike already spans gets the minimum-norm split and not a
+    /// cancelling pair), and the score is recomputed there. The result wins
+    /// with `StopReason::Clamped`; whether it ships is still the baseline
+    /// guard's decision one layer up.
+    ///
+    /// The admissibility bound itself stays one window radius whatever this
+    /// is, so 1.0 puts the clamped fallback on the boundary every other row
+    /// already obeys; that is the tentative value. Larger values admit a
+    /// fallback wider than the rule. The clamp is off, not "very loose", at a
+    /// huge value too: an overflowed frame exceeds any finite ceiling.
+    double frame_ceiling = 0.0;
 
     int cv_folds = 5;
 
@@ -352,8 +394,14 @@ struct CandidateFit
     int evaluations = 0;
 
     /// False if the fit violates window containment -- impossible or runaway,
-    /// by the conservativeness of the window.
+    /// by the conservativeness of the window -- or, under
+    /// `ProbeFitConfig::frame_floor`, has a collapsed minor axis.
     bool admissible = true;
+
+    /// True for the one candidate `ProbeFitConfig::frame_ceiling` makes: a
+    /// copy of the best inadmissible candidate with its frame clamped and its
+    /// linear coefficients re-solved. No nonlinear solve ran for it.
+    bool clamped = false;
 
     std::size_t num_modes() const { return model.modes.size(); }
 };
@@ -464,6 +512,13 @@ double linear_cv_score( const Eigen::Ref<const Eigen::MatrixXd>& z_hat,
 namespace detail {
 
 /// Fitted 1-sigma semi-axes: sqrt(eig(L L^T)).
+/// Relative singular-value cutoff of the clamp's linear re-solve
+/// (`ProbeFitConfig::frame_ceiling`). Directions of the design the probes
+/// tell apart by less than this get the minimum-norm solution, which bounds
+/// a cancelling pair of coefficients at 1e10 times the data and so the
+/// cancellation error of the assembled entry at 1e-6 of it.
+constexpr double kClampRcond = 1e-10;
+
 inline Eigen::VectorXd axes_of( const Eigen::Ref<const Eigen::VectorXd>& theta_hat,
                                 const Eigen::Ref<const Eigen::VectorXd>& mu0,
                                 MuMode mode )
@@ -566,6 +621,19 @@ inline ProbeFitResult fit_from_probes(
             "got " + std::to_string(config.resolution_eps));
     }
 
+    if ( !(config.frame_floor >= 0.0) || !std::isfinite(config.frame_floor) )
+    {
+        throw std::invalid_argument(
+            "lgpsf::fit_from_probes: config.frame_floor must be finite and >= 0, "
+            "got " + std::to_string(config.frame_floor));
+    }
+    if ( std::isnan(config.frame_ceiling) || std::isinf(config.frame_ceiling) )
+    {
+        throw std::invalid_argument(
+            "lgpsf::fit_from_probes: config.frame_ceiling must be finite (non-positive "
+            "turns the clamp off), got " + std::to_string(config.frame_ceiling));
+    }
+
     const int num_extra = ( spike_index >= 0 ) ? 1 : 0;
     const double mass =
         target_mass ? *target_mass
@@ -596,6 +664,12 @@ inline ProbeFitResult fit_from_probes(
     // The admissibility guard's bound, needed whether or not any default rung
     // is generated.
     const double radius = window_radius(x, mu0);
+    // The lower bound, in the batch's units; 0 when off or when the batch has
+    // no spacing to speak of.
+    const double floor_axis =
+        ( config.frame_floor > 0.0 && x.rows() >= 2 )
+            ? config.frame_floor * local_spacing(x, mu0)
+            : 0.0;
 
     // A guess resolved into what the fit needs: the shape in the pinned
     // encoding, and the center it is anchored at.
@@ -738,6 +812,10 @@ inline ProbeFitResult fit_from_probes(
         candidate.axes = detail::axes_of(fit.theta_hat, center, mode);
 
         bool admissible = candidate.axes.maxCoeff() <= radius;
+        if ( floor_axis > 0.0 )
+        {
+            admissible = admissible && candidate.axes.minCoeff() >= floor_axis;
+        }
         if ( mode == MuMode::Fitted )
         {
             // The displacement encoding makes this the bound it always meant
@@ -1153,6 +1231,126 @@ inline ProbeFitResult fit_from_probes(
             }
         }
         winner = select(candidates);
+    }
+
+    // --- nothing admissible: clamp the best candidate and re-solve ----------
+    //
+    // `select` falls back to the whole pool when no candidate is admissible.
+    // With frame_ceiling on, that winner does not go on as it is: its frame is
+    // projected onto the admissible range, and the linear stage -- the only
+    // part of the model that is cheap and well posed at a fixed frame -- is
+    // solved again there. Nothing nonlinear is refit; the frame's directions
+    // are the runaway search's, which is all the data offered.
+    if ( config.frame_ceiling > 0.0
+         && std::none_of(candidates.begin(), candidates.end(),
+                         []( const CandidateFit& c ) { return c.admissible; }) )
+    {
+        const CandidateFit source = candidates[static_cast<std::size_t>(winner)];
+        const Eigen::VectorXd center = level_centers[static_cast<std::size_t>(winner)];
+        const MuMode mode = source.released ? MuMode::Fitted : ladder_mode;
+        const int tail = theta_hat_size(dim, MuMode::Pinned);
+
+        Eigen::VectorXd theta_hat = to_theta_hat(source.model.theta, center, mode);
+        const double hi = config.frame_ceiling * radius;
+        const double lo = std::min(
+            hi, std::max(floor_axis, std::numeric_limits<double>::min()));
+        const std::optional<ClampedBlock> block =
+            ( theta_hat.allFinite() && hi > 0.0 )
+                ? clamp_frame_axes(theta_hat.tail(tail), dim, lo, hi)
+                : std::nullopt;
+        if ( block )
+        {
+            if ( block->moved )
+            {
+                theta_hat.tail(tail) = block->block;
+            }
+            if ( mode == MuMode::Fitted )
+            {
+                // Bring a runaway centre back to the window's edge; if the
+                // resolution rule still fails there, pin it.
+                const double displacement = theta_hat.head(dim).norm();
+                if ( displacement > radius )
+                {
+                    theta_hat.head(dim) *= radius / displacement;
+                }
+                if ( config.resolution_eps > 0.0 )
+                {
+                    int order = 1;
+                    for ( const Mode& entry : source.model.modes )
+                    {
+                        order = std::max(order, entry.p + entry.ell);
+                    }
+                    const double from_default =
+                        (center + theta_hat.head(dim) - mu0).norm();
+                    if ( block->axes.minCoeff()
+                         < config.resolution_eps * from_default * order )
+                    {
+                        theta_hat.head(dim).setZero();
+                    }
+                }
+            }
+
+            const WhitenedBasis basis = make_basis(source.model.modes, mode, center);
+            Eigen::MatrixXd values;
+            bool usable = true;
+            try
+            {
+                values = basis(theta_hat).values();
+            }
+            catch ( const InfeasibleParameters& )
+            {
+                usable = false;
+            }
+            usable = usable && values.allFinite();
+            Eigen::MatrixXd design;
+            if ( usable )
+            {
+                design.resize(num_probes, values.cols() + e_hat.cols());
+                design.leftCols(values.cols()) = z_hat.transpose() * values;
+                if ( e_hat.cols() > 0 )
+                {
+                    design.rightCols(e_hat.cols()) = z_hat.transpose() * e_hat;
+                }
+                usable = design.allFinite();
+            }
+            if ( usable )
+            {
+                Eigen::JacobiSVD<Eigen::MatrixXd> svd = detail::thin_svd(design);
+                svd.setThreshold(detail::kClampRcond);
+                const Eigen::VectorXd all = svd.solve(y_hat);
+                const double score =
+                    linear_cv_score(z_hat, y_hat, basis, theta_hat, e_hat, split);
+                if ( all.allFinite() && std::isfinite(score) )
+                {
+                    CandidateFit candidate;
+                    candidate.label = "clamp(" + source.label + ")";
+                    candidate.modes_label = source.modes_label;
+                    candidate.released = source.released;
+                    candidate.theta_init = source.theta_init;
+                    candidate.model.modes = source.model.modes;
+                    candidate.model.theta = to_theta(theta_hat, center, mode);
+                    candidate.model.c = all.head(values.cols());
+                    candidate.model.s = all.tail(e_hat.cols());
+                    candidate.cost = 0.5 * (y_hat - design * all).squaredNorm();
+                    candidate.score = score;
+                    candidate.axes = block->axes;
+                    candidate.success = true;
+                    candidate.clamped = true;
+                    // Inside the rule's own bound only when the ceiling is:
+                    // a ceiling above one radius ships a fallback the rule
+                    // would not have admitted, and the flag says so.
+                    candidate.admissible =
+                        candidate.axes.maxCoeff() <= radius * (1.0 + 1e-12);
+                    candidates.push_back(std::move(candidate));
+                    level_centers.push_back(center);
+                    winner = static_cast<int>(candidates.size()) - 1;
+                    stop_reason = StopReason::Clamped;
+                }
+            }
+        }
+        // If the frame could not be clamped or the model not evaluated there,
+        // the winner stays as `select` left it: the old behaviour, and the
+        // baseline guard one layer up still stands between it and the operator.
     }
 
     const CandidateFit& champion = candidates[static_cast<std::size_t>(winner)];

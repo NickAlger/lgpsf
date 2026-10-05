@@ -60,7 +60,9 @@
 /// docs/api-guide.md.) Parameter vectors are NEVER batched, so the loops over
 /// N and P here stay plain scalar loops by design.
 
+#include <algorithm>
 #include <cmath>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -236,6 +238,97 @@ inline void check_size( const char* what, Eigen::Index got, int want )
 }
 
 } // end namespace detail
+
+/// A log-Cholesky tail block whose ellipsoid has had its semi-axes clamped.
+struct ClampedBlock
+{
+    Eigen::VectorXd block;  ///< The clamped frame, in the encodings' tail layout.
+    Eigen::VectorXd axes;   ///< Its 1-sigma semi-axes, ascending.
+    bool moved = false;     ///< Whether any axis was outside [lo, hi].
+};
+
+/// Clamp the 1-sigma semi-axes of the ellipsoid a log-Cholesky tail block
+/// encodes into [lo, hi], keeping its principal directions.
+///
+/// This is the projection of a frame onto the admissible set of the row fit
+/// (probe_fit.hpp): the frames it exists for have run away, one axis near
+/// overflow and another at round-off, so it works on L itself, scaled by its
+/// largest entry, and never forms L L^T, which such a frame cannot represent.
+/// The clamped factor is rebuilt from the left singular vectors by a QR
+/// factorization (M = U diag(axes), M^T = Q R, L = R^T), again without a
+/// covariance. An axis below about `eps * hi` is only known to round-off
+/// afterwards, which is the caller's reason to pass a real `lo`.
+///
+/// @param block Log-diagonal entries then the strictly-lower entries, the
+///              tail layout shared by both encodings.
+/// @param dim   Spatial dimension N.
+/// @param lo    Smallest allowed semi-axis, positive.
+/// @param hi    Largest allowed semi-axis, finite and >= lo.
+/// @return      The clamped block, or nothing if the block does not decode to
+///              a finite L or the clamped factor cannot be formed.
+/// @throws std::invalid_argument on an invalid [lo, hi].
+inline std::optional<ClampedBlock> clamp_frame_axes(
+    const Eigen::Ref<const Eigen::VectorXd>& block, int dim, double lo, double hi )
+{
+    if ( !(lo > 0.0) || !(hi >= lo) || !std::isfinite(hi) )
+    {
+        throw std::invalid_argument(
+            "lgpsf::clamp_frame_axes: need 0 < lo <= hi < infinity, got lo="
+            + std::to_string(lo) + ", hi=" + std::to_string(hi));
+    }
+    const Eigen::MatrixXd L = detail::cholesky_from_block(block, dim);
+    if ( !L.allFinite() )
+    {
+        return std::nullopt;
+    }
+    const double scale = L.cwiseAbs().maxCoeff();
+    if ( !(scale > 0.0) )
+    {
+        return std::nullopt;
+    }
+    const Eigen::JacobiSVD<Eigen::MatrixXd> svd(L / scale, Eigen::ComputeFullU);
+
+    ClampedBlock out;
+    Eigen::VectorXd axes(dim);  // descending, as the singular values are
+    for ( int i = 0; i < dim; ++i )
+    {
+        const double raw = svd.singularValues()(i) * scale;  // may overflow: clamps to hi
+        axes(i) = std::min(std::max(raw, lo), hi);
+        out.moved = out.moved || axes(i) != raw;
+    }
+
+    const Eigen::MatrixXd M = svd.matrixU() * axes.asDiagonal();
+    const Eigen::HouseholderQR<Eigen::MatrixXd> qr(M.transpose());
+    const Eigen::MatrixXd R = qr.matrixQR().triangularView<Eigen::Upper>();
+    Eigen::MatrixXd clamped = R.transpose();
+    for ( int j = 0; j < dim; ++j )
+    {
+        if ( clamped(j, j) < 0.0 )
+        {
+            clamped.col(j) *= -1.0;
+        }
+        if ( !(clamped(j, j) > 0.0) || !clamped.col(j).allFinite() )
+        {
+            return std::nullopt;
+        }
+    }
+
+    out.block.resize(block.size());
+    for ( int i = 0; i < dim; ++i )
+    {
+        out.block(i) = std::log(clamped(i, i));
+    }
+    int idx = dim;
+    for ( int i = 1; i < dim; ++i )
+    {
+        for ( int j = 0; j < i; ++j )
+        {
+            out.block(idx++) = clamped(i, j);
+        }
+    }
+    out.axes = axes.reverse();
+    return out;
+}
 
 /// Decode the public encoding.
 ///

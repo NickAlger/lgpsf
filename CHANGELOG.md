@@ -6,6 +6,30 @@ to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`ProbeFitConfig::frame_ceiling` and `frame_floor`, both off by default**
+  (2026-10-04). The row fit excludes candidates whose major semi-axis exceeds
+  the window radius, but when NO candidate passed it fell back to the whole
+  pool, and the best-scoring inadmissible one went on as it was: 1 to 2% of the
+  rows of a production fit shipped a frame larger than its window that way,
+  and one in 400,000 a frame whose covariance overflowed, which left a spike of
+  8.6e11 on the assembled diagonal (`dev/degenerate-frames-note.md`).
+  - `frame_ceiling > 0`: at that fallback the best candidate's semi-axes are
+    clamped into `[frame_floor * spacing, frame_ceiling * window radius]`
+    (`clamp_frame_axes`, which works on the Cholesky factor and never forms the
+    covariance), its linear coefficients are re-solved at the clamped frame
+    with a truncated SVD, and its cross-validation score is recomputed there.
+    It wins with the new `StopReason::Clamped` / `RowStop::Clamped`; the
+    baseline guard decides whether it ships, as for any searched fit.
+  - `frame_floor > 0`: a lower admissibility bound on the smallest semi-axis,
+    in local point spacings, so a frame collapsed onto one point no longer
+    counts as admissible.
+  With both at their defaults every fit is bit-identical to before, and a row
+  that has an admissible candidate is untouched by `frame_ceiling` in any case.
+  Tentative values when on: `1.0` and `0.1`; the defaults stay off until an
+  A/B on real operators.
+
 ### Changed
 
 - **Every SVD in the library is now Eigen's `JacobiSVD`** (`detail/svd.hpp`,

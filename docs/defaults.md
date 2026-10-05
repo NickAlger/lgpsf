@@ -27,6 +27,8 @@ the problem was.
 | `mode_patience` | `2` | Stop growing modes after this many rungs without improvement. |
 | `cv_folds` | `5` | Held-out folds for the selection score. |
 | `resolution_eps` | `0.0` | Off. When positive, a *released* candidate is admissible only if `min axis ≥ eps · ‖mu − default_mu‖ · max(1, (p+ℓ)_max)`: a narrow kernel displaced far from the node sits on coarse cells that cannot resolve it. `fit_operator` sets it to `coarsen_eps` on the rows it coarsens. |
+| `frame_floor` | `0.0` | Off. When positive, a candidate whose smallest semi-axis is below `frame_floor ·` the local point spacing is inadmissible: a guard against a frame collapsed onto one point (its mode is then the spike's column and the coefficients a cancelling pair), not a resolution requirement. Tentative value when on: `0.1`. |
+| `frame_ceiling` | `0.0` | Off: when no candidate is admissible the best one wins as it is. When positive, that candidate's semi-axes are clamped into `[frame_floor · spacing, frame_ceiling · window radius]`, its linear coefficients re-solved (truncated SVD) and its score recomputed; it wins with `StopReason::Clamped`, and the baseline guard still decides whether it ships. Tentative value when on: `1.0`, the admissibility bound itself. See `dev/degenerate-frames-note.md`. |
 | `varpro.ridge` | `1e-8` | Damps the linear coefficients only — the ellipsoid is never regularized. |
 | `varpro.jacobian` | `Kaufman` | Drops a term that vanishes at the solution; one reverse sweep instead of a full Jacobian tensor, same answer. |
 | `varpro.ftol` | `1e-4` | Stops one nonlinear fit on relative cost reduction. **This is the one that binds** — see below. |

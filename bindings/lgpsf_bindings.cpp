@@ -622,7 +622,10 @@ PYBIND11_MODULE(lgpsf, m)
     py::enum_<StopReason>(m, "StopReason")
         .value("Target", StopReason::Target)
         .value("ModePatience", StopReason::ModePatience)
-        .value("Exhausted", StopReason::Exhausted);
+        .value("Exhausted", StopReason::Exhausted)
+        .value("Clamped", StopReason::Clamped,
+               "No candidate was admissible; the winner is the best one, clamped "
+               "into the admissible range with its coefficients re-solved.");
 
     py::class_<CvFold>(m, "CvFold")
         .def_readonly("train", &CvFold::train)
@@ -805,6 +808,18 @@ PYBIND11_MODULE(lgpsf, m)
                        "* max(1, (p + ell)_max): the gap a graded coarsening "
                        "of the batch leaves. fit_operator sets it to its "
                        "coarsen_eps on the rows it coarsens.")
+        .def_readwrite("frame_floor", &ProbeFitConfig::frame_floor,
+                       "Lower admissibility bound on a candidate's smallest "
+                       "semi-axis, in local point spacings; 0 (the default) is "
+                       "no bound. A guard against a frame collapsed onto one "
+                       "point, not a resolution requirement; tentative value 0.1.")
+        .def_readwrite("frame_ceiling", &ProbeFitConfig::frame_ceiling,
+                       "What happens when no candidate is admissible. "
+                       "Non-positive (the default): the best one wins as it is. "
+                       "Positive: its semi-axes are clamped into [frame_floor * "
+                       "spacing, frame_ceiling * window radius], its linear "
+                       "coefficients re-solved and its score recomputed; it "
+                       "wins with StopReason.Clamped. Tentative value 1.0.")
         .def_readwrite("cv_folds", &ProbeFitConfig::cv_folds)
         .def_readwrite("split", &ProbeFitConfig::split,
                        "The CV split AS DATA. Empty means the deterministic "
@@ -872,6 +887,8 @@ PYBIND11_MODULE(lgpsf, m)
                       "Basis evaluations the nonlinear solve spent on this "
                       "candidate; 0 if no solve ran.")
         .def_readonly("admissible", &CandidateFit::admissible)
+        .def_readonly("clamped", &CandidateFit::clamped,
+                      "True for the clamped fallback candidate (frame_ceiling).")
         .def_property_readonly("num_modes", &CandidateFit::num_modes);
 
     py::class_<ProbeFitResult>(m, "ProbeFitResult",
@@ -945,7 +962,9 @@ PYBIND11_MODULE(lgpsf, m)
         .value("Target", RowStop::Target)
         .value("ModePatience", RowStop::ModePatience)
         .value("Exhausted", RowStop::Exhausted)
-        .value("SearchInfeasible", RowStop::SearchInfeasible);
+        .value("SearchInfeasible", RowStop::SearchInfeasible)
+        .value("Clamped", RowStop::Clamped,
+               "The search's result is the clamped fallback (frame_ceiling).");
 
     py::enum_<Symmetrize>(m, "Symmetrize",
                           "What assemble_sparse does about symmetry. An "
