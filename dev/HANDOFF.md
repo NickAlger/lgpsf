@@ -237,6 +237,17 @@ orientation but not its scale**, and scale is what the circle rungs actually
 rescue. That is why sixty unanimous frog results pointed the wrong way on one
 of the four knobs, and why the field-scale check was not a formality.
 
+## Known problem, not fixed: degenerate fitted frames can ship (2026-10-04)
+
+A searched row fit can pass the baseline guard with a frame that has collapsed, exploded or
+overflowed (0.3 to 0.4% of rows at 10 probes in one production fit, a few hundredths of a percent at
+25 to 50). Mostly harmless; in one row of 400,000 the covariance `L L^T` overflowed, the assembly
+dropped the row's smooth part and kept its spike, and the diagonal read 8.6e11. A held-out QC sees
+it; a fit at a fixed probe count would not. Deliberately left as is while runs that depend on the
+present behaviour are in flight; the mechanism, the counts and four candidate fixes are in
+[`degenerate-frames-note.md`](degenerate-frames-note.md). Do it next time the fit is touched, and
+make the assembly refuse a non-finite kernel ellipsoid whatever else is chosen.
+
 ## Parked
 
 - **Released-mu re-arming.** Needs a basin-scale `||mu - mu0||` bound before
