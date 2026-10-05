@@ -14,10 +14,34 @@
 > - Not done: bounding the search itself (a runaway still spends its iterations), and making
 >   `assemble_sparse` refuse a non-finite kernel ellipsoid on its own (candidate fix 4 below; still worth
 >   doing).
-> - The defaults stay off until an A/B on real operators (held-out QC at fixed probe counts, baseline
->   and clamped counts, fit time). One data point from the unit test: a target whose true ellipsoid is
->   2.1 window radii scores 6e-15 unclamped, 2.4e-2 clamped at one radius, 9e-4 at two. So where the
->   window is NOT conservative the ceiling costs accuracy, and its value is a real choice.
+> - One data point from the unit test: a target whose true ellipsoid is 2.1 window radii scores 6e-15
+>   unclamped, 2.4e-2 clamped at one radius, 9e-4 at two. So for a row whose window is NOT conservative
+>   the ceiling costs accuracy. Whether that matters is the next two points.
+> - **How much the affected rows weigh** (the production fit's dumps, unclamped): at the final rung the
+>   rows a clamp would touch are 1.5 to 2.6% of the rows, 0.04 to 0.12% of the operator's held-out
+>   response energy and 0.17 to 0.25% of its error; were every one of them fitted no better than a zero
+>   row, the energy-ratio QC would rise by 0.0006 to 0.0022 at 0.25. At 10 probes they are 7.8% of the
+>   rows, 4.9% of the energy and 18.7% of the error, the collapsed ones fitted WORSE than a zero row.
+> - **A/B, the same day** (a 6,276-row test operator of the same problem at three regularization
+>   weights, four ranks; fits at fixed probe counts scored on 50 held-out probes, and whole builds
+>   with a QC-driven ladder):
+>
+>   | probes | off | ceiling 1 | ceiling 1 + floor 0.1 | ceiling 2 + floor 0.1 | floor 0.1 only |
+>   |---|---|---|---|---|---|
+>   | 10 | 0.3570 | 0.3554 | 0.3541 | 0.3553 | 0.3558 |
+>   | 25 | 0.19869 | 0.19868 | 0.19867 | 0.19867 | 0.19868 |
+>   | 50 | 0.106459 | same | same | same | same |
+>   | 100 | 0.063918 | same | same | same | same |
+>
+>   At the least regularized of the three operators: 0.4491 -> 0.4376 at 10 probes (ceiling 1 + floor),
+>   and unchanged to four digits at 25, 50 and 100. Rows ending in the clamped fallback: 10 to 18% at 10
+>   probes, 2 to 4.5% from 25 on; 60 to 90% of them then beat the baseline and ship. Whole builds: the
+>   same ladder decisions, kept rank and solver iterations at all three weights. Fit time unchanged.
+>   Two runs of one binary differ by 2e-5 at 10 probes and by nothing printed from 25 on.
+> - **Reading:** on this operator the clamp is a robustness guard, not a trade: neutral where the
+>   decisions are made, slightly better at the first rung, and ceiling 1 is no worse than 2. The
+>   defaults are still off; flipping them is the maintainer's call (it changes which rows ship the
+>   searched fit, so results stop being bit-identical to earlier ones).
 >
 > The rest of this note is the record of the problem and of the discussion, as written before the fix.
 
