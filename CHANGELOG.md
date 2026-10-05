@@ -8,11 +8,11 @@ to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **`ProbeFitConfig::frame_ceiling` and `frame_floor`, both off by default**
-  (2026-10-04). The row fit excludes candidates whose major semi-axis exceeds
-  the window radius, but when NO candidate passed it fell back to the whole
-  pool, and the best-scoring inadmissible one went on as it was: 1 to 2% of the
-  rows of a production fit shipped a frame larger than its window that way,
+- **`ProbeFitConfig::frame_ceiling` (default `1.0`) and `frame_floor` (default
+  `0.1`)** (2026-10-04). The row fit excludes candidates whose major semi-axis
+  exceeds the window radius, but when NO candidate passed it fell back to the
+  whole pool, and the best-scoring inadmissible one went on as it was: 1 to 2% of
+  the rows of a production fit shipped a frame larger than its window that way,
   and one in 400,000 a frame whose covariance overflowed, which left a spike of
   8.6e11 on the assembled diagonal (`dev/degenerate-frames-note.md`).
   - `frame_ceiling > 0`: at that fallback the best candidate's semi-axes are
@@ -25,10 +25,26 @@ to [Semantic Versioning](https://semver.org/).
   - `frame_floor > 0`: a lower admissibility bound on the smallest semi-axis,
     in local point spacings, so a frame collapsed onto one point no longer
     counts as admissible.
-  With both at their defaults every fit is bit-identical to before, and a row
-  that has an admissible candidate is untouched by `frame_ceiling` in any case.
-  Tentative values when on: `1.0` and `0.1`; the defaults stay off until an
-  A/B on real operators.
+  **Both are ON by default, so fits are not bitwise identical to earlier ones**
+  on rows with no admissible candidate or with a collapsed minor axis; a row
+  that has an admissible candidate is untouched by `frame_ceiling`. Set both to
+  `0` for the old path. An A/B on a real operator (fixed probe counts, held-out
+  energy-ratio QC) found the change neutral from 25 probes on and 0.5 to 2.5%
+  better at 10, with the same ladder decisions, kept rank and solver iterations
+  in whole builds; the rows it touches carry about a thousandth of that
+  operator's response energy at the final rung.
+
+### Fixed
+
+- **`assemble_sparse` keeps a row's smooth part and its spike together**
+  (2026-10-04). A kernel ellipsoid whose covariance is not finite (a frame with
+  one axis near overflow: `L` finite, `L L^T` not) collided with no column, the
+  row's own included, so the smooth part was dropped while the spike shipped;
+  where a fit had made the two a cancelling pair, the diagonal read one half of
+  it. Now such a row's support is its whole window (the kernel is evaluated
+  through `L^-1` and trimmed at tau as always), the spike's column is always
+  part of the smooth support, and a row whose kernel or spike is not finite
+  ships nothing. Rows with a finite covariance assemble bit for bit as before.
 
 ### Changed
 

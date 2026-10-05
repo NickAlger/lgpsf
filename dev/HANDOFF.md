@@ -237,17 +237,18 @@ orientation but not its scale**, and scale is what the circle rungs actually
 rescue. That is why sixty unanimous frog results pointed the wrong way on one
 of the four knobs, and why the field-scale check was not a formality.
 
-## Degenerate fitted frames: a fix exists, OFF by default; the A/B is owed (2026-10-04)
+## Degenerate fitted frames: fixed, ON by default since 2026-10-04
 
 A searched row fit could pass the baseline guard with a frame that had collapsed, exploded or
 overflowed: `select` fell back to the whole pool when no candidate was admissible, and the best
 inadmissible one went on as it was (1 to 2% of the rows of a production fit; in one row of 400,000
-the covariance overflowed and the assembled diagonal read 8.6e11). `ProbeFitConfig::frame_ceiling`
-(clamp the fallback's axes, re-solve its linear coefficients, re-score) and `frame_floor` (a lower
-admissibility bound on the minor axis) fix it; both default to OFF, so nothing changes until they
-are set (tentative values 1.0 and 0.1). Owed before the defaults flip: the A/B on real operators,
-and `assemble_sparse` refusing a non-finite kernel ellipsoid on its own. The record:
-[`degenerate-frames-note.md`](degenerate-frames-note.md).
+the covariance overflowed and the assembled diagonal read 8.6e11). Three changes:
+`ProbeFitConfig::frame_ceiling` (default 1.0: clamp that fallback's axes to the window radius,
+re-solve its linear coefficients, re-score), `frame_floor` (default 0.1 spacings: a collapsed minor
+axis is inadmissible), and `assemble_sparse` keeping a row's smooth part and spike together. Fits
+are no longer bit-identical to earlier ones on the rows this touches; `0` / `0` restores the old
+search. Still open: the search itself is unbounded, so a runaway still spends its iterations. The
+record, with the A/B: [`degenerate-frames-note.md`](degenerate-frames-note.md).
 
 ## Parked
 

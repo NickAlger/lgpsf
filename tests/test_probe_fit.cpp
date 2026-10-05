@@ -137,6 +137,11 @@ ProbeFitConfig basic_config( std::shared_ptr<const lgpsf::ModePolicy> policy )
     ProbeFitConfig config;
     config.mode_policy = std::move(policy);
     config.target_score = std::nullopt;  // walk the whole grid unless asked otherwise
+    // The candidate stream and its selection as they are: the frame bounds
+    // (on by default since 2026-10-04) have their own tests below, and the
+    // tests above them state properties of the search, not of the clamp.
+    config.frame_ceiling = 0.0;
+    config.frame_floor = 0.0;
     return config;
 }
 
@@ -1064,4 +1069,32 @@ TEST_CASE("the frame bounds are validated eagerly")
     CHECK_THROWS_AS(run(), std::invalid_argument);
     config.frame_ceiling = -1.0;  // off, by its sign
     CHECK_NOTHROW(run());
+}
+
+TEST_CASE("by default nothing leaves the row fit with a frame outside its bounds")
+{
+    // The same oversized target, under the DEFAULT frame bounds (ceiling one
+    // window radius, floor a tenth of a spacing): the winner is the clamped
+    // fallback, and its frame is one the points can resolve.
+    std::mt19937 gen(13);
+    const Target target = make_target(gen, 2, 40, 0.0, true);
+    const double radius = lgpsf::window_radius(target.x, target.mu0);
+    const double spacing = lgpsf::local_spacing(target.x, target.mu0);
+    ProbeFitConfig config;
+    config.mode_policy = std::make_shared<FixedSet>(target.modes, "truth");
+    config.target_score = std::nullopt;
+    REQUIRE(config.frame_ceiling == 1.0);
+    REQUIRE(config.frame_floor == 0.1);
+
+    const ProbeFitResult result =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, config, {}, target.mass);
+    CHECK(result.stop_reason == StopReason::Clamped);
+    const CandidateFit& winner = result.candidates[static_cast<std::size_t>(result.winner)];
+    CHECK(winner.clamped);
+    CHECK(winner.axes.maxCoeff() <= radius * (1.0 + 1e-12));
+    CHECK(winner.axes.minCoeff() >= 0.1 * spacing * (1.0 - 1e-12));
+    CHECK(std::isfinite(result.score));
+    const lgpsf::EllipsoidFrame frame = result.model.frame();
+    CHECK((frame.L * frame.L.transpose()).allFinite());
 }

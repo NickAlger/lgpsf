@@ -480,3 +480,117 @@ TEST_CASE("an operator can be built from per-row expansions")
                                           original.m2_diag, original.spike, broken),
                     std::invalid_argument);
 }
+
+TEST_CASE("a row whose covariance overflows still ships its smooth part with its spike")
+{
+    // The frame a runaway search shipped in the field: L is finite, L L^T is
+    // not, the mode is nonzero only at the row's own point, and the spike was
+    // fitted to cancel it there. Its kernel ellipsoid collides with nothing, so
+    // the assembly used to drop the smooth part and keep the spike: the
+    // diagonal read one half of the pair.
+    std::mt19937 gen(31);
+    const LGOperator plain = hand_built(gen);
+    LGOperator op = plain;
+    int rho = -1;
+    for ( int r = 0; r < static_cast<int>(op.num_rows()); ++r )
+    {
+        if ( op.has_model(r) )
+        {
+            rho = r;
+            break;
+        }
+    }
+    REQUIRE(rho >= 0);
+
+    const Eigen::VectorXd center = op.x_cols.row(rho).transpose();
+    Eigen::VectorXd theta_hat(3);
+    // tilted off the grid (slope 0.37), so that no other point lies on the needle
+    theta_hat << std::log(6.0e306), std::log(9.7e-16), 0.37 * 6.0e306;
+    op.theta.row(rho) = to_theta(theta_hat, center, MuMode::Pinned).transpose();
+    const lgpsf::EllipsoidFrame frame =
+        lgpsf::unpack_theta_hat(theta_hat, center, MuMode::Pinned);
+    for ( int i = 0; i < 2; ++i )
+    {
+        for ( int j = 0; j < 2; ++j )
+        {
+            op.L(rho, i * 2 + j) = frame.L(i, j);
+        }
+    }
+    REQUIRE_FALSE((frame.L * frame.L.transpose()).allFinite());
+    op.c.row(rho).setZero();
+    op.c(rho, 0) = -8.2e6;
+
+    // the spike that leaves `wanted` on the diagonal once the kernel is added
+    const double wanted = 1.25e-3;
+    const double kernel_here =
+        lgpsf::detail::kernel_at(op, rho, op.x_cols.row(rho)).values(0);
+    REQUIRE(std::abs(kernel_here) > 1e6);
+    const double smooth_entry = op.m1_diag(rho) * op.m2_diag(rho) * kernel_here;
+    op.s(rho) = (wanted - smooth_entry) / op.m1_diag(rho);
+
+    const Eigen::SparseMatrix<double> A = assemble_sparse(op, 6.0);
+    const Eigen::SparseMatrix<double> A_plain = assemble_sparse(plain, 6.0);
+    const Eigen::MatrixXd dense = Eigen::MatrixXd(A);
+    const Eigen::MatrixXd dense_plain = Eigen::MatrixXd(A_plain);
+
+    // the pair is whole: the diagonal is the sum, to the round-off of its terms
+    CHECK(dense(rho, rho) == doctest::Approx(wanted).epsilon(1e-6));
+    CHECK(std::abs(dense(rho, rho)) < 1.0);
+    // a needle of zero width reaches no other point
+    for ( int j = 0; j < dense.cols(); ++j )
+    {
+        if ( j != rho )
+        {
+            CHECK(dense(rho, j) == 0.0);
+        }
+    }
+    // and no other row is disturbed, bit for bit
+    for ( int r = 0; r < dense.rows(); ++r )
+    {
+        if ( r != rho )
+        {
+            CHECK(dense.row(r) == dense_plain.row(r));
+        }
+    }
+}
+
+TEST_CASE("a row whose spike or kernel is not finite ships nothing")
+{
+    std::mt19937 gen(32);
+    const LGOperator plain = hand_built(gen);
+    int rho = -1;
+    for ( int r = 0; r < static_cast<int>(plain.num_rows()); ++r )
+    {
+        if ( plain.has_model(r) )
+        {
+            rho = r;
+            break;
+        }
+    }
+    REQUIRE(rho >= 0);
+    const Eigen::MatrixXd dense_plain = Eigen::MatrixXd(assemble_sparse(plain, 6.0));
+
+    for ( const bool break_spike : {true, false} )
+    {
+        CAPTURE(break_spike);
+        LGOperator op = plain;
+        if ( break_spike )
+        {
+            op.s(rho) = std::numeric_limits<double>::infinity();
+        }
+        else
+        {
+            op.c(rho, 0) = std::numeric_limits<double>::quiet_NaN();
+        }
+        const Eigen::MatrixXd dense = Eigen::MatrixXd(assemble_sparse(op, 6.0));
+        CHECK(dense.allFinite());
+        CHECK(dense.row(rho).cwiseAbs().maxCoeff() == 0.0);
+        for ( int r = 0; r < dense.rows(); ++r )
+        {
+            if ( r != rho )
+            {
+                CHECK(dense.row(r) == dense_plain.row(r));
+            }
+        }
+    }
+}

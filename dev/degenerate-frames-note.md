@@ -1,8 +1,11 @@
-# Degenerate fitted frames can ship (known problem, 2026-10-04; a fix exists, OFF by default)
+# Degenerate fitted frames could ship (found and fixed 2026-10-04; the fix is ON by default)
 
-> **Status, evening of 2026-10-04.** Decided by the maintainer and implemented the same day, behind two
-> options that default to off (`ProbeFitConfig::frame_ceiling`, `frame_floor`), so every existing fit is
-> bit-identical until they are switched on:
+> **Status, night of 2026-10-04.** Decided by the maintainer and implemented the same day, behind two
+> options (`ProbeFitConfig::frame_ceiling`, `frame_floor`). They were off at first and, after the A/B
+> below, **ON by default (1.0 and 0.1)**; set both to 0 for the old path. `assemble_sparse` was also
+> made safe on its own (a row's smooth part and spike ship together or not at all; a non-finite
+> covariance no longer drops the smooth part), so the 8.6e11 diagonal cannot recur even with the options
+> off. Downstream packages that pass their own values explicitly are not affected by the default.
 > - **`frame_ceiling > 0`**: when no candidate of a row's search is admissible, the best one is no longer
 >   passed on as it is. Its semi-axes are clamped into `[frame_floor * spacing, frame_ceiling * window
 >   radius]` (`clamp_frame_axes`: on the Cholesky factor, never the covariance), its linear coefficients
@@ -11,9 +14,7 @@
 >   the admissibility bound itself.
 > - **`frame_floor > 0`**: a lower admissibility bound on the smallest semi-axis, in local point spacings
 >   (`local_spacing`). Tentative value 0.1: a guard against collapse, not a resolution requirement.
-> - Not done: bounding the search itself (a runaway still spends its iterations), and making
->   `assemble_sparse` refuse a non-finite kernel ellipsoid on its own (candidate fix 4 below; still worth
->   doing).
+> - Not done: bounding the search itself (a runaway still spends its iterations).
 > - One data point from the unit test: a target whose true ellipsoid is 2.1 window radii scores 6e-15
 >   unclamped, 2.4e-2 clamped at one radius, 9e-4 at two. So for a row whose window is NOT conservative
 >   the ceiling costs accuracy. Whether that matters is the next two points.
@@ -39,9 +40,8 @@
 >   same ladder decisions, kept rank and solver iterations at all three weights. Fit time unchanged.
 >   Two runs of one binary differ by 2e-5 at 10 probes and by nothing printed from 25 on.
 > - **Reading:** on this operator the clamp is a robustness guard, not a trade: neutral where the
->   decisions are made, slightly better at the first rung, and ceiling 1 is no worse than 2. The
->   defaults are still off; flipping them is the maintainer's call (it changes which rows ship the
->   searched fit, so results stop being bit-identical to earlier ones).
+>   decisions are made, slightly better at the first rung, and ceiling 1 is no worse than 2. On that
+>   evidence the maintainer switched the defaults on.
 >
 > The rest of this note is the record of the problem and of the discussion, as written before the fix.
 

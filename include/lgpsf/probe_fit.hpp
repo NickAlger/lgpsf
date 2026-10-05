@@ -304,8 +304,8 @@ struct ProbeFitConfig
     double resolution_eps = 0.0;
 
     /// Lower admissibility bound on a candidate's SMALLEST semi-axis, in units
-    /// of the local point spacing at the centre (`local_spacing`); 0 (the
-    /// default) is no bound, the behaviour before this option existed.
+    /// of the local point spacing at the centre (`local_spacing`); 0 is no
+    /// bound, the behaviour before this option existed (2026-10-04).
     ///
     /// A frame whose minor axis has collapsed far below the spacing is a
     /// delta on the points: its column of the design is the spike's column,
@@ -316,12 +316,14 @@ struct ProbeFitConfig
     /// This is a guard against collapse, NOT a resolution requirement: a
     /// kernel can honestly be narrower than the spacing across its long axis
     /// (a value near 1 would exclude most rows of an under-resolved operator),
-    /// so the tentative value is 0.1. Finite and >= 0.
-    double frame_floor = 0.0;
+    /// hence 0.1. Finite and >= 0.
+    ///
+    /// DEFAULT 0.1 since 2026-10-04 (with `frame_ceiling`; see there).
+    double frame_floor = 0.1;
 
-    /// What happens when NO candidate is admissible. Non-positive (the
-    /// default): every candidate is allowed and the best-scoring one wins as it
-    /// is -- the behaviour before this option existed, and the way a frame far larger than
+    /// What happens when NO candidate is admissible. Non-positive: every
+    /// candidate is allowed and the best-scoring one wins as it is -- the
+    /// behaviour before this option existed, and the way a frame far larger than
     /// its window, up to an overflowed one, could ship (dev/degenerate-frames-
     /// note.md). Positive: the best-scoring candidate's semi-axes are clamped
     /// into `[frame_floor * spacing, frame_ceiling * window radius]`, a
@@ -334,10 +336,19 @@ struct ProbeFitConfig
     ///
     /// The admissibility bound itself stays one window radius whatever this
     /// is, so 1.0 puts the clamped fallback on the boundary every other row
-    /// already obeys; that is the tentative value. Larger values admit a
-    /// fallback wider than the rule. The clamp is off, not "very loose", at a
-    /// huge value too: an overflowed frame exceeds any finite ceiling.
-    double frame_ceiling = 0.0;
+    /// already obeys. Larger values admit a fallback wider than the rule. The
+    /// clamp is off, not "very loose", at a huge value too: an overflowed frame
+    /// exceeds any finite ceiling.
+    ///
+    /// DEFAULT 1.0 since 2026-10-04 (was off): fits are no longer bitwise
+    /// identical to earlier ones on rows with no admissible candidate, or
+    /// with a candidate whose minor axis is under `frame_floor` spacings. On
+    /// the operator this was found on those are 1.5 to 2.6% of the rows at the
+    /// ladder's final rung, carrying about a thousandth of the operator's
+    /// held-out response energy; an A/B at fixed probe counts moved the
+    /// energy-ratio QC by nothing from 25 probes on and by -0.5 to -2.5% at
+    /// 10. Set `frame_ceiling = 0` and `frame_floor = 0` for the old path.
+    double frame_ceiling = 1.0;
 
     int cv_folds = 5;
 

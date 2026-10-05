@@ -79,6 +79,7 @@
 #include <ellipsoid_tree/object_tree.hpp>
 
 #include "lgpsf/ellipsoid_transform.hpp"
+#include "lgpsf/exceptions.hpp"
 #include "lgpsf/lg_ellipsoid_feature.hpp"
 #include "lgpsf/lg_expansion.hpp"
 #include "lgpsf/lg_functions.hpp"
@@ -665,12 +666,44 @@ inline Eigen::SparseMatrix<double> assemble_sparse(
     }
 
     const EllipsoidField field = ellipsoid_field(fit);
+    // A kernel ellipsoid the tree cannot hold: its covariance is not finite. A
+    // frame with one axis near overflow has a finite L and an infinite L L^T,
+    // and such a covariance collides with NOTHING, the row's own column
+    // included -- so the smooth part of the row was silently dropped while its
+    // spike shipped, and where the two were a cancelling pair the diagonal read
+    // one half of it (8.6e11 in the field; dev/degenerate-frames-note.md). For
+    // these rows the support is the whole window instead: the kernel itself is
+    // evaluated through L^-1, which is finite whenever the frame decodes, and
+    // `deployed_smooth` trims it at tau in the same coordinates. The row's
+    // WINDOW ellipsoid stands in for it in the tree, only to keep the slots
+    // aligned; its hits are not read.
+    std::vector<char> on_window(rows.size(), 0);
     std::vector<ellipsoid_tree::Ellipsoid> kernels;
     kernels.reserve(rows.size());
-    for ( int rho : rows )
+    for ( std::size_t slot = 0; slot < rows.size(); ++slot )
     {
+        const int rho = rows[slot];
+        const Eigen::MatrixXd& sigma = field.sigma[static_cast<std::size_t>(rho)];
+        if ( sigma.allFinite() && field.mu.row(rho).allFinite() )
+        {
+            kernels.push_back(
+                ellipsoid_tree::Ellipsoid{field.mu.row(rho).transpose(), sigma});
+            continue;
+        }
+        on_window[slot] = 1;
+        Eigen::MatrixXd shape(fit.dim, fit.dim);
+        for ( int i = 0; i < fit.dim; ++i )
+        {
+            for ( int j = 0; j < fit.dim; ++j )
+            {
+                shape(i, j) = fit.window_covariance(rho, i * fit.dim + j);
+            }
+        }
+        const bool stand_in = shape.allFinite() && fit.window_center.row(rho).allFinite();
         kernels.push_back(ellipsoid_tree::Ellipsoid{
-            field.mu.row(rho).transpose(), field.sigma[static_cast<std::size_t>(rho)]});
+            stand_in ? Eigen::VectorXd(fit.window_center.row(rho).transpose())
+                     : Eigen::VectorXd(fit.x_cols.row(0).transpose()),
+            stand_in ? shape : Eigen::MatrixXd(Eigen::MatrixXd::Identity(fit.dim, fit.dim))});
     }
     const ellipsoid_tree::EllipsoidTree kernel_tree(std::move(kernels), tau);
 
@@ -705,28 +738,73 @@ inline Eigen::SparseMatrix<double> assemble_sparse(
 
                 const std::vector<int> window = fit.row_window(rho);
                 std::vector<int> deployed;
-                std::set_intersection(columns.begin(), columns.end(),
-                                      window.begin(), window.end(),
-                                      std::back_inserter(deployed));
-
-                if ( !deployed.empty() )
+                if ( on_window[slot] )
                 {
-                    const Eigen::VectorXd values =
-                        detail::deployed_smooth(fit, rho, deployed, tau);
-                    for ( std::size_t i = 0; i < deployed.size(); ++i )
+                    deployed = window;
+                }
+                else
+                {
+                    std::set_intersection(columns.begin(), columns.end(),
+                                          window.begin(), window.end(),
+                                          std::back_inserter(deployed));
+                }
+
+                // The smooth part and the spike of a row ship TOGETHER or not
+                // at all: at the row's own column they are one entry, and a
+                // fit may have made them a cancelling pair. So the spike's
+                // column is always in the smooth support (a kernel collapsed
+                // onto that one point can fall through the collision query;
+                // where the kernel is beyond tau there the term is an exact
+                // zero, so ordinary rows are unchanged bit for bit) ...
+                const bool has_spike = fit.spike && fit.spike_column(rho) >= 0;
+                if ( has_spike )
+                {
+                    const int own = fit.spike_column(rho);
+                    const auto at = std::lower_bound(deployed.begin(), deployed.end(), own);
+                    if ( (at == deployed.end() || *at != own)
+                         && std::binary_search(window.begin(), window.end(), own) )
                     {
-                        per_row[slot].emplace_back(
-                            rho, deployed[i], values(static_cast<Eigen::Index>(i)));
+                        deployed.insert(at, own);
                     }
                 }
-                if ( fit.spike && fit.spike_column(rho) >= 0 )
+
+                // ... and a row whose kernel or spike is not finite ships
+                // NOTHING: no row is better than half of one, and it leaves a
+                // weighted symmetrization to fill the entries in from the
+                // transposed rows.
+                Eigen::VectorXd values;
+                bool usable = true;
+                if ( !deployed.empty() )
+                {
+                    try
+                    {
+                        values = detail::deployed_smooth(fit, rho, deployed, tau);
+                    }
+                    catch ( const InfeasibleParameters& )
+                    {
+                        usable = false;
+                    }
+                    usable = usable && values.allFinite();
+                }
+                const double spike_entry =
+                    has_spike ? fit.m1_diag(rho) * fit.s(rho) : 0.0;
+                if ( !usable || !std::isfinite(spike_entry) )
+                {
+                    continue;
+                }
+
+                for ( std::size_t i = 0; i < deployed.size(); ++i )
+                {
+                    per_row[slot].emplace_back(
+                        rho, deployed[i], values(static_cast<Eigen::Index>(i)));
+                }
+                if ( has_spike )
                 {
                     // Additive on top of the unmodified smooth part at the
                     // row's own column dof (the diagonal, in the square
                     // context); duplicate triplets sum, which is that
                     // convention.
-                    per_row[slot].emplace_back(rho, fit.spike_column(rho),
-                                               fit.m1_diag(rho) * fit.s(rho));
+                    per_row[slot].emplace_back(rho, fit.spike_column(rho), spike_entry);
                 }
             }
         },
