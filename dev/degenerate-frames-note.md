@@ -146,9 +146,10 @@ start has no preferred axis to keep). The wider family, rows whose spike cancels
 diagonal (about 7,000 at 10 probes), held 16% of the held-out error numerator of one fit at 10
 probes and 0.2% at 25.
 
-So far the consequence in a quality-controlled ladder has been one wasted rung (the QC sees the
-row, the ladder draws more probes, and with more probes the row ships the baseline). A fit at a
-fixed probe count has no such net.
+So far the consequence in a quality-controlled ladder has been nil: the QC sees the row, the ladder
+draws more probes (it would have at that rung anyway: without the row the QC read 0.36 to 0.39
+against a target of 0.25), and with more probes the row ships the baseline. A fit at a fixed probe
+count has no such net.
 
 ## What a fix could be (to decide, not decided)
 
