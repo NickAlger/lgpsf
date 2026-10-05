@@ -1140,3 +1140,43 @@ def test_fit_operator_with_coarsening_bounds_the_fit_and_keeps_the_window():
     assert fitted.any()
     assert np.all(one.diagnostics.score[fitted]
                   < one.diagnostics.baseline_score[fitted])
+
+
+def test_frame_bounds_are_exposed_with_their_defaults():
+    config = lgpsf.ProbeFitConfig()
+    assert config.frame_ceiling == 1.0
+    assert config.frame_floor == 0.1
+    config.frame_ceiling = 0.0
+    config.frame_floor = 0.0
+    assert (config.frame_ceiling, config.frame_floor) == (0.0, 0.0)
+    # the stop reasons the clamped fallback reports, at both layers
+    assert lgpsf.StopReason.Clamped != lgpsf.StopReason.Exhausted
+    assert lgpsf.RowStop.Clamped != lgpsf.RowStop.SearchInfeasible
+    assert hasattr(lgpsf.CandidateFit, "clamped")
+
+
+def test_clamp_frame_axes_marshals_a_tuple_or_none():
+    mu0 = np.zeros(2)
+
+    # inside the range: nothing moves, and the block describes the same ellipsoid
+    block = np.array([np.log(0.30), np.log(0.22), 0.05])
+    clamped, axes, moved = lgpsf.clamp_frame_axes(block, 2, 0.05, 5.0)
+    assert moved is False
+    before = lgpsf.unpack_theta_hat(block, mu0, lgpsf.MuMode.Pinned)
+    after = lgpsf.unpack_theta_hat(clamped, mu0, lgpsf.MuMode.Pinned)
+    np.testing.assert_allclose(after.L @ after.L.T, before.L @ before.L.T, rtol=1e-13)
+    assert axes[0] <= axes[1]
+
+    # a frame whose covariance overflows comes back finite, on the bounds
+    runaway = np.array([np.log(6.0e306), np.log(9.7e-16), 1.065e3])
+    clamped, axes, moved = lgpsf.clamp_frame_axes(runaway, 2, 0.02, 36.0)
+    assert moved is True
+    np.testing.assert_allclose(axes, [0.02, 36.0], rtol=1e-10)
+    frame = lgpsf.unpack_theta_hat(clamped, mu0, lgpsf.MuMode.Pinned)
+    assert np.all(np.isfinite(frame.L @ frame.L.T))
+
+    # a block that does not decode to a finite factor: None, not an exception
+    assert lgpsf.clamp_frame_axes(np.array([800.0, 0.0, 0.0]), 2, 0.1, 1.0) is None
+    # a malformed range is the caller's error
+    with pytest.raises(ValueError):
+        lgpsf.clamp_frame_axes(block, 2, 2.0, 1.0)

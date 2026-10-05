@@ -446,6 +446,25 @@ PYBIND11_MODULE(lgpsf, m)
               MuMode mode ) { return to_theta_hat(theta, mu0, mode); },
           "theta"_a, "mu0"_a, "mode"_a,
           "Public absolute encoding -> internal encoding.");
+    m.def("clamp_frame_axes",
+          []( const Eigen::VectorXd& block, int dim, double lo, double hi )
+              -> py::object
+          {
+              const std::optional<ClampedBlock> out =
+                  clamp_frame_axes(block, dim, lo, hi);
+              if ( !out )
+              {
+                  return py::none();
+              }
+              return py::make_tuple(out->block, out->axes, out->moved);
+          },
+          "block"_a, "dim"_a, "lo"_a, "hi"_a,
+          "Clamp the 1-sigma semi-axes of the ellipsoid a log-Cholesky tail "
+          "block encodes into [lo, hi], keeping its principal directions. "
+          "Works on the Cholesky factor, never the covariance, so it also "
+          "tames a frame whose L L^T overflows. Returns (block, axes "
+          "ascending, moved), or None if the block does not decode to a "
+          "finite factor.");
     m.def("release_mu",
           []( const Eigen::VectorXd& theta_hat, int dim )
           { return release_mu(theta_hat, dim); },
@@ -810,16 +829,17 @@ PYBIND11_MODULE(lgpsf, m)
                        "coarsen_eps on the rows it coarsens.")
         .def_readwrite("frame_floor", &ProbeFitConfig::frame_floor,
                        "Lower admissibility bound on a candidate's smallest "
-                       "semi-axis, in local point spacings; 0 (the default) is "
+                       "semi-axis, in local point spacings (default 0.1); 0 is "
                        "no bound. A guard against a frame collapsed onto one "
-                       "point, not a resolution requirement; tentative value 0.1.")
+                       "point, not a resolution requirement.")
         .def_readwrite("frame_ceiling", &ProbeFitConfig::frame_ceiling,
                        "What happens when no candidate is admissible. "
-                       "Non-positive (the default): the best one wins as it is. "
-                       "Positive: its semi-axes are clamped into [frame_floor * "
-                       "spacing, frame_ceiling * window radius], its linear "
-                       "coefficients re-solved and its score recomputed; it "
-                       "wins with StopReason.Clamped. Tentative value 1.0.")
+                       "Positive (default 1.0): the best one's semi-axes are "
+                       "clamped into [frame_floor * spacing, frame_ceiling * "
+                       "window radius], its linear coefficients re-solved and "
+                       "its score recomputed; it wins with StopReason.Clamped. "
+                       "Non-positive: it wins as it is (the behaviour before "
+                       "2026-10-04).")
         .def_readwrite("cv_folds", &ProbeFitConfig::cv_folds)
         .def_readwrite("split", &ProbeFitConfig::split,
                        "The CV split AS DATA. Empty means the deterministic "

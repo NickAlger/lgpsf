@@ -13,7 +13,7 @@ narrative and open items only; when a thread closes, its record moves to
 | C++ core | complete — 149 cases / 105,699 assertions |
 | QR-first inner solve | landed — 2.1× on a whole-field fit, every number unchanged to four digits |
 | Field-scale validation | smooth and rough basal friction both reproduced; the recorded 0.0147 matched exactly |
-| Python bindings | complete — 51 pytest cases |
+| Python bindings | complete — 74 pytest cases |
 | Examples | 16, covering every exported name; the frog example is the public gate |
 | Fitting defaults | **changed 2026-07-28** — prior + 3 circles, `ftol` 1e-4. See below; fits are not bit-identical to 0.1.0 |
 | Initial-guess API | **changed 2026-07-29** — guesses are data, not flags. [`archive/initial-guess-api-plan.md`](archive/initial-guess-api-plan.md); `fit_operator` bit-identical across it |
