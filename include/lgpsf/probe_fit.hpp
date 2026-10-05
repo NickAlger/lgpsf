@@ -33,6 +33,15 @@
 ///    Few-equation validation cannot reliably reject such degenerate fits --
 ///    observed live, a 3000:1 needle three times the window won a 4-equation
 ///    holdout by 0.02 -- and this also kills the center runaway structurally.
+///    So are fits whose minor semi-axis has collapsed below `frame_floor`
+///    local spacings: on the points such a mode is the spike's column.
+///  - WHEN NOTHING IS ADMISSIBLE the best-scoring candidate is not passed on
+///    as it is (it was, until 2026-10-04, and a frame whose covariance had
+///    overflowed shipped that way): its semi-axes are clamped into the
+///    admissible range (`frame_ceiling` window radii above, the floor below),
+///    its LINEAR coefficients re-solved at the clamped frame and its score
+///    recomputed there. A caller still always gets an answer, now one whose
+///    frame the points can resolve; `StopReason::Clamped` says so.
 ///  - SCORE: linear-stage K-fold cross-validation. The parameters are fit once
 ///    per candidate on all k equations; the LINEAR coefficients are then refit
 ///    leave-fold-out at those parameters, so every equation is scored

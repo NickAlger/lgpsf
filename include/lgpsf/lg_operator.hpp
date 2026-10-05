@@ -628,6 +628,14 @@ enum class Symmetrize
 /// The support pattern for every row comes from ONE dual-tree descent of the
 /// column-point tree against the fitted-ellipsoid tree, the same machinery
 /// `fit_operator` uses to derive the windows themselves.
+///
+/// A row's smooth part and its spike ship TOGETHER or not at all (since
+/// 2026-10-04): the spike's column is always in the smooth support; a row whose
+/// kernel covariance `L L^T` is not finite, which collides with no column,
+/// takes its whole window as support instead (the kernel is evaluated through
+/// `L^-1` and trimmed at tau as always); and a row whose kernel values or spike
+/// are not finite ships nothing. At the row's own column the two terms are one
+/// entry, and a fit can make them a cancelling pair of any size.
 /// @param fit         The operator.
 /// @param tau         Support radius in standard deviations of the fitted
 ///                    kernel. Smaller is sparser and less accurate. No default

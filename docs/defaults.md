@@ -126,10 +126,38 @@ held-out score, guarded only by the window radius — far too loose a bound on
 how far a center may wander. Release remains available on request; it will
 become automatic again if a basin-scale bound on `||mu − mu0||` is added.
 
+## The fitted frame is bounded
+
+A candidate is admissible only if its ellipsoid fits its window (major semi-axis
+at most the window radius) and has not collapsed onto a single point (minor
+semi-axis at least `frame_floor = 0.1` local spacings). Admissible candidates
+are compared by held-out score.
+
+When *no* candidate is admissible, the fit does not pass the best one on as it
+is. With `frame_ceiling = 1.0` it clamps that candidate's semi-axes into the
+admissible range, re-solves its linear coefficients at the clamped frame, and
+recomputes its score; the result is reported with `StopReason.Clamped`
+(`RowStop.Clamped` per row in `fit_operator`'s diagnostics), and the baseline
+guard still decides whether it ships.
+
+Both are on by default since 2026-10-04. Before that the best inadmissible
+candidate won unchanged, and with few probes a search could run away to a frame
+far larger than its window; in a 400,000-row production fit one such frame
+overflowed and left an entry of 8.6e11 on the assembled diagonal. In that fit
+the rows the bounds touch are one to two percent of the rows and about a
+thousandth of the operator, and an A/B found the held-out error unchanged from
+25 probes on and slightly lower at 10. The floor is a guard against collapse,
+not a resolution requirement: a kernel can honestly be narrower than the point
+spacing across its long axis, so do not raise it towards 1 without measuring.
+`frame_ceiling = 0`, `frame_floor = 0` restore the earlier behaviour.
+
 ## Deployed support is the fit window
 
 Every evaluation — `matvec`, `assemble_sparse`, `eval_entries`, `eval_kernel` —
-restricts each row to the window it was fitted on. `eval_kernel_unrestricted`
+restricts each row to the window it was fitted on. `assemble_sparse` also keeps
+a row's smooth part and its spike together: the spike's column is always in the
+row's support, and a row whose kernel or spike is not finite contributes no
+entries at all. `eval_kernel_unrestricted`
 is the named opt-out.
 
 This is not a performance shortcut. The cross-validation score is blind to

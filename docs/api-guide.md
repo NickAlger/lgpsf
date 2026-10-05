@@ -87,6 +87,12 @@ its label, cost, held-out score, fitted axes and iteration count. That table is
 the first place to look when a row disappoints
 ([`examples/reading_a_row_fit.py`](../examples/reading_a_row_fit.py)).
 
+Each candidate also carries `admissible` (its frame fits the window and has not
+collapsed; see [defaults.md](defaults.md)) and `clamped`. If no candidate was
+admissible, the winner is the best one with its frame clamped into the
+admissible range and its linear coefficients re-solved: one extra candidate,
+labelled `clamp(...)`, and `stop_reason == StopReason.Clamped`.
+
 **`cost` is in-sample and is never the selector.** `score` is. They disagree
 exactly when it matters — see
 [`examples/counting_rule.py`](../examples/counting_rule.py).
