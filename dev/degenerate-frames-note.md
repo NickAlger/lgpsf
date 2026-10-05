@@ -106,6 +106,63 @@ Tests to add with the fix: a row whose window holds one or two points; a search 
 isotropic frame with fewer probes than a well-posed fit needs; the assembled diagonal against the
 dense evaluation for every shipped row.
 
+## How many rows a bound on the frame would touch (measured 2026-10-04)
+
+Final rung of two fits of the production operator (20 and 25 probes; about 380,000 searched rows
+each), and the first rung (10 probes). The window is the a-priori ellipsoid inflated by 3.5; the local
+point spacing is taken as the square root of the row's cell area.
+
+| fitted frame | final rung | 10 probes |
+|---|---|---|
+| largest axis (1 sigma) / window's largest semi-axis: median | 0.31 to 0.34 | 0.33 |
+| ... above 1 (the ellipsoid is larger than its window) | 1.4 to 2.4% (5,200 to 9,200 rows) | 6.3% |
+| ... above 2 | 3,800 to 6,800 rows | 18,200 |
+| ... above 10 | 2,100 to 3,900 rows | 11,100 |
+| smallest axis / local spacing: median | 0.75 to 0.82 | 0.77 |
+| ... below 0.5 (the a-priori floor) | 16 to 21% | 21% |
+| ... below 0.1 | 1,100 to 1,400 rows | 9,100 |
+| ... below 0.01 | 190 rows | 1,800 |
+
+So a ceiling at the scale of the window is not a patch for a hundred overflowed rows: it changes one
+to two percent of the fitted rows, the ones whose kernel is flat across the window and which the
+unbounded fit represents by a frame far larger than the window with enormous coefficients. A floor
+at half the spacing would change a fifth of the rows (the kernels of this problem are under-resolved
+on its mesh over much of the domain), which makes the floor a separate modelling question.
+
+## Mechanisms for a ceiling (discussion 2026-10-04, nothing decided)
+
+**No constrained optimizer is needed for a wall.** The search already has a feasibility test:
+`make_frame` throws `InfeasibleParameters` when the log-Cholesky diagonal overflows, VarPro scores
+such a trial point as "the smooth model contributes nothing", and the trust-region loop rejects the
+step and contracts. A ceiling inside the search is that predicate made tighter (the frame's largest
+axis, measured in the window's coordinates, above `c` window radii is infeasible). A few lines plus
+passing the window scale to the basis. The iterate then creeps along the wall with shrinking steps
+and stops on the step tolerance near a constrained stationary point: workable, and it ends runaways
+early, but with a ceiling that thousands of rows reach it spends many small steps there.
+
+**Clamp after the search, then one linear solve (the maintainer's proposal).** Take the search's
+frame, clamp the eigenvalues of its covariance in the window's coordinates to `(c R)^2`, re-solve
+the linear coefficients at the clamped frame (`detail::linear_fit`, what the baseline already
+does), re-score it with `linear_cv_score` (what the coarsened rows already do for both finalists),
+and let the guard decide against the baseline as now. Rows that are not clamped are untouched, bit
+for bit. The shipped object is then the scored object, its coefficients are a least-squares
+solution at a frame the points can resolve, and `L L^T` cannot overflow. What it does not do: stop
+the search from running away (the wasted iterations stay), fix a collapsed minor axis (that needs
+the floor, or dropping a mode the spike already spans), or make the clamped frame an optimum of
+anything (its orientation and minor axis are those of a runaway search).
+
+**Why a ceiling at two or three window radii should cost almost no accuracy.** Over its window a
+Gaussian of sigma = 3 R is flat to 5% (2 R: 12%), and the higher modes carry the remaining
+variation with coefficients of order one. The unbounded fit represents the same content with a
+frame at 1e3 to 1e300 window radii and coefficients up to 1e155 times the typical one.
+
+**Not recommended:** a bounded reparametrization (sigmoid of the log-axes) changes every fit, needs a
+rotation parametrization in general dimension, and has flat directions at the bounds; a penalty adds
+a weight and touches the Golub-Pereyra Jacobian without giving a guarantee.
+
+Before any of it ships: an A/B at fixed probe counts (held-out QC, baseline and fallback counts,
+fit time) with `c` in {1, 2, 3}.
+
 ## For readers of fitted-ellipsoid statistics
 
 Until this is fixed, leave rows with a non-finite or extreme frame out of any statistic or picture
