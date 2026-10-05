@@ -31,8 +31,9 @@ With five more probes the same row shipped the baseline and was ordinary.
 
 1. **The search ends at a needle.** With few probes and a window of few nodes, the search ends at a
    frame whose one axis has shrunk until the Gaussian is nonzero only at the row's own node. On the
-   mesh the mode is then a delta: its column of the design matrix is the spike's column. Nothing
-   bounds the frame, so the other axis is free to run to 1e306.
+   mesh the mode is then a delta: its column of the design matrix is the spike's column. The other
+   axis runs to 1e306: the search itself is unbounded, and the admissibility rule that should have
+   excluded the result has an escape hatch (next section).
 2. **The coefficients become a cancelling pair.** VarPro projects the extra block (the spike) out of
    the mode columns; a mode that lies in the spike's span leaves a reduced column of round-off, and
    the linear solve returns a huge `c` with the spike `s` compensating (the Frisch-Waugh-Lovell
@@ -49,6 +50,25 @@ With five more probes the same row shipped the baseline and was ordinary.
 
 Step 3 needs `L L^T` to overflow, which is why one row in 400,000 blew up while about a thousand
 shipped a degenerate frame.
+
+## The rule that already exists, and its escape hatch (found 2026-10-04, later the same day)
+
+`fit_from_probes` already states the principle: *"Fits whose major semi-axis exceeds the window
+radius, or whose released center leaves the window, are excluded. Few-equation validation cannot
+reliably reject such degenerate fits -- observed live, a 3000:1 needle three times the window won a
+4-equation holdout by 0.02."* Each candidate gets `admissible = axes.maxCoeff() <= radius`, with
+`radius = window_radius(x, mu0)` the distance to the farthest point of the batch, and selection is
+admissibility first, then score.
+
+The hole is in `select`: **when no candidate is admissible, every candidate is allowed**
+(`if ( allowed.empty() ) { allow all }`), and the best-scoring inadmissible one goes on to the
+baseline guard. Every shipped frame larger than its window came through there, the 6e306 needle
+included: at least 1.4 to 2.4% of the searched rows at the final rung (the "above 1" row of the
+table further down), 6.3% at 10 probes. There is no rule at all on the small side: a candidate
+with a collapsed minor axis is admissible.
+
+So the question is not whether to add a ceiling. One exists, at one window radius. The question
+is what the fit does when nothing passes it.
 
 ## Why the baseline guard did not catch it
 
@@ -130,6 +150,13 @@ at half the spacing would change a fifth of the rows (the kernels of this proble
 on its mesh over much of the domain), which makes the floor a separate modelling question.
 
 ## Mechanisms for a ceiling (discussion 2026-10-04, nothing decided)
+
+*(Written before the escape hatch was found. What follows still describes the two mechanisms; where
+they attach changes: the natural place is the empty-pool branch of `select`, and the natural
+ceiling is the admissibility bound that already exists, one window radius. Options there: ship the
+baseline when nothing is admissible; or clamp the best inadmissible candidate's axes into the
+admissible range, re-solve its linear coefficients, re-score it, and let the baseline guard
+decide. A floor would enter the same way, as a lower admissibility bound on the minor axis.)*
 
 **No constrained optimizer is needed for a wall.** The search already has a feasibility test:
 `make_frame` throws `InfeasibleParameters` when the log-Cholesky diagonal overflows, VarPro scores
