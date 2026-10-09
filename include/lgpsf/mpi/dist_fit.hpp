@@ -89,6 +89,12 @@ struct DistFitInput
     std::vector<Eigen::MatrixXd> sigma;       ///< (nrows) a-priori covariances
     std::vector<long>            row_own_gid; ///< (nrows) own column gid or -1
     Eigen::MatrixXd              HV_local;    ///< (nrows, k) responses
+    /// (nrows, dim) where each row's a-priori guess is centred (the `sigma0`
+    /// candidate seeded from `sigma`), or EMPTY for the row's own centre, as
+    /// before this field existed.  `fit_operator`'s `mu_prior`: the window and
+    /// the spike stay at `x_rows`; a centre outside the row's window is the
+    /// caller's to guard (it only yields inadmissible candidates).
+    Eigen::MatrixXd              mu_prior;
 
     // ---- fitting-only row redistribution (dev/row-balance-plan.md) ------
     //
@@ -215,6 +221,15 @@ inline DistFitResult dist_fit( const HaloPlan& plan,
     {
         throw std::invalid_argument("lgpsf::mpi::dist_fit: row-side sizes");
     }
+    if ( in.mu_prior.size() > 0
+         && ( in.mu_prior.rows() != nrows || in.mu_prior.cols() != dim ) )
+    {
+        throw std::invalid_argument(
+            "lgpsf::mpi::dist_fit: mu_prior must be (nrows, dim) or empty");
+    }
+    const std::optional<Eigen::MatrixXd> mu_prior =
+        in.mu_prior.size() > 0 ? std::optional<Eigen::MatrixXd>(in.mu_prior)
+                               : std::nullopt;
 
     // ---- halo payloads: probe inputs + column masses -------------------
     Eigen::MatrixXd Vm(nloc, k + 1);
@@ -340,7 +355,7 @@ inline DistFitResult dist_fit( const HaloPlan& plan,
         windows.begin(), windows.end());
     out.fit = fit_operator(x_comb, in.m1_local, m2_comb, V_comb, in.HV_local,
                            in.sigma, config, in.x_rows, in.x_rows, {},
-                           window_opt, row_own_col, delegate_ptr);
+                           window_opt, row_own_col, delegate_ptr, mu_prior);
     if ( exchange )
     {
         out.fitted_on_rank = exchange->fitted_on_rank();

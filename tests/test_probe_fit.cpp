@@ -1098,3 +1098,99 @@ TEST_CASE("by default nothing leaves the row fit with a frame outside its bounds
     const lgpsf::EllipsoidFrame frame = result.model.frame();
     CHECK((frame.L * frame.L.transpose()).allFinite());
 }
+
+TEST_CASE("a per-guess ladder is the cold single-guess ladders side by side")
+{
+    // LadderScope::PerGuess: every start climbs its own ladder, cold, with its
+    // own patience, and the best score over all the climbs wins. So its
+    // candidate table must be exactly the tables of the single-start climbs,
+    // in start order, with no warm candidate anywhere -- and the shared
+    // ladder on the same starts is a different search, because it carries
+    // the warm candidates.
+    std::mt19937 gen(17);
+    const Target target = make_target(gen, 2, 60);
+    ProbeFitConfig config =
+        basic_config(std::make_shared<ShellLadder>(std::vector<int>{0, 1, 2, 3}));
+    config.num_rungs = 1;   // one circle rung after the guess: two starts
+    config.ladder = lgpsf::LadderScope::PerGuess;
+    const lgpsf::EllipsoidFrame truth =
+        lgpsf::unpack_theta_hat(target.theta_hat_true, target.mu0, MuMode::Pinned);
+    lgpsf::InitialGuess prior;
+    prior.sigma = truth.L * truth.L.transpose();
+    prior.label = "sigma0";
+    const ProbeFitResult together =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, config, {prior}, target.mass);
+    // the climbs on their own: the guess alone, then the circle rung alone,
+    // built exactly as the ladder builds it
+    ProbeFitConfig alone = config;
+    alone.num_rungs = 0;
+    const ProbeFitResult first =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, alone, {prior}, target.mass);
+    const std::vector<lgpsf::InitialGuess> rungs =
+        lgpsf::circle_ladder(target.x, target.mu0, 1);
+    REQUIRE(rungs.size() == 1);
+    const ProbeFitResult second =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, alone, {rungs[0]}, target.mass);
+    REQUIRE(together.candidates.size()
+            == first.candidates.size() + second.candidates.size());
+    CHECK(first.candidates.size() >= 2);   // the ladder actually climbed
+    for ( std::size_t i = 0; i < together.candidates.size(); ++i )
+    {
+        const CandidateFit& got = together.candidates[i];
+        const CandidateFit& want =
+            i < first.candidates.size()
+                ? first.candidates[i]
+                : second.candidates[i - first.candidates.size()];
+        CHECK(got.label == want.label);
+        CHECK(got.modes_label == want.modes_label);
+        CHECK(got.score == want.score);
+        CHECK(got.evaluations == want.evaluations);
+        CHECK(got.model.theta == want.model.theta);
+        CHECK(got.label.rfind("warm(", 0) != 0);
+    }
+    CHECK(together.score == std::min(first.score, second.score));
+    CHECK(together.evaluations_total
+          == first.evaluations_total + second.evaluations_total);
+    CHECK(together.stop_reason != StopReason::Target);
+    // the default is the shared ladder, and it is not this search
+    CHECK(ProbeFitConfig().ladder == lgpsf::LadderScope::Shared);
+    ProbeFitConfig shared = config;
+    shared.ladder = lgpsf::LadderScope::Shared;
+    const ProbeFitResult old =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, shared, {prior}, target.mass);
+    bool any_warm = false;
+    for ( const CandidateFit& candidate : old.candidates )
+    {
+        any_warm = any_warm || candidate.label.rfind("warm(", 0) == 0;
+    }
+    CHECK(any_warm);
+}
+
+TEST_CASE("the certificate stops every per-guess climb")
+{
+    // A target that one Gaussian meets at once: the first climb hits it and
+    // nothing else runs, as the shared ladder would have stopped too.
+    std::mt19937 gen(17);
+    const Target target = make_target(gen, 2, 60);
+    ProbeFitConfig config =
+        basic_config(std::make_shared<ShellLadder>(std::vector<int>{0, 1, 2}));
+    config.ladder = lgpsf::LadderScope::PerGuess;
+    config.target_score = 1e-3;
+    const lgpsf::EllipsoidFrame truth =
+        lgpsf::unpack_theta_hat(target.theta_hat_true, target.mu0, MuMode::Pinned);
+    lgpsf::InitialGuess prior;
+    prior.sigma = truth.L * truth.L.transpose();
+    prior.label = "sigma0";
+    const ProbeFitResult result =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, config, {prior}, target.mass);
+    REQUIRE(result.stop_reason == StopReason::Target);
+    for ( const CandidateFit& candidate : result.candidates )
+    {
+        CHECK(candidate.label == "sigma0");   // no circle rung ever ran
+    }
+}

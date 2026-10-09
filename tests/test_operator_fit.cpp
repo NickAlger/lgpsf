@@ -1478,6 +1478,7 @@ struct Recorder
     std::vector<int> hosts;          ///< what `assign` returns; empty = all mine
     std::vector<int> window_sizes;   ///< what `assign` was shown
     std::vector<int> rows;           ///< what `solve` was shown
+    std::vector<Eigen::VectorXd> priors;  ///< each package's `prior_mu`
     int assign_calls = 0;
     int solve_calls = 0;
     bool drop_y_hat = false;         ///< leave y_hat for the owner to refill
@@ -1500,8 +1501,10 @@ struct Recorder
                     std::vector<lgpsf::detail::RowFitCandidates>& out ) {
                 ++solve_calls;
                 rows = handed;
+                priors.clear();
                 for ( std::size_t i = 0; i < problems.size(); ++i )
                 {
+                    priors.push_back(problems[i].prior_mu);
                     if ( handed[i] == unsolved )
                     {
                         // the slot stays unset: this host could not fit it
@@ -1794,4 +1797,47 @@ TEST_CASE("a malformed assignment is refused, not half-applied")
         return std::vector<int>(sizes.size(), 1);
     };
     CHECK_THROWS_AS(run_with(op, config, no_solve), std::invalid_argument);
+}
+
+TEST_CASE("the a-priori centre moves only the sigma0 guess, and travels with the package")
+{
+    // `mu_prior` is where the a-priori guess is centred; the window, the spike
+    // and the circle rungs stay at the row's centre. Centred where the rows
+    // already are it changes nothing, bit for bit; shifted, every package
+    // carries the shift, the delegated fit equals the fused one under it, and
+    // the windows are the ones the unshifted fit had.
+    std::mt19937 gen(43);
+    const Synthetic op = make_operator(gen, 21, 30, 6);
+    const OperatorFitConfig config = config_for(op);
+    const OperatorFit reference = run(op, config);
+    const OperatorFit same_place =
+        fit_operator(op.x_cols, op.m1, op.m2, op.V, op.HV, op.sigma, config,
+                     std::nullopt, std::nullopt, op.gate, {}, {}, nullptr,
+                     Eigen::MatrixXd(op.x_cols));
+    check_same_fit(reference, same_place);
+    Eigen::MatrixXd shifted = op.x_cols;
+    shifted.col(0).array() += 0.03;
+    const OperatorFit fused =
+        fit_operator(op.x_cols, op.m1, op.m2, op.V, op.HV, op.sigma, config,
+                     std::nullopt, std::nullopt, op.gate, {}, {}, nullptr, shifted);
+    Recorder recorder;
+    recorder.hosts.assign(op.gate.size(), 1);
+    const RowDelegate delegate = recorder.make();
+    const OperatorFit delegated =
+        fit_operator(op.x_cols, op.m1, op.m2, op.V, op.HV, op.sigma, config,
+                     std::nullopt, std::nullopt, op.gate, {}, {}, &delegate, shifted);
+    check_same_fit(fused, delegated);
+    REQUIRE(recorder.priors.size() == recorder.rows.size());
+    for ( std::size_t k = 0; k < recorder.rows.size(); ++k )
+    {
+        REQUIRE(recorder.priors[k].size() == 2);
+        CHECK(recorder.priors[k] == shifted.row(recorder.rows[k]).transpose());
+    }
+    CHECK(fused.model.window_indptr == reference.model.window_indptr);
+    CHECK(fused.model.window_indices == reference.model.window_indices);
+    // and the shape is checked eagerly
+    CHECK_THROWS_AS(fit_operator(op.x_cols, op.m1, op.m2, op.V, op.HV, op.sigma,
+                                 config, std::nullopt, std::nullopt, op.gate, {}, {},
+                                 nullptr, Eigen::MatrixXd(shifted.topRows(3))),
+                    std::invalid_argument);
 }

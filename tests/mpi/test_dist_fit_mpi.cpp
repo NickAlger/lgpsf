@@ -93,6 +93,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <optional>
 #include <vector>
 
 namespace {
@@ -178,6 +179,13 @@ struct PassSpec
     /// peer on the acknowledgement round and that peer fitted those rows
     /// itself.  Needs at least two senders into one host, so n >= 3.
     bool expect_receiver_capping = false;
+
+    /// The row-fit options of 2026-10-09: every guess on its own cold ladder
+    /// (`LadderScope::PerGuess`), and the a-priori guess centred a quarter
+    /// spacing off the node (`mu_prior`), on both sides.  With the
+    /// redistribution on, the centre has to travel in the package.
+    bool per_guess = false;
+    bool prior_shift = false;
 };
 
 } // namespace
@@ -295,6 +303,17 @@ int main( int argc, char** argv )
             cfg.coarsen_above = coarsen_above;
             cfg.coarsen_eps = coarsen_eps;
         }
+        if ( spec.per_guess )
+        {
+            cfg.row.ladder = lgpsf::LadderScope::PerGuess;
+        }
+        std::optional<Eigen::MatrixXd> mu_prior_all;
+        if ( spec.prior_shift )
+        {
+            Eigen::MatrixXd shifted = x_all;
+            shifted.col(0).array() += 0.25 * h;
+            mu_prior_all = shifted;
+        }
 
         // ---- the injected pathologies, identical on both sides ---------
         //
@@ -339,7 +358,8 @@ int main( int argc, char** argv )
                 HV_all.row(i) = row.transpose();
             }
             const lgpsf::OperatorFit ref_fit = lgpsf::fit_operator(
-                x_all, m_all, m_all, V_all, HV_all, sigma_pass, cfg);
+                x_all, m_all, m_all, V_all, HV_all, sigma_pass, cfg,
+                std::nullopt, std::nullopt, {}, {}, {}, nullptr, mu_prior_all);
             const Eigen::SparseMatrix<double> B_ref = lgpsf::assemble_sparse(
                 ref_fit.model, tau_assemble, lgpsf::Symmetrize::None,
                 cfg.num_threads);
@@ -428,6 +448,10 @@ int main( int argc, char** argv )
         for ( int i = 0; i < nrows; ++i )
         {
             in.row_own_gid[static_cast<std::size_t>(i)] = rstart + i;
+        }
+        if ( mu_prior_all )
+        {
+            in.mu_prior = mu_prior_all->middleRows(rstart, nrows);
         }
         in.HV_local.resize(nrows, k);
         {
@@ -820,7 +844,7 @@ int main( int argc, char** argv )
     long failures = 0;
     // Reserved, not grown: `PassSpec::label` is a plain pointer into these.
     std::vector<std::string> labels;
-    labels.reserve(14);
+    labels.reserve(16);
     for ( int coarse = 0; coarse < ( coarsen_pass ? 2 : 1 ); ++coarse )
     {
         const bool c = ( coarse == 1 );
@@ -834,6 +858,7 @@ int main( int argc, char** argv )
         labels.push_back("perverse" + suffix);
         labels.push_back("failures" + suffix);
         labels.push_back("empty-rank" + suffix);
+        labels.push_back("prior-perguess" + suffix);
 
         {
             PassSpec spec;
@@ -923,6 +948,23 @@ int main( int argc, char** argv )
             spec.skewed_weights = true;
             spec.empty_first_rank = true;
             spec.expect_migration = true;
+            failures += run_pass(spec);
+        }
+        {
+            // The 2026-10-09 row-fit options, under the perverse assignment
+            // at n > 1 so the a-priori centre has to cross in every package.
+            PassSpec spec;
+            spec.label = labels[first + 7].c_str();
+            spec.coarsen = c;
+            spec.per_guess = true;
+            spec.prior_shift = true;
+            if ( size > 1 )
+            {
+                spec.balance = true;
+                spec.perverse = true;
+                spec.bytes_cap = static_cast<std::size_t>(-1);
+                spec.expect_migration = true;
+            }
             failures += run_pass(spec);
         }
     }

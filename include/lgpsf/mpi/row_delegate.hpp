@@ -32,7 +32,8 @@
 /// `dist_wsym` ships its triplets):
 ///
 ///  - out: `fit_size`, `dim`, `num_probes`, `spike_fit`, `num_extra`, the
-///    `coarsened` FLAG, `target_mass`, then `center`, `prior_L`, `sigma`, `y`,
+///    `coarsened` FLAG, `target_mass`, then `center`, the a-priori
+///    centre `prior_mu` (a flag and dim doubles), `prior_L`, `sigma`, `y`,
 ///    `x_fit`, `m2_fit`, `z_fit`. That is every member of `RowFitProblem` the
 ///    search reads and nothing else. `sigma` rides even though `prior_L` is
 ///    its Cholesky factor: the LM stream is seeded from the raw covariance and
@@ -217,7 +218,7 @@ inline void append( std::vector<double>& buffer, const double* first,
 inline std::size_t problem_doubles( std::size_t fit_size, std::size_t dim,
                                     std::size_t num_probes )
 {
-    return 7u + dim + 2u * dim * dim + num_probes
+    return 8u + 2u * dim + 2u * dim * dim + num_probes
            + fit_size * (dim + 1u + num_probes);
 }
 
@@ -264,6 +265,13 @@ inline void pack_problem( const lgpsf::detail::RowFitProblem& problem,
     buffer.push_back(problem.coarsened ? 1.0 : 0.0);
     buffer.push_back(problem.target_mass);
     append(buffer, problem.center.data(), dim);
+    // The a-priori guess's centre: a presence flag, then dim doubles (the
+    // centre again when absent, so the layout is fixed).
+    const bool has_prior_mu =
+        problem.prior_mu.size() == static_cast<Eigen::Index>(dim);
+    buffer.push_back(has_prior_mu ? 1.0 : 0.0);
+    append(buffer, has_prior_mu ? problem.prior_mu.data() : problem.center.data(),
+           dim);
     append(buffer, problem.prior_L.data(), dim * dim);
     append(buffer, problem.sigma.data(), dim * dim);
     append(buffer, problem.y.data(), num_probes);
@@ -308,6 +316,15 @@ inline lgpsf::detail::RowFitProblem unpack_problem(
     problem.target_mass = reader.next();
     problem.center.resize(dim);
     reader.take(problem.center.data(), static_cast<std::size_t>(dim));
+    {
+        const bool has_prior_mu = reader.next() != 0.0;
+        Eigen::VectorXd prior_mu(dim);
+        reader.take(prior_mu.data(), static_cast<std::size_t>(dim));
+        if ( has_prior_mu )
+        {
+            problem.prior_mu = std::move(prior_mu);
+        }
+    }
     problem.prior_L.resize(dim, dim);
     reader.take(problem.prior_L.data(), static_cast<std::size_t>(dim) * dim);
     problem.sigma.resize(dim, dim);

@@ -638,6 +638,16 @@ PYBIND11_MODULE(lgpsf, m)
         .value("Free", MuPolicy::Free, "Fit the center from the start.")
         .value("PinnedThenRelease", MuPolicy::PinnedThenRelease);
 
+    py::enum_<LadderScope>(m, "LadderScope",
+                           "How the initial guesses climb the mode ladder.")
+        .value("Shared", LadderScope::Shared,
+               "One ladder: every guess refit cold at every rung plus one warm "
+               "candidate from the previous rung's winner, one patience on the "
+               "best score across guesses. The default.")
+        .value("PerGuess", LadderScope::PerGuess,
+               "Every guess climbs its own ladder, cold, with its own patience; "
+               "no warm candidate; the best score over all wins.");
+
     py::enum_<StopReason>(m, "StopReason")
         .value("Target", StopReason::Target)
         .value("ModePatience", StopReason::ModePatience)
@@ -819,6 +829,10 @@ PYBIND11_MODULE(lgpsf, m)
         .def_readwrite("target_score", &ProbeFitConfig::target_score,
                        "Absolute early-exit certificate; None disables it.")
         .def_readwrite("mode_patience", &ProbeFitConfig::mode_patience)
+        .def_readwrite("ladder", &ProbeFitConfig::ladder,
+                       "LadderScope.Shared (the default) or PerGuess: whether "
+                       "the guesses share one ladder or each climb their own, "
+                       "cold.")
         .def_readwrite("tie_delta", &ProbeFitConfig::tie_delta)
         .def_readwrite("resolution_eps", &ProbeFitConfig::resolution_eps,
                        "Resolution rule for RELEASED centres; 0 (the default) "
@@ -1153,7 +1167,8 @@ PYBIND11_MODULE(lgpsf, m)
               const PointsIn& HV, const py::array_t<double>& sigma,
               const OperatorFitConfig& config,
               const std::optional<PointsIn>& mu0,
-              const std::optional<PointsIn>& x_rows, const py::object& rows ) {
+              const std::optional<PointsIn>& x_rows, const py::object& rows,
+              const std::optional<PointsIn>& mu_prior ) {
               const Eigen::MatrixXd columns(map_points(x_cols, "x_cols"));
               const Eigen::MatrixXd probes(map_batch(V, "V"));
               const Eigen::MatrixXd responses(map_batch(HV, "HV"));
@@ -1168,18 +1183,26 @@ PYBIND11_MODULE(lgpsf, m)
                   row_points = Eigen::MatrixXd(map_points(*x_rows, "x_rows"));
               }
               const std::vector<char> gate = gate_from_rows(rows, m1_diag.size());
+              std::optional<Eigen::MatrixXd> prior_centers;
+              if ( mu_prior )
+              {
+                  prior_centers = Eigen::MatrixXd(map_points(*mu_prior, "mu_prior"));
+              }
 
               py::gil_scoped_release unlock;
               return fit_operator(columns, m1_diag, m2_diag, probes, responses,
-                                  covariances, config, centers, row_points, gate);
+                                  covariances, config, centers, row_points, gate,
+                                  {}, {}, nullptr, prior_centers);
           },
           "x_cols"_a, "m1_diag"_a, "m2_diag"_a, "V"_a, "HV"_a, "sigma"_a,
           py::kw_only(), "config"_a = OperatorFitConfig(),
           "mu0"_a = std::nullopt, "x_rows"_a = std::nullopt,
-          "rows"_a = py::none(),
+          "rows"_a = py::none(), "mu_prior"_a = std::nullopt,
           "Fit the whole operator, one row at a time.\n\n"
           "x_cols (N, K), V (num_probes, K), HV (num_probes, R), sigma "
-          "(R, N, N), mu0 (N, R). `rows` accepts a boolean mask OR an index "
+          "(R, N, N), mu0 (N, R), mu_prior (N, R): where each row's a-priori "
+          "guess (the sigma0 candidate) is centred; None (the default) is the "
+          "row's centre. `rows` accepts a boolean mask OR an index "
           "array and selects which rows to attempt; None (the default) "
           "attempts every row, WHICH IS THE RECOMMENDED SETTING -- a dead row "
           "costs one candidate and ships zeros, and gating buys nothing.");

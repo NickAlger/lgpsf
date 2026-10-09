@@ -68,6 +68,7 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -240,6 +241,23 @@ enum class MuPolicy
     PinnedThenRelease
 };
 
+/// How the initial guesses climb the mode ladder.
+enum class LadderScope
+{
+    /// One ladder for the row: every guess is refit cold at every rung, plus
+    /// one WARM candidate seeded from the previous rung's winner, and one
+    /// patience on the best score across guesses. **The default**, and the
+    /// behaviour before this option existed (2026-10-09).
+    Shared,
+    /// Every guess climbs its own ladder, cold at every rung, with its own
+    /// patience; no warm candidate; the best score over all guesses wins.
+    /// Measured on the ice-sheet rows (2026-10-08): the same or a better
+    /// held-out score for 14-20% fewer evaluations -- the shared patience
+    /// pruned the centres apart at rung 1, where one Gaussian cannot tell
+    /// them apart, and the warm candidate was neutral.
+    PerGuess
+};
+
 /// Why the search stopped.
 enum class StopReason
 {
@@ -289,6 +307,10 @@ struct ProbeFitConfig
     /// improving the best score. Two or more, because a single-step worsening
     /// on a nested family is usually noise.
     int mode_patience = 2;
+
+    /// Whether the guesses share one ladder (with the warm candidate and one
+    /// patience) or each climb their own, cold. See `LadderScope`.
+    LadderScope ladder = LadderScope::Shared;
 
     /// Simplicity tie-break margin.
     double tie_delta = 0.0;
@@ -1009,168 +1031,223 @@ inline ProbeFitResult fit_from_probes(
     };
 
     // --- the candidate stream ---------------------------------------------
-    std::vector<LevelRecord> history;
+    //
+    // One climb of the mode ladder: the policy's rungs in order, each rung
+    // fitted cold from every start in `climb_inits` plus, when `warm` is set,
+    // one candidate seeded from the previous rung's winner; the ladder's own
+    // history, patience and adaptive feedback. Appends to `candidates` and
+    // `level_centers`, records a rung in `modes_of` / `skipped` the first time
+    // any climb meets it, and returns why it stopped. The absolute certificate
+    // sets `stopped`, which ends every climb.
+    //
+    // LadderScope::Shared climbs once with every start: the ladder as it was
+    // before the scope existed, statement for statement, so its fits are
+    // bitwise what they were. LadderScope::PerGuess climbs once per start,
+    // cold, and the winner is the best score over all the climbs.
     std::vector<std::pair<std::string, std::vector<Mode>>> modes_of;
-    StopReason stop_reason = StopReason::Exhausted;
-    double best_score = std::numeric_limits<double>::infinity();
-    int patience_left = config.mode_patience;
-    bool have_warm_start = false;
-    Eigen::VectorXd warm_start;
-    Eigen::VectorXd warm_center = mu0;
     // One center per candidate, parallel to `candidates`: the decode origin is
     // per-candidate now, and the winner's has to survive into the warm start.
     std::vector<Eigen::VectorXd> level_centers;
-    std::vector<Mode> last_fit_modes;
-    bool last_fit_valid = false;
     bool stopped = false;
-    MarginScorer scorer;
-
-    while ( static_cast<int>(history.size()) < kMaxModeProposals )
-    {
-        ModeSearchContext ctx;
-        ctx.dim = dim;
-        ctx.num_probes = static_cast<int>(num_probes);
-        ctx.num_extra = num_extra;
-        ctx.num_params = counting_params;
-        ctx.history = history;
-        ctx.margin_profit = scorer.profit;
-        ctx.residual_norm_squared = scorer.residual_norm_squared;
-
-        std::optional<ModeProposal> proposal = config.mode_policy->propose(ctx);
-        if ( !proposal )
+    // Bases keyed on (rung, center), shared across climbs: the circle rungs
+    // all sit at default_mu, so the per-guess ladders build each rung's basis
+    // there once, as the shared ladder does.
+    std::map<std::string, BasisCache> rung_bases;
+    const auto climb = [&]( const std::vector<ResolvedInit>& climb_inits,
+                            bool warm ) -> StopReason {
+        std::vector<LevelRecord> history;
+        StopReason stop_reason = StopReason::Exhausted;
+        double best_score = std::numeric_limits<double>::infinity();
+        int patience_left = config.mode_patience;
+        bool have_warm_start = false;
+        Eigen::VectorXd warm_start;
+        Eigen::VectorXd warm_center = mu0;
+        std::vector<Mode> last_fit_modes;
+        bool last_fit_valid = false;
+        MarginScorer scorer;
+        while ( static_cast<int>(history.size()) < kMaxModeProposals )
         {
-            break;
-        }
-        for ( const LevelRecord& record : history )
-        {
-            if ( record.label == proposal->label )
+            ModeSearchContext ctx;
+            ctx.dim = dim;
+            ctx.num_probes = static_cast<int>(num_probes);
+            ctx.num_extra = num_extra;
+            ctx.num_params = counting_params;
+            ctx.history = history;
+            ctx.margin_profit = scorer.profit;
+            ctx.residual_norm_squared = scorer.residual_norm_squared;
+
+            std::optional<ModeProposal> proposal = config.mode_policy->propose(ctx);
+            if ( !proposal )
             {
-                throw std::invalid_argument(
-                    "lgpsf::fit_from_probes: the mode policy reused the label '"
-                    + proposal->label + "'");
+                break;
             }
-        }
-        if ( last_fit_valid )
-        {
-            const std::set<Mode> offered(proposal->modes.begin(), proposal->modes.end());
-            for ( const Mode& mode : last_fit_modes )
+            for ( const LevelRecord& record : history )
             {
-                if ( offered.find(mode) == offered.end() )
+                if ( record.label == proposal->label )
                 {
                     throw std::invalid_argument(
-                        "lgpsf::fit_from_probes: the mode policy's proposal '"
-                        + proposal->label + "' does not contain the previously "
-                        "fitted set (nested growth is the contract)");
+                        "lgpsf::fit_from_probes: the mode policy reused the label '"
+                        + proposal->label + "'");
                 }
             }
-        }
-
-        if ( static_cast<int>(num_probes)
-             < 2 * (static_cast<int>(proposal->modes.size()) + num_extra
-                    + counting_params) )
-        {
-            skipped.push_back(proposal->label);
-            history.push_back(
-                LevelRecord{proposal->label, proposal->modes, true, false});
-            continue;
-        }
-        if ( patience_left <= 0 )
-        {
-            stop_reason = StopReason::ModePatience;
-            break;
-        }
-
-        modes_of.emplace_back(proposal->label, proposal->modes);
-        BasisCache level_bases;
-
-        struct LevelInit
-        {
-            std::string label;
-            Eigen::VectorXd theta_hat;
-            Eigen::VectorXd center;
-        };
-        std::vector<LevelInit> level_inits;
-        if ( have_warm_start )
-        {
-            const Eigen::VectorXd& kick =
-                jitter[std::min(history.size(), jitter.size() - 1)];
-            level_inits.push_back(
-                LevelInit{"warm(" + candidates.back().modes_label + ")",
-                          Eigen::VectorXd(warm_start + kick), warm_center});
-        }
-        for ( const ResolvedInit& init : inits )
-        {
-            level_inits.push_back(
-                LevelInit{init.label,
-                          ladder_mode == MuMode::Pinned
-                              ? init.theta_hat
-                              : release_mu(init.theta_hat, dim),
-                          init.center});
-        }
-
-        const std::size_t level_start = candidates.size();
-        for ( const LevelInit& entry : level_inits )
-        {
-            const WhitenedBasis& basis = level_bases.get(
-                entry.center, proposal->modes, ladder_mode, make_basis);
-            candidates.push_back(run_candidate(entry.label, proposal->label,
-                                               proposal->modes, entry.theta_hat,
-                                               ladder_mode, false, basis,
-                                               entry.center));
-            level_centers.push_back(entry.center);
-            if ( hit_target(candidates.back()) )
+            if ( last_fit_valid )
             {
-                stop_reason = StopReason::Target;
-                stopped = true;
+                const std::set<Mode> offered(proposal->modes.begin(), proposal->modes.end());
+                for ( const Mode& mode : last_fit_modes )
+                {
+                    if ( offered.find(mode) == offered.end() )
+                    {
+                        throw std::invalid_argument(
+                            "lgpsf::fit_from_probes: the mode policy's proposal '"
+                            + proposal->label + "' does not contain the previously "
+                            "fitted set (nested growth is the contract)");
+                    }
+                }
+            }
+
+            if ( static_cast<int>(num_probes)
+                 < 2 * (static_cast<int>(proposal->modes.size()) + num_extra
+                        + counting_params) )
+            {
+                if ( std::find(skipped.begin(), skipped.end(), proposal->label)
+                     == skipped.end() )
+                {
+                    skipped.push_back(proposal->label);
+                }
+                history.push_back(
+                    LevelRecord{proposal->label, proposal->modes, true, false});
+                continue;
+            }
+            if ( patience_left <= 0 )
+            {
+                stop_reason = StopReason::ModePatience;
+                break;
+            }
+            if ( std::none_of(modes_of.begin(), modes_of.end(),
+                              [&]( const std::pair<std::string, std::vector<Mode>>& m )
+                              { return m.first == proposal->label; }) )
+            {
+                modes_of.emplace_back(proposal->label, proposal->modes);
+            }
+            BasisCache& level_bases = rung_bases[proposal->label];
+
+            struct LevelInit
+            {
+                std::string label;
+                Eigen::VectorXd theta_hat;
+                Eigen::VectorXd center;
+            };
+            std::vector<LevelInit> level_inits;
+            if ( warm && have_warm_start )
+            {
+                const Eigen::VectorXd& kick =
+                    jitter[std::min(history.size(), jitter.size() - 1)];
+                level_inits.push_back(
+                    LevelInit{"warm(" + candidates.back().modes_label + ")",
+                              Eigen::VectorXd(warm_start + kick), warm_center});
+            }
+            for ( const ResolvedInit& init : climb_inits )
+            {
+                level_inits.push_back(
+                    LevelInit{init.label,
+                              ladder_mode == MuMode::Pinned
+                                  ? init.theta_hat
+                                  : release_mu(init.theta_hat, dim),
+                              init.center});
+            }
+
+            const std::size_t level_start = candidates.size();
+            for ( const LevelInit& entry : level_inits )
+            {
+                const WhitenedBasis& basis = level_bases.get(
+                    entry.center, proposal->modes, ladder_mode, make_basis);
+                candidates.push_back(run_candidate(entry.label, proposal->label,
+                                                   proposal->modes, entry.theta_hat,
+                                                   ladder_mode, false, basis,
+                                                   entry.center));
+                level_centers.push_back(entry.center);
+                if ( hit_target(candidates.back()) )
+                {
+                    stop_reason = StopReason::Target;
+                    stopped = true;
+                    break;
+                }
+            }
+
+            int level_winner = -1;
+            for ( std::size_t i = level_start; i < candidates.size(); ++i )
+            {
+                if ( candidates[i].admissible
+                     && (level_winner < 0
+                         || candidates[i].score
+                                < candidates[static_cast<std::size_t>(level_winner)].score) )
+                {
+                    level_winner = static_cast<int>(i);
+                }
+            }
+            if ( level_winner >= 0
+                 && candidates[static_cast<std::size_t>(level_winner)].score < best_score )
+            {
+                best_score = candidates[static_cast<std::size_t>(level_winner)].score;
+                patience_left = config.mode_patience;
+                warm_center = level_centers[static_cast<std::size_t>(level_winner)];
+                warm_start = to_theta_hat(
+                    candidates[static_cast<std::size_t>(level_winner)].model.theta,
+                    warm_center, ladder_mode);
+                have_warm_start = true;
+            }
+            else
+            {
+                --patience_left;
+            }
+
+            history.push_back(LevelRecord{proposal->label, proposal->modes, false,
+                                          level_winner >= 0});
+            if ( level_winner >= 0 )
+            {
+                const Eigen::VectorXd& winner_center =
+                    level_centers[static_cast<std::size_t>(level_winner)];
+                scorer = make_margin_scorer(
+                    to_theta_hat(
+                        candidates[static_cast<std::size_t>(level_winner)].model.theta,
+                        winner_center, ladder_mode),
+                    proposal->modes, winner_center);
+            }
+            last_fit_modes = proposal->modes;
+            last_fit_valid = true;
+            if ( stopped )
+            {
                 break;
             }
         }
-
-        int level_winner = -1;
-        for ( std::size_t i = level_start; i < candidates.size(); ++i )
+        return stop_reason;
+    };
+    StopReason stop_reason = StopReason::Exhausted;
+    if ( config.ladder == LadderScope::Shared )
+    {
+        stop_reason = climb(inits, true);
+    }
+    else
+    {
+        // Every start climbs alone and cold. The climbs stop independently,
+        // each on its own patience; the certificate stops them all.
+        int on_patience = 0;
+        for ( const ResolvedInit& init : inits )
         {
-            if ( candidates[i].admissible
-                 && (level_winner < 0
-                     || candidates[i].score
-                            < candidates[static_cast<std::size_t>(level_winner)].score) )
+            const StopReason reason = climb({init}, false);
+            if ( reason == StopReason::ModePatience )
             {
-                level_winner = static_cast<int>(i);
+                ++on_patience;
+            }
+            if ( stopped )
+            {
+                break;
             }
         }
-        if ( level_winner >= 0
-             && candidates[static_cast<std::size_t>(level_winner)].score < best_score )
-        {
-            best_score = candidates[static_cast<std::size_t>(level_winner)].score;
-            patience_left = config.mode_patience;
-            warm_center = level_centers[static_cast<std::size_t>(level_winner)];
-            warm_start = to_theta_hat(
-                candidates[static_cast<std::size_t>(level_winner)].model.theta,
-                warm_center, ladder_mode);
-            have_warm_start = true;
-        }
-        else
-        {
-            --patience_left;
-        }
-
-        history.push_back(LevelRecord{proposal->label, proposal->modes, false,
-                                      level_winner >= 0});
-        if ( level_winner >= 0 )
-        {
-            const Eigen::VectorXd& winner_center =
-                level_centers[static_cast<std::size_t>(level_winner)];
-            scorer = make_margin_scorer(
-                to_theta_hat(
-                    candidates[static_cast<std::size_t>(level_winner)].model.theta,
-                    winner_center, ladder_mode),
-                proposal->modes, winner_center);
-        }
-        last_fit_modes = proposal->modes;
-        last_fit_valid = true;
-        if ( stopped )
-        {
-            break;
-        }
+        stop_reason = stopped ? StopReason::Target
+                      : ( on_patience == static_cast<int>(inits.size()) )
+                            ? StopReason::ModePatience
+                            : StopReason::Exhausted;
     }
 
     if ( candidates.empty() )

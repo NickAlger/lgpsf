@@ -450,6 +450,11 @@ struct RowFitProblem
     Eigen::MatrixXd prior_L;  ///< (dim, dim) Cholesky factor of sigma
     Eigen::MatrixXd sigma;    ///< (dim, dim) the RAW covariance -- see above
     Eigen::VectorXd center;   ///< (dim,)
+    /// (dim,) where the a-priori guess (the `sigma0` candidate) is centred, or
+    /// EMPTY for `center` -- the behaviour before `fit_operator`'s `mu_prior`
+    /// existed (2026-10-09). The window, the spike and the circle rungs stay at
+    /// `center` either way; only the one guess moves.
+    Eigen::VectorXd prior_mu;
     bool coarsened = false;   ///< Whether the quadrature is the coarsening
 
     const Eigen::MatrixXd& x_fit() const   ///< (fit_size, dim)
@@ -677,6 +682,10 @@ inline RowFitCandidates fit_row_candidates( const RowFitProblem& problem,
         InitialGuess prior;
         prior.sigma = problem.sigma;
         prior.label = "sigma0";
+        if ( problem.prior_mu.size() == center.size() )
+        {
+            prior.mu = problem.prior_mu;
+        }
         searched = fit_from_probes(
             x_fit, m2_fit, z_fit, problem.y, center, spike_fit,
             problem.fit_config(), {prior}, target_mass);
@@ -960,6 +969,15 @@ struct RowDelegate
 ///                default) is one fused pass over every row, exactly as
 ///                before the hook existed. See `RowDelegate`; the result is
 ///                bitwise identical either way, and only wall time moves.
+/// @param mu_prior (R_all, N) where each row's a-priori guess -- the `sigma0`
+///                candidate seeded from `sigma[rho]` -- is centred. Unset (the
+///                default) is the row's own centre, as before this parameter
+///                existed. The window, the spike and the default circle rungs
+///                stay at the centre; only that one guess moves, so a caller
+///                with a better idea of where the bump sits (the surrogate
+///                mean of an a-priori model, say) can start there without
+///                moving anything else. A centre outside the window only
+///                yields inadmissible candidates; the caller guards that.
 /// @return        `{model, diagnostics}` -- the operator, and per-row
 ///                provenance that nothing in evaluation reads.
 /// @throws std::invalid_argument if the shapes disagree, if
@@ -979,12 +997,17 @@ inline OperatorFit fit_operator(
     const std::vector<char>& gate = {},
     const std::vector<std::optional<ellipsoid_tree::Ellipsoid>>& window_ellipsoids = {},
     const std::vector<int>& row_own_col = {},
-    const RowDelegate* delegate = nullptr )
+    const RowDelegate* delegate = nullptr,
+    const std::optional<Eigen::MatrixXd>& mu_prior = std::nullopt )
 {
     const int dim = static_cast<int>(x_cols.cols());
     const Eigen::Index num_cols = x_cols.rows();
     const Eigen::Index num_rows = m1_diag.size();
     const Eigen::Index num_probes = V.cols();
+    if ( mu_prior && ( mu_prior->rows() != num_rows || mu_prior->cols() != dim ) )
+    {
+        throw std::invalid_argument("lgpsf::fit_operator: mu_prior must be (num_rows, N)");
+    }
 
     if ( m2_diag.size() != num_cols || V.rows() != num_cols )
     {
@@ -1467,6 +1490,10 @@ inline OperatorFit fit_operator(
                     problem.prior_L = prior_L;
                     problem.sigma = covariance;
                     problem.center = center;
+                    if ( mu_prior )
+                    {
+                        problem.prior_mu = mu_prior->row(rho).transpose();
+                    }
                     problem.coarsened = coarsened;
 
                     if ( slot >= 0 )
