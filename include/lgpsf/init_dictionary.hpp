@@ -501,6 +501,42 @@ inline std::vector<InitialGuess> circle_ladder(
     return out;
 }
 
+/// The table's circle rungs (`LadderScope::Table`, 2026-10-09): isotropic
+/// guesses at the local point spacing h, at sigma and at 3 sigma, where sigma
+/// is the a-priori ellipsoid's largest 1-sigma semi-axis -- the scale the
+/// window is built from. Mesh scale, prior scale, and the largest frame that
+/// still has room inside a 4-sigma window. `circle_ladder`'s top rung, the
+/// batch radius itself, is deliberately not among them: it starts ON the
+/// containment bound and can only shrink. In order h, sigma, 3 sigma; the
+/// circles are the backup for an a-priori fit that goes wrong, so the prior's
+/// own shape stays out of them.
+///
+/// @param x           (K, N) batch points, at least two.
+/// @param default_mu  (N,) centre for every rung.
+/// @param sigma_max   The a-priori ellipsoid's largest 1-sigma semi-axis, > 0.
+inline std::vector<InitialGuess> table_rungs(
+    const Eigen::Ref<const Eigen::MatrixXd>& x,
+    const Eigen::Ref<const Eigen::VectorXd>& default_mu, double sigma_max )
+{
+    if ( !(sigma_max > 0.0) || !std::isfinite(sigma_max) )
+    {
+        throw std::invalid_argument(
+            "lgpsf::table_rungs: sigma_max must be finite and positive, got "
+            + std::to_string(sigma_max));
+    }
+    const double h = local_spacing(x, default_mu);
+    const Eigen::Index dim = default_mu.size();
+    std::vector<InitialGuess> out;
+    for ( double r : {h, sigma_max, 3.0 * sigma_max} )
+    {
+        InitialGuess guess;
+        guess.sigma = r * r * Eigen::MatrixXd::Identity(dim, dim);
+        guess.label = detail::rung_label("circle", r);
+        out.push_back(std::move(guess));
+    }
+    return out;
+}
+
 /// Scaled copies of the batch's own empirical shape, at the same scales.
 ///
 /// Worth reaching for when the batch's extent is informative about the target

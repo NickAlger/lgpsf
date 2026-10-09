@@ -646,7 +646,14 @@ PYBIND11_MODULE(lgpsf, m)
                "best score across guesses. The default.")
         .value("PerGuess", LadderScope::PerGuess,
                "Every guess climbs its own ladder, cold, with its own patience; "
-               "no warm candidate; the best score over all wins.");
+               "no warm candidate; the best score over all wins.")
+        .value("Table", LadderScope::Table,
+               "The table (2026-10-09): every admissible guess climbs its own "
+               "cold ladder AND contributes a fixed-frame entry (the linear "
+               "stage at its own frame) at every level; best admissible entry "
+               "wins, ties to fewer fitted parameters; no certificate, no "
+               "release, no clamp; the floor in the quadrature's spacing at "
+               "each guess's centre; mu must be Pinned.");
 
     py::enum_<StopReason>(m, "StopReason")
         .value("Target", StopReason::Target)
@@ -714,6 +721,16 @@ PYBIND11_MODULE(lgpsf, m)
           "x"_a, "default_mu"_a, "num_rungs"_a,
           "Isotropic guesses at log-spaced scales -- the library's default "
           "dictionary. x is (N, K).");
+
+    m.def("table_rungs",
+          []( const PointsIn& x, const Eigen::VectorXd& default_mu,
+              double sigma_max ) {
+              return table_rungs(Eigen::MatrixXd(map_points(x, "x")),
+                                 default_mu, sigma_max);
+          },
+          "x"_a, "default_mu"_a, "sigma_max"_a,
+          "The table's circle rungs (LadderScope.Table): radii h (the local "
+          "spacing), sigma_max and 3 sigma_max at default_mu. x is (N, K).");
 
     m.def("window_shape_ladder",
           []( const PointsIn& x, const Eigen::VectorXd& m2_diag,
@@ -932,6 +949,9 @@ PYBIND11_MODULE(lgpsf, m)
         .def_readonly("admissible", &CandidateFit::admissible)
         .def_readonly("clamped", &CandidateFit::clamped,
                       "True for the clamped fallback candidate (frame_ceiling).")
+        .def_readonly("fixed", &CandidateFit::fixed,
+                      "True for a fixed-frame entry of the table (LadderScope."
+                      "Table): the guess's own frame, linear stage only.")
         .def_property_readonly("num_modes", &CandidateFit::num_modes);
 
     py::class_<ProbeFitResult>(m, "ProbeFitResult",
@@ -948,7 +968,14 @@ PYBIND11_MODULE(lgpsf, m)
         .def_readonly("candidates_tried", &ProbeFitResult::candidates_tried,
                       "len(candidates), for convenience.")
         .def_readonly("candidates", &ProbeFitResult::candidates)
-        .def_readonly("skipped", &ProbeFitResult::skipped);
+        .def_readonly("skipped", &ProbeFitResult::skipped)
+        .def_readonly("winner_fixed", &ProbeFitResult::winner_fixed,
+                      "Table only: the winner is a fixed-frame entry.")
+        .def_readonly("fixed_score", &ProbeFitResult::fixed_score,
+                      "Table only: the best admissible fixed-frame score; inf if none.")
+        .def_readonly("guesses_skipped", &ProbeFitResult::guesses_skipped,
+                      "Table only: labels of the guesses not climbed (own frame "
+                      "inadmissible at their centre).");
 
     m.def("linear_cv_score",
           []( const PointsIn& z_hat, const Eigen::VectorXd& y_hat,
@@ -1123,6 +1150,9 @@ PYBIND11_MODULE(lgpsf, m)
         .def_readonly("candidates", &FitDiagnostics::candidates,
                       "(R,) int: candidates each row's search tried; 0 "
                       "where it did not run.")
+        .def_readonly("guesses_skipped", &FitDiagnostics::guesses_skipped,
+                      "(R,) int: LadderScope.Table only -- initial guesses "
+                      "not climbed (own frame inadmissible at their centre).")
         .def_readonly("work", &FitDiagnostics::work,
                       "(R,) float: fit_points * evaluations * modes (the "
                       "largest mode set tried) -- a dimensionless proxy for "

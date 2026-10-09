@@ -186,6 +186,11 @@ struct PassSpec
     /// redistribution on, the centre has to travel in the package.
     bool per_guess = false;
     bool prior_shift = false;
+    /// The table (`LadderScope::Table`, 2026-10-09): every guess's fixed and
+    /// fitted columns, the floor at each guess's centre, no re-score; the
+    /// table's verdict (`winner_fixed`, `fixed_score`, `guesses_skipped`) has
+    /// to cross the wire with the searched result.
+    bool table = false;
 };
 
 } // namespace
@@ -308,6 +313,12 @@ int main( int argc, char** argv )
             cfg.row.ladder = lgpsf::LadderScope::PerGuess;
             cfg.row.frame_floor = 0.1;
             cfg.row.reject_inadmissible = true;   // the stop reason crosses the wire
+        }
+        if ( spec.table )
+        {
+            cfg.row.ladder = lgpsf::LadderScope::Table;
+            cfg.row.frame_floor = 0.3;
+            cfg.row.frame_ceiling = 0.0;
         }
         std::optional<Eigen::MatrixXd> mu_prior_all;
         if ( spec.prior_shift )
@@ -846,7 +857,7 @@ int main( int argc, char** argv )
     long failures = 0;
     // Reserved, not grown: `PassSpec::label` is a plain pointer into these.
     std::vector<std::string> labels;
-    labels.reserve(16);
+    labels.reserve(32);
     for ( int coarse = 0; coarse < ( coarsen_pass ? 2 : 1 ); ++coarse )
     {
         const bool c = ( coarse == 1 );
@@ -861,6 +872,7 @@ int main( int argc, char** argv )
         labels.push_back("failures" + suffix);
         labels.push_back("empty-rank" + suffix);
         labels.push_back("prior-perguess" + suffix);
+        labels.push_back("table" + suffix);
 
         {
             PassSpec spec;
@@ -959,6 +971,23 @@ int main( int argc, char** argv )
             spec.label = labels[first + 7].c_str();
             spec.coarsen = c;
             spec.per_guess = true;
+            spec.prior_shift = true;
+            if ( size > 1 )
+            {
+                spec.balance = true;
+                spec.perverse = true;
+                spec.bytes_cap = static_cast<std::size_t>(-1);
+                spec.expect_migration = true;
+            }
+            failures += run_pass(spec);
+        }
+        {
+            // The table, with the a-priori centre shifted, under the perverse
+            // assignment: the verdict crosses in every answer.
+            PassSpec spec;
+            spec.label = labels[first + 8].c_str();
+            spec.coarsen = c;
+            spec.table = true;
             spec.prior_shift = true;
             if ( size > 1 )
             {

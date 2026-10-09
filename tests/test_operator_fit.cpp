@@ -1879,3 +1879,78 @@ TEST_CASE("reject_inadmissible ships the baseline where the search has nothing a
     // the same evaluations were spent either way: the policy decides what ships, not what runs
     CHECK(rejected.diagnostics.evaluations == old_path.diagnostics.evaluations);
 }
+
+TEST_CASE("the table ships its best entry and reports the fixed column as the baseline")
+{
+    // LadderScope::Table at the operator level: no separate baseline, no
+    // full-window re-score, no guard. Every fitted row ships the best
+    // admissible entry of its table; a fixed-frame winner is reported as the
+    // baseline shipping (status FallbackBaseline, score == baseline_score),
+    // a fitted one as a fit; and the whole thing is transparent to the row
+    // delegate, the table's verdict travelling with the searched result.
+    std::mt19937 gen(45);
+    const Synthetic op = make_operator(gen, 21, 30, 6);
+    OperatorFitConfig config = config_for(op);
+    config.row.ladder = lgpsf::LadderScope::Table;
+    config.row.frame_floor = 0.3;
+    config.row.frame_ceiling = 0.0;
+    const OperatorFit fit = run(op, config);
+    int fixed_won = 0, fitted_won = 0;
+    for ( std::size_t r = 0; r < op.gate.size(); ++r )
+    {
+        const Eigen::Index rho = static_cast<Eigen::Index>(r);
+        if ( !op.gate[r] )
+        {
+            CHECK(fit.diagnostics.guesses_skipped(rho) == 0);
+            continue;
+        }
+        const lgpsf::RowStatus status = fit.diagnostics.status[r];
+        REQUIRE(( status == lgpsf::RowStatus::Fit
+                  || status == lgpsf::RowStatus::FallbackBaseline ));
+        CHECK(std::isfinite(fit.diagnostics.score(rho)));
+        CHECK(std::isfinite(fit.diagnostics.baseline_score(rho)));
+        CHECK(fit.diagnostics.score(rho) <= fit.diagnostics.baseline_score(rho));
+        CHECK(fit.diagnostics.stop_reason[r] != lgpsf::RowStop::NoAdmissible);
+        CHECK(fit.diagnostics.stop_reason[r] != lgpsf::RowStop::SearchInfeasible);
+        // Every guess sits at the node; the one that can fail its own rules
+        // here is the 3-sigma circle, where tau_window 10 leaves the window
+        // clipped by the domain so the batch radius is under 3 sigma_max.
+        CHECK(fit.diagnostics.guesses_skipped(rho) <= 1);
+        CHECK(fit.diagnostics.evaluations(rho) > 0);
+        if ( status == lgpsf::RowStatus::FallbackBaseline )
+        {
+            ++fixed_won;
+            CHECK(fit.diagnostics.score(rho) == fit.diagnostics.baseline_score(rho));
+        }
+        else
+        {
+            ++fitted_won;
+        }
+    }
+    CHECK(fixed_won + fitted_won == op.fitted_rows);
+    // transparent to the delegate: the verdict rides with the searched result
+    Recorder recorder;
+    recorder.hosts.assign(op.gate.size(), 0);
+    const OperatorFit elsewhere = run_with(op, config, recorder.make());
+    CHECK(recorder.solve_calls == 1);
+    check_same_fit(fit, elsewhere);
+    REQUIRE(elsewhere.diagnostics.guesses_skipped.size() == fit.diagnostics.guesses_skipped.size());
+    CHECK(elsewhere.diagnostics.guesses_skipped == fit.diagnostics.guesses_skipped);
+    // the table pins every centre, and says so before fitting anything
+    OperatorFitConfig released = config;
+    released.row.mu = lgpsf::MuPolicy::Free;
+    CHECK_THROWS_AS(run(op, released), std::invalid_argument);
+    // a coarsened table: the same contract on the cells, no re-score
+    OperatorFitConfig coarse = config;
+    coarse.coarsen_above = 50;
+    coarse.coarsen_eps = 0.3;
+    const OperatorFit on_cells = run(op, coarse);
+    for ( std::size_t r = 0; r < op.gate.size(); ++r )
+    {
+        const Eigen::Index rho = static_cast<Eigen::Index>(r);
+        if ( !op.gate[r] ) continue;
+        CHECK(( on_cells.diagnostics.status[r] == lgpsf::RowStatus::Fit
+                || on_cells.diagnostics.status[r] == lgpsf::RowStatus::FallbackBaseline ));
+        CHECK(on_cells.diagnostics.score(rho) <= on_cells.diagnostics.baseline_score(rho));
+    }
+}

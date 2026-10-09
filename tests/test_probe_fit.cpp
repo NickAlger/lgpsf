@@ -1261,3 +1261,263 @@ TEST_CASE("the certificate stops every per-guess climb")
         CHECK(candidate.label == "sigma0");   // no circle rung ever ran
     }
 }
+
+// ---------------------------------------------------------------------------
+// THE TABLE (LadderScope::Table, 2026-10-09)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("the table is every admissible guess's fixed and fitted columns")
+{
+    // {guesses} x {levels} x {fixed, fitted}: at every level the fixed column
+    // passes k >= 2 (m + 1), one linear solve at the guess's own frame and no
+    // nonlinear evaluations; the fitted column passes k >= 2 (m + 1 + P) and,
+    // with patience off, is exactly the per-guess ladder's candidates, bit
+    // for bit. The best admissible entry wins, and the fixed-column verdict
+    // is reported beside the winner.
+    std::mt19937 gen(17);
+    const Target target = make_target(gen, 2, 60);
+    ProbeFitConfig config =
+        basic_config(std::make_shared<ShellLadder>(std::vector<int>{0, 1, 2, 3}));
+    config.num_rungs = 1;   // the guess and one circle: two starts
+    config.ladder = lgpsf::LadderScope::Table;
+    config.mode_patience = 100;   // no patience: the whole table
+    config.frame_floor = 0.1;
+    const lgpsf::EllipsoidFrame truth =
+        lgpsf::unpack_theta_hat(target.theta_hat_true, target.mu0, MuMode::Pinned);
+    lgpsf::InitialGuess prior;
+    prior.sigma = truth.L * truth.L.transpose();
+    prior.label = "sigma0";
+    const ProbeFitResult table =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, config, {prior}, target.mass);
+    REQUIRE(table.guesses_skipped.empty());
+    const int k = 60;
+    const int P = theta_hat_size(2, MuMode::Pinned);
+    std::set<std::pair<std::string, std::string>> fixed_cells, fitted_cells;
+    std::set<std::string> guess_labels;
+    double best = std::numeric_limits<double>::infinity();
+    double best_fixed = std::numeric_limits<double>::infinity();
+    for ( const CandidateFit& c : table.candidates )
+    {
+        CHECK(c.label.rfind("warm(", 0) != 0);
+        const int m = static_cast<int>(c.num_modes());
+        if ( c.fixed )
+        {
+            REQUIRE(c.label.rfind("fixed(", 0) == 0);
+            const std::string guess = c.label.substr(6, c.label.size() - 7);
+            CHECK(c.evaluations == 0);
+            CHECK(c.admissible);
+            CHECK(k >= 2 * (m + 1));
+            CHECK(fixed_cells.insert({guess, c.modes_label}).second);   // one per cell
+            guess_labels.insert(guess);
+            if ( c.admissible ) best_fixed = std::min(best_fixed, c.score);
+        }
+        else
+        {
+            CHECK(k >= 2 * (m + 1 + P));
+            CHECK(fitted_cells.insert({c.label, c.modes_label}).second);
+            guess_labels.insert(c.label);
+        }
+        if ( c.admissible ) best = std::min(best, c.score);
+    }
+    CHECK(guess_labels.size() == 2);
+    // every fitted cell has its fixed twin, and the fixed column reaches at least as far
+    for ( const auto& cell : fitted_cells )
+    {
+        CHECK(fixed_cells.count(cell) == 1);
+    }
+    CHECK(fixed_cells.size() >= fitted_cells.size());
+    CHECK(fitted_cells.size() >= 2);
+    // the verdict
+    CHECK(table.score == best);
+    CHECK(table.fixed_score == best_fixed);
+    CHECK(table.winner_fixed == table.candidates[static_cast<std::size_t>(table.winner)].fixed);
+    CHECK(table.admissible);
+    CHECK(table.stop_reason == StopReason::Exhausted);
+    CHECK(table.score <= table.fixed_score);
+    // the fitted column IS the per-guess ladder, bit for bit
+    ProbeFitConfig per_guess = config;
+    per_guess.ladder = lgpsf::LadderScope::PerGuess;
+    const ProbeFitResult ladders =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, per_guess, {prior}, target.mass);
+    std::vector<const CandidateFit*> fitted;
+    for ( const CandidateFit& c : table.candidates )
+    {
+        if ( !c.fixed ) fitted.push_back(&c);
+    }
+    REQUIRE(fitted.size() == ladders.candidates.size());
+    for ( std::size_t i = 0; i < fitted.size(); ++i )
+    {
+        CHECK(fitted[i]->label == ladders.candidates[i].label);
+        CHECK(fitted[i]->modes_label == ladders.candidates[i].modes_label);
+        CHECK(fitted[i]->score == ladders.candidates[i].score);
+        CHECK(fitted[i]->evaluations == ladders.candidates[i].evaluations);
+        CHECK(fitted[i]->model.theta == ladders.candidates[i].model.theta);
+        CHECK(fitted[i]->admissible == ladders.candidates[i].admissible);
+    }
+    CHECK(table.evaluations_total == ladders.evaluations_total);
+    CHECK(table.score <= ladders.score);   // the table has more to choose from
+}
+
+TEST_CASE("the table's fixed column reaches levels the fitted column cannot")
+{
+    // Few probes: at k = 2 (m_2 + 1) the top level passes the fixed column's
+    // counting rule exactly and fails the fitted one's by the frame
+    // parameters. The table has that level's fixed entries and no fitted one.
+    std::mt19937 gen(23);
+    const int m2 = static_cast<int>(modes_up_to_level(2, 2).size());
+    const int k = 2 * (m2 + 1);
+    const Target target = make_target(gen, 2, k);
+    ProbeFitConfig config =
+        basic_config(std::make_shared<ShellLadder>(std::vector<int>{0, 1, 2}));
+    config.ladder = lgpsf::LadderScope::Table;
+    config.mode_patience = 100;
+    const ProbeFitResult table =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, config, {}, target.mass);
+    int fixed_top = 0, fitted_top = 0;
+    for ( const CandidateFit& c : table.candidates )
+    {
+        if ( static_cast<int>(c.num_modes()) != m2 ) continue;
+        if ( c.fixed ) ++fixed_top; else ++fitted_top;
+    }
+    CHECK(fixed_top == 3);     // one per circle rung
+    CHECK(fitted_top == 0);
+    CHECK(std::find(table.skipped.begin(), table.skipped.end(), "level<=2") == table.skipped.end());
+    CHECK(table.admissible);
+}
+
+TEST_CASE("the table ignores the certificate")
+{
+    // The same target and certificate that end every per-guess climb at the
+    // first guess: the table runs the circle rungs regardless, because no
+    // entry may end another's ladder.
+    std::mt19937 gen(17);
+    const Target target = make_target(gen, 2, 60);
+    ProbeFitConfig config =
+        basic_config(std::make_shared<ShellLadder>(std::vector<int>{0, 1, 2}));
+    config.ladder = lgpsf::LadderScope::Table;
+    config.target_score = 1e-3;
+    const lgpsf::EllipsoidFrame truth =
+        lgpsf::unpack_theta_hat(target.theta_hat_true, target.mu0, MuMode::Pinned);
+    lgpsf::InitialGuess prior;
+    prior.sigma = truth.L * truth.L.transpose();
+    prior.label = "sigma0";
+    const ProbeFitResult table =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, config, {prior}, target.mass);
+    CHECK(table.stop_reason != StopReason::Target);
+    bool any_circle = false;
+    for ( const CandidateFit& c : table.candidates )
+    {
+        any_circle = any_circle || c.label.find("circle") != std::string::npos;
+    }
+    CHECK(any_circle);
+    // and the per-guess ladder on the same inputs does stop there
+    ProbeFitConfig per_guess = config;
+    per_guess.ladder = lgpsf::LadderScope::PerGuess;
+    const ProbeFitResult ladders =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, per_guess, {prior}, target.mass);
+    CHECK(ladders.stop_reason == StopReason::Target);
+}
+
+TEST_CASE("the table takes the floor at each guess's own centre and skips an inadmissible guess")
+{
+    // A batch that is twice as coarse on its right half. The same circle,
+    // one spacing wide at the node, is admissible at the node (floor 0.7
+    // spacings there) and inadmissible where the spacing is doubled (the
+    // floor is 1.4 spacings of the node there): that guess is not climbed and
+    // is named. At a floor both pass, both are climbed.
+    std::mt19937 gen(29);
+    const Target full = make_target(gen, 2, 60);
+    const int per_side = 15;
+    const double h = 2.0 / (per_side - 1);
+    std::vector<int> keep;
+    int spike = -1;
+    int at_b = -1;
+    for ( int i = 0; i < per_side; ++i )
+    {
+        for ( int j = 0; j < per_side; ++j )
+        {
+            const int index = i * per_side + j;
+            const bool right = full.x(index, 0) > 0.3;
+            if ( right && ( i % 2 != 0 || j % 2 != 0 ) ) continue;
+            if ( index == full.spike_index ) spike = static_cast<int>(keep.size());
+            if ( i == 12 && j == 8 ) at_b = static_cast<int>(keep.size());
+            keep.push_back(index);
+        }
+    }
+    REQUIRE(spike >= 0);
+    REQUIRE(at_b >= 0);
+    const Eigen::Index n = static_cast<Eigen::Index>(keep.size());
+    Eigen::MatrixXd x(n, 2);
+    Eigen::VectorXd m2(n);
+    Eigen::MatrixXd z(n, full.z.cols());
+    for ( Eigen::Index r = 0; r < n; ++r )
+    {
+        x.row(r) = full.x.row(keep[static_cast<std::size_t>(r)]);
+        m2(r) = full.m2_diag(keep[static_cast<std::size_t>(r)]);
+        z.row(r) = full.z.row(keep[static_cast<std::size_t>(r)]);
+    }
+    const Eigen::VectorXd b = x.row(at_b).transpose();
+    CHECK(lgpsf::local_spacing(x, full.mu0) == doctest::Approx(h));
+    CHECK(lgpsf::local_spacing(x, b) == doctest::Approx(2.0 * h));
+
+    lgpsf::InitialGuess at_node, at_coarse;
+    at_node.sigma = h * h * Eigen::MatrixXd::Identity(2, 2);
+    at_node.label = "gA";
+    at_coarse.sigma = at_node.sigma;
+    at_coarse.mu = b;
+    at_coarse.label = "gB";
+    ProbeFitConfig config =
+        basic_config(std::make_shared<ShellLadder>(std::vector<int>{0, 1}));
+    config.ladder = lgpsf::LadderScope::Table;
+    config.num_rungs = 0;
+    config.frame_floor = 0.7;
+    const ProbeFitResult strict =
+        fit_from_probes(x, m2, z, full.y, full.mu0, spike, config,
+                        {at_node, at_coarse}, full.mass);
+    REQUIRE(strict.guesses_skipped.size() == 1);
+    CHECK(strict.guesses_skipped[0] == "gB");
+    for ( const CandidateFit& c : strict.candidates )
+    {
+        CHECK(( c.label == "gA" || c.label == "fixed(gA)" ));
+    }
+    config.frame_floor = 0.3;
+    const ProbeFitResult loose =
+        fit_from_probes(x, m2, z, full.y, full.mu0, spike, config,
+                        {at_node, at_coarse}, full.mass);
+    CHECK(loose.guesses_skipped.empty());
+    bool any_b = false;
+    for ( const CandidateFit& c : loose.candidates )
+    {
+        any_b = any_b || c.label == "gB" || c.label == "fixed(gB)";
+    }
+    CHECK(any_b);
+    // and a floor nothing meets leaves nothing to climb: refused, not shipped
+    config.frame_floor = 1e9;
+    CHECK_THROWS_AS(fit_from_probes(x, m2, z, full.y, full.mu0, spike, config,
+                                    {at_node, at_coarse}, full.mass),
+                    std::invalid_argument);
+}
+
+TEST_CASE("the table pins every centre")
+{
+    std::mt19937 gen(17);
+    const Target target = make_target(gen, 2, 60);
+    ProbeFitConfig config =
+        basic_config(std::make_shared<ShellLadder>(std::vector<int>{0, 1}));
+    config.ladder = lgpsf::LadderScope::Table;
+    config.mu = MuPolicy::Free;
+    CHECK_THROWS_AS(fit_from_probes(target.x, target.m2_diag, target.z, target.y,
+                                    target.mu0, target.spike_index, config, {},
+                                    target.mass),
+                    std::invalid_argument);
+    config.mu = MuPolicy::PinnedThenRelease;
+    CHECK_THROWS_AS(fit_from_probes(target.x, target.m2_diag, target.z, target.y,
+                                    target.mu0, target.spike_index, config, {},
+                                    target.mass),
+                    std::invalid_argument);
+}

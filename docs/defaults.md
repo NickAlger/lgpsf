@@ -23,8 +23,9 @@ the problem was.
 |---|---|---|
 | `mu` | `MuPolicy.Pinned` | The center stays where you put it. |
 | `num_rungs` | `3` | How many default circle rungs to append after your own guesses, at log-spaced scales from the local mesh spacing to the batch radius. **`0` means "only my guesses"**, and is an error if you passed none. |
-| `target_score` | `0.05` | Stop early once a candidate is certifiably good. `None` sweeps the whole ladder. |
-| `mode_patience` | `2` | Stop growing modes after this many rungs without improvement. |
+| `target_score` | `0.05` | Stop early once a candidate is certifiably good. `None` sweeps the whole ladder. Ignored under `LadderScope.Table`. *Under consideration (2026-10-09): off by default — an absolute threshold on a relative score is a magic number, and it lets one guess's climb end another's.* |
+| `mode_patience` | `2` | Stop growing modes after this many rungs without improvement. Under `LadderScope.Table` it watches the fitted column only. |
+| `ladder` | `LadderScope.Shared` | How the guesses climb. `Shared`: one ladder, every guess refit at every rung plus a warm candidate, one patience. `PerGuess`: every guess climbs its own cold ladder. `Table` (2026-10-09): every *admissible* guess climbs its own cold ladder AND contributes a fixed-frame entry (the linear stage at its own frame — that guess's baseline) at every level; the best admissible entry of {guesses} × {levels} × {fixed, fitted} wins, ties to fewer fitted parameters; no certificate, no release stage, no clamp, the frame floor taken in the spacing of the batch at each guess's own centre, `mu` must be `Pinned`; the counting rule counts what each entry fits (`k ≥ 2(m + n_extra)` fixed, `+ N(N+1)/2` fitted). `fit_operator` then has no separate baseline and no full-window re-score (see below). |
 | `cv_folds` | `5` | Held-out folds for the selection score. |
 | `resolution_eps` | `0.0` | Off. When positive, a *released* candidate is admissible only if `min axis ≥ eps · ‖mu − default_mu‖ · max(1, (p+ℓ)_max)`: a narrow kernel displaced far from the node sits on coarse cells that cannot resolve it. `fit_operator` sets it to `coarsen_eps` on the rows it coarsens. |
 | `frame_floor` | `0.1` | A candidate whose smallest semi-axis is below `frame_floor ·` the local point spacing is inadmissible: a guard against a frame collapsed onto one point (its mode is then the spike's column and the coefficients a cancelling pair), not a resolution requirement. `0` turns it off (the behaviour before 2026-10-04). |
@@ -203,3 +204,16 @@ pinned, no search — and scored on the same folds. The searched fit ships only
 if it is strictly better. **A fit is therefore never worse than the prior you
 supplied**, and a row reporting `FallbackBaseline` is telling you the search
 found nothing the prior did not already have.
+
+**Under `LadderScope.Table` the baseline is a column of the table, not a
+guard.** Every guess carries its own fixed-frame entries (the a-priori guess's
+are the baseline above, at the a-priori centre), the guesses are the a-priori
+ellipsoid and circles of radius h, σ_max and 3 σ_max at the node
+(`table_rungs`), every entry is scored by the same cross-validation on the same
+quadrature, and the best admissible one ships as it is — no full-window
+re-score on a coarsened row, because the quadrature the fit saw is all there is
+to the fit (the honest end-to-end check is the held-out response of the
+assembled operator). `FallbackBaseline` then means a fixed-frame entry won,
+`Fit` that a fitted one did, and `baseline_score` is the best admissible fixed
+entry's score. A guess whose own frame fails the admissibility rules at its
+centre is not climbed (`FitDiagnostics.guesses_skipped`).

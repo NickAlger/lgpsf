@@ -155,6 +155,10 @@
 namespace lgpsf {
 
 /// What happened to a row.
+/// Under `LadderScope::Table` there is no separate baseline: `Fit` means a
+/// FITTED-frame entry of the row's table shipped, `FallbackBaseline` that a
+/// FIXED-frame entry did (a guess's own frame, linear stage only), and
+/// `FitDiagnostics::baseline_score` is the best admissible fixed entry's score.
 enum class RowStatus
 {
     Fit,               ///< The searched fit beat the baseline and shipped.
@@ -179,7 +183,10 @@ enum class RowStop
     /// The search found no admissible candidate and
     /// `ProbeFitConfig::reject_inadmissible` is set: it offered nothing, and
     /// the baseline shipped (`status` is FallbackBaseline). The search's
-    /// evaluations and candidates are still counted.
+    /// evaluations and candidates are still counted. Under
+    /// `LadderScope::Table`: nothing in the row's table was admissible and
+    /// its best inadmissible entry shipped, flagged (there is no baseline
+    /// outside the table).
     NoAdmissible
 };
 
@@ -309,6 +316,12 @@ struct FitDiagnostics
     Eigen::VectorXi evaluations;
     /// (R_all,) candidates the row's search tried; 0 where it did not run.
     Eigen::VectorXi candidates;
+    /// (R_all,) `LadderScope::Table` only: how many of the row's initial
+    /// guesses were NOT climbed because their own frame failed the
+    /// admissibility rules at their centre (the a-priori guess too far from
+    /// the node for its size, or too narrow for the cells it sits on). 0
+    /// under the other scopes and where the search did not run.
+    Eigen::VectorXi guesses_skipped;
     /// (R_all,) a dimensionless proxy for the row's fit cost:
     ///
     ///     work = fit_points * evaluations * modes,
@@ -400,6 +413,7 @@ struct RowOutcome
     int evaluations = 0;
     int candidates = 0;
     int max_modes = 0;      ///< largest mode set the search tried
+    int guesses_skipped = 0; ///< Table: guesses not climbed (own frame inadmissible)
     double row_seconds = 0.0;
     double coarsen_seconds = 0.0;
     double search_seconds = 0.0;
@@ -622,6 +636,50 @@ inline RowFitCandidates fit_row_candidates( const RowFitProblem& problem,
 
     RowFitCandidates out;
 
+    if ( row_config.ladder == LadderScope::Table )
+    {
+        // THE TABLE: no separate baseline. Every guess carries its own
+        // fixed-frame column inside `fit_from_probes` (probe_fit.hpp), so
+        // this phase is one call. The guesses: the a-priori ellipsoid at its
+        // centre (`prior_mu`, or the node), then circles of radius h, sigma
+        // and 3 sigma at the node, sigma the a-priori ellipsoid's largest
+        // 1-sigma semi-axis (`table_rungs`); the row config's `num_rungs` is
+        // 0 (fit_operator), so these four are the whole dictionary. The
+        // `baseline_*` members are unused -- `baseline_index` is 0 only as
+        // the "solved" marker -- and `baseline_score` reports the best
+        // admissible fixed-frame entry, the table's own baseline column.
+        InitialGuess prior;
+        prior.sigma = problem.sigma;
+        prior.label = "sigma0";
+        if ( problem.prior_mu.size() == center.size() )
+        {
+            prior.mu = problem.prior_mu;
+        }
+        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(problem.sigma);
+        const double sigma_max =
+            std::sqrt(std::max(eig.eigenvalues().maxCoeff(), 0.0));
+        std::vector<InitialGuess> guesses{prior};
+        for ( InitialGuess& rung : table_rungs(x_fit, center, sigma_max) )
+        {
+            guesses.push_back(std::move(rung));
+        }
+        ProbeFitResult table = fit_from_probes(
+            x_fit, m2_fit, z_fit, problem.y, center, spike_fit,
+            problem.fit_config(), guesses, target_mass);
+        out.evaluations = table.evaluations_total;
+        out.candidates = table.candidates_tried;
+        for ( const CandidateFit& candidate : table.candidates )
+        {
+            out.max_modes = std::max(
+                out.max_modes, static_cast<int>(candidate.num_modes()));
+        }
+        out.y_hat = whiten_data(problem.y, target_mass);
+        out.baseline_score = table.fixed_score;
+        out.searched = std::move(table);
+        out.baseline_index = 0;
+        return out;
+    }
+
     // --- baseline: a linear fit at sigma[rho], pinned -----------------------
     const Eigen::MatrixXd z_hat = whiten_probes(z_fit, m2_fit);
     Eigen::VectorXd y_hat = whiten_data(problem.y, target_mass);
@@ -737,6 +795,51 @@ inline void select_row_fit(
     int spike_position,
     RowOutcome& outcome )
 {
+    if ( context.row_config.ladder == LadderScope::Table )
+    {
+        // THE TABLE ships its best entry as it is: every entry, fixed or
+        // fitted, was scored by the same cross-validation on the same
+        // quadrature, and the quadrature the fit saw is all there is to the
+        // fit -- no full-window re-score, no guard. (The honest end-to-end
+        // check is the held-out response of the ASSEMBLED operator, which
+        // the caller measures.) A fixed-frame winner is reported as the
+        // baseline shipping, a fitted one as a fit; a flagged winner
+        // (nothing admissible) ships with RowStop::NoAdmissible.
+        if ( !finalists.searched )
+        {
+            throw std::logic_error(
+                "lgpsf::select_row_fit: a table row without its table");
+        }
+        const ProbeFitResult& table = *finalists.searched;
+        const EllipsoidFrame shipped = table.model.frame();
+        outcome.status = table.winner_fixed ? RowStatus::FallbackBaseline
+                                            : RowStatus::Fit;
+        outcome.theta = table.model.theta;
+        outcome.mu = shipped.mu;
+        outcome.L = shipped.L;
+        outcome.c = table.model.c;
+        outcome.modes = table.model.modes;
+        outcome.s = table.model.s.size() ? table.model.s(0) : 0.0;
+        outcome.score = table.score;
+        outcome.baseline_score = table.fixed_score;
+        outcome.released = false;
+        outcome.guesses_skipped = static_cast<int>(table.guesses_skipped.size());
+        switch ( table.stop_reason )
+        {
+            case StopReason::Target:
+                outcome.stop = RowStop::Target; break;
+            case StopReason::ModePatience:
+                outcome.stop = RowStop::ModePatience; break;
+            case StopReason::Exhausted:
+                outcome.stop = RowStop::Exhausted; break;
+            case StopReason::Clamped:
+                outcome.stop = RowStop::Clamped; break;
+            case StopReason::NoAdmissible:
+                outcome.stop = RowStop::NoAdmissible; break;
+        }
+        return;
+    }
+
     const std::vector<std::vector<Mode>>& baseline_sets = context.baseline_sets;
     const ProbeFitConfig& row_config = context.row_config;
     const Eigen::Index window_size = x_window.rows();
@@ -878,6 +981,7 @@ inline void fail_row( RowOutcome& outcome, std::string message )
     outcome.evaluations = 0;
     outcome.candidates = 0;
     outcome.max_modes = 0;
+    outcome.guesses_skipped = 0;
     outcome.coarsen_seconds = 0.0;
     outcome.search_seconds = 0.0;
     outcome.rescore_seconds = 0.0;
@@ -1058,6 +1162,12 @@ inline OperatorFit fit_operator(
             "lgpsf::fit_operator: coarsen_eps must be finite and positive, got "
             + std::to_string(config.coarsen_eps));
     }
+    if ( config.row.ladder == LadderScope::Table && config.row.mu != MuPolicy::Pinned )
+    {
+        throw std::invalid_argument(
+            "lgpsf::fit_operator: LadderScope::Table pins every centre "
+            "(config.row.mu must be MuPolicy::Pinned)");
+    }
     if ( x_rows && x_rows->rows() != num_rows )
     {
         throw std::invalid_argument(
@@ -1125,6 +1235,13 @@ inline OperatorFit fit_operator(
     // baseline score on identical folds and the result cannot depend on
     // scheduling. See the plan's randomness section.
     context.row_config = config.row;
+    if ( config.row.ladder == LadderScope::Table )
+    {
+        // The table's dictionary is the operator layer's: the a-priori
+        // ellipsoid and `table_rungs` (fit_row_candidates), not the row
+        // fit's default log-spaced circles.
+        context.row_config.num_rungs = 0;
+    }
     context.row_config.split =
         config.seed
             ? kfold_split(static_cast<int>(num_probes), config.row.cv_folds, *config.seed)
@@ -1740,6 +1857,7 @@ inline OperatorFit fit_operator(
     diagnostics.fit_points = Eigen::VectorXi::Zero(num_rows);
     diagnostics.evaluations = Eigen::VectorXi::Zero(num_rows);
     diagnostics.candidates = Eigen::VectorXi::Zero(num_rows);
+    diagnostics.guesses_skipped = Eigen::VectorXi::Zero(num_rows);
     diagnostics.work = Eigen::VectorXd::Zero(num_rows);
     diagnostics.row_seconds = Eigen::VectorXd::Zero(num_rows);
     diagnostics.coarsen_seconds = Eigen::VectorXd::Zero(num_rows);
@@ -1763,6 +1881,7 @@ inline OperatorFit fit_operator(
         diagnostics.fit_points(rho) = outcome.fit_points;
         diagnostics.evaluations(rho) = outcome.evaluations;
         diagnostics.candidates(rho) = outcome.candidates;
+        diagnostics.guesses_skipped(rho) = outcome.guesses_skipped;
         diagnostics.work(rho) = static_cast<double>(outcome.fit_points)
                                 * static_cast<double>(outcome.evaluations)
                                 * static_cast<double>(outcome.max_modes);

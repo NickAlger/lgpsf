@@ -42,8 +42,10 @@
 ///    -- `baseline_index` (an index into the globally identical
 ///    `baseline_sets`, so it names the same modes anywhere), `theta_baseline`,
 ///    `baseline_c`, `baseline_s`, `baseline_score`, the searched model's
-///    `theta` / `modes` / `c` / `s` / `score` / `released` / `stop_reason` --
-///    plus `evaluations`, `candidates`, `max_modes` and the host's phase-B
+///    `theta` / `modes` / `c` / `s` / `score` / `released` / `stop_reason`,
+///    and the table's verdict `winner_fixed` / `fixed_score` /
+///    `guesses_skipped` (LadderScope::Table; defaults otherwise) -- plus
+///    `evaluations`, `candidates`, `max_modes` and the host's phase-B
 ///    seconds.
 ///
 /// Two things deliberately do NOT travel, and both are RECOMPUTED rather than
@@ -388,6 +390,17 @@ inline void pack_candidates( const lgpsf::detail::RowFitCandidates& fit,
     buffer.push_back(1.0);
     buffer.push_back(searched.score);
     buffer.push_back(searched.released ? 1.0 : 0.0);
+    buffer.push_back(searched.winner_fixed ? 1.0 : 0.0);
+    buffer.push_back(searched.fixed_score);
+    buffer.push_back(static_cast<double>(searched.guesses_skipped.size()));
+    for ( const std::string& label : searched.guesses_skipped )
+    {
+        buffer.push_back(static_cast<double>(label.size()));
+        for ( char c : label )
+        {
+            buffer.push_back(static_cast<double>(static_cast<unsigned char>(c)));
+        }
+    }
     buffer.push_back(static_cast<double>(static_cast<int>(searched.stop_reason)));
     buffer.push_back(static_cast<double>(searched.model.theta.size()));
     buffer.push_back(static_cast<double>(searched.model.modes.size()));
@@ -448,6 +461,21 @@ inline void unpack_candidates( Reader& reader,
         ProbeFitResult searched;
         searched.score = reader.next();
         searched.released = reader.next() != 0.0;
+        searched.winner_fixed = reader.next() != 0.0;
+        searched.fixed_score = reader.next();
+        const int n_skipped = reader.next_count();
+        for ( int i = 0; i < n_skipped; ++i )
+        {
+            const int length = reader.next_count();
+            std::string label;
+            label.reserve(static_cast<std::size_t>(length));
+            for ( int j = 0; j < length; ++j )
+            {
+                label.push_back(static_cast<char>(
+                    static_cast<unsigned char>(reader.next_int())));
+            }
+            searched.guesses_skipped.push_back(std::move(label));
+        }
         const int stop = reader.next_int();
         if ( stop < static_cast<int>(StopReason::Target)
              || stop > static_cast<int>(StopReason::NoAdmissible) )

@@ -255,7 +255,30 @@ enum class LadderScope
     /// held-out score for 14-20% fewer evaluations -- the shared patience
     /// pruned the centres apart at rung 1, where one Gaussian cannot tell
     /// them apart, and the warm candidate was neutral.
-    PerGuess
+    PerGuess,
+    /// THE TABLE (2026-10-09, Nick's design). Every ADMISSIBLE guess climbs
+    /// its own cold ladder as under PerGuess, and at every level it also
+    /// contributes a FIXED-frame entry: the linear stage solved at the
+    /// guess's own frame, that guess's baseline. The candidate table is then
+    /// {guesses} x {levels} x {fixed, fitted}, every entry scored by the same
+    /// cross-validation on the same quadrature, and the best admissible entry
+    /// wins; ties go to fewer fitted parameters (a fixed frame has none),
+    /// then to the earlier entry. No certificate (`target_score` is ignored:
+    /// the entries are independent of one another, so no entry may end
+    /// another's ladder), no warm candidate, no adaptive feedback, no release
+    /// stage and no clamp; `mu` must be `MuPolicy::Pinned`. The counting rule
+    /// counts what each entry fits -- k >= 2 (m + n_extra) for a fixed
+    /// frame, k >= 2 (m + n_extra + N(N+1)/2) for a fitted one -- so the
+    /// fixed column reaches higher levels at few probes; patience watches the
+    /// fitted column only (an inadmissible fitted entry is no improvement),
+    /// the fixed column is cheap and runs to the end of the policy. The frame
+    /// floor is taken at each guess's OWN centre, in the spacing of the
+    /// quadrature there (`local_spacing` at that centre), so a guess sitting
+    /// on coarse cells is held to the cells it sits on, and a guess whose own
+    /// frame fails the rules is not climbed (`ProbeFitResult::guesses_skipped`).
+    /// With nothing admissible the best inadmissible entry is the winner,
+    /// flagged (`admissible` false, `stop_reason` NoAdmissible).
+    Table
 };
 
 /// Why the search stopped.
@@ -273,6 +296,9 @@ enum class StopReason
     /// is set: the search has NO fit to offer. `ProbeFitResult::admissible` is
     /// false; `model` and `winner` still hold the best inadmissible candidate,
     /// for the record only. The caller ships its fallback (2026-10-09).
+    /// Under `LadderScope::Table` the same with no fallback to ship: nothing
+    /// in the table was admissible and its best inadmissible entry is the
+    /// winner, flagged.
     NoAdmissible
 };
 
@@ -315,7 +341,9 @@ struct ProbeFitConfig
     int mode_patience = 2;
 
     /// Whether the guesses share one ladder (with the warm candidate and one
-    /// patience) or each climb their own, cold. See `LadderScope`.
+    /// patience), each climb their own, cold, or build the table (every
+    /// guess's fixed-frame column beside its fitted one, no certificate).
+    /// See `LadderScope`.
     LadderScope ladder = LadderScope::Shared;
 
     /// What happens when NO candidate is admissible (2026-10-09). False (the
@@ -463,6 +491,11 @@ struct CandidateFit
     /// linear coefficients re-solved. No nonlinear solve ran for it.
     bool clamped = false;
 
+    /// True for a FIXED-frame entry of the table (`LadderScope::Table`): the
+    /// frame is the guess's own, only the linear stage was solved, no
+    /// nonlinear solve ran (`evaluations` is 0). Labelled "fixed(<guess>)".
+    bool fixed = false;
+
     std::size_t num_modes() const { return model.modes.size(); }
 };
 
@@ -491,6 +524,18 @@ struct ProbeFitResult
 
     std::vector<CandidateFit> candidates;
     std::vector<std::string> skipped;  ///< Levels the counting rule rejected.
+
+    /// `LadderScope::Table` only; defaults otherwise. Whether the winner is a
+    /// fixed-frame entry (a guess's own frame, linear stage only) rather than
+    /// a fitted one -- the operator layer's "the baseline shipped".
+    bool winner_fixed = false;
+    /// `LadderScope::Table` only: the best admissible fixed-frame score in the
+    /// table, which the operator layer reports as the row's baseline score;
+    /// infinity if no fixed entry was admissible.
+    double fixed_score = std::numeric_limits<double>::infinity();
+    /// `LadderScope::Table` only: the labels of the guesses whose own frame
+    /// failed the admissibility rules at their centre and were not climbed.
+    std::vector<std::string> guesses_skipped;
 };
 
 /// Linear-stage K-fold cross-validation score of a model at given parameters.
@@ -698,6 +743,12 @@ inline ProbeFitResult fit_from_probes(
             "lgpsf::fit_from_probes: config.frame_ceiling must be finite (non-positive "
             "turns the clamp off), got " + std::to_string(config.frame_ceiling));
     }
+    if ( config.ladder == LadderScope::Table && config.mu != MuPolicy::Pinned )
+    {
+        throw std::invalid_argument(
+            "lgpsf::fit_from_probes: LadderScope::Table pins every centre "
+            "(config.mu must be MuPolicy::Pinned)");
+    }
 
     const int num_extra = ( spike_index >= 0 ) ? 1 : 0;
     const double mass =
@@ -838,7 +889,8 @@ inline ProbeFitResult fit_from_probes(
                                     const std::vector<Mode>& modes,
                                     const Eigen::VectorXd& start, MuMode mode,
                                     bool released, const WhitenedBasis& basis,
-                                    const Eigen::VectorXd& center ) {
+                                    const Eigen::VectorXd& center,
+                                    double floor_here ) {
         CandidateFit candidate;
         candidate.label = label;
         candidate.modes_label = modes_label;
@@ -885,9 +937,9 @@ inline ProbeFitResult fit_from_probes(
         // (displacement <= radius) is implied.
         const double displacement = (candidate.model.theta.head(dim) - mu0).norm();
         bool admissible = candidate.axes.maxCoeff() + displacement <= radius;
-        if ( floor_axis > 0.0 )
+        if ( floor_here > 0.0 )
         {
-            admissible = admissible && candidate.axes.minCoeff() >= floor_axis;
+            admissible = admissible && candidate.axes.minCoeff() >= floor_here;
         }
         if ( mode == MuMode::Fitted )
         {
@@ -1037,11 +1089,19 @@ inline ProbeFitResult fit_from_probes(
                 continue;
             }
             const CandidateFit& incumbent = pool[static_cast<std::size_t>(winner)];
+            // Ties: fewer modes, a pinned centre, the earlier entry -- and
+            // under the table fewer FITTED parameters, so at equal score a
+            // fixed frame (no frame parameters) beats a fitted one.
+            const auto rank_of = [&]( const CandidateFit& c, int index ) {
+                const std::size_t params =
+                    c.num_modes()
+                    + ( ( config.ladder == LadderScope::Table && !c.fixed )
+                            ? static_cast<std::size_t>(counting_params)
+                            : static_cast<std::size_t>(0) );
+                return std::make_tuple(params, c.released, index);
+            };
             const bool better =
-                !have
-                || std::make_tuple(candidate.num_modes(), candidate.released, i)
-                       < std::make_tuple(incumbent.num_modes(), incumbent.released,
-                                         winner);
+                !have || rank_of(candidate, i) < rank_of(incumbent, winner);
             if ( better )
             {
                 winner = i;
@@ -1054,6 +1114,78 @@ inline ProbeFitResult fit_from_probes(
     const auto hit_target = [&]( const CandidateFit& candidate ) {
         return config.target_score && candidate.admissible
                && candidate.score <= *config.target_score;
+    };
+
+    // A FIXED-frame entry of the table (LadderScope::Table): the linear
+    // stage -- LG coefficients and spike -- solved at the guess's own frame,
+    // scored by the same cross-validation as everything else. The guess's
+    // baseline, and the "zero iterations of the nonlinear solve" member of
+    // the same model class; `evaluations` stays 0 like the operator layer's
+    // baseline before it. Admissibility is the same two rules at the guess's
+    // centre, so it is admissible whenever the guess was, unless the linear
+    // stage could not be evaluated there.
+    const auto fixed_candidate = [&]( const ResolvedInit& init,
+                                      const std::vector<Mode>& modes,
+                                      const std::string& modes_label,
+                                      const WhitenedBasis& basis,
+                                      double floor_here ) {
+        CandidateFit candidate;
+        candidate.label = "fixed(" + init.label + ")";
+        candidate.modes_label = modes_label;
+        candidate.fixed = true;
+        candidate.theta_init = to_theta(init.theta_hat, init.center, MuMode::Pinned);
+        candidate.model.modes = modes;
+        candidate.model.theta = candidate.theta_init;
+        candidate.model.c =
+            Eigen::VectorXd::Zero(static_cast<Eigen::Index>(modes.size()));
+        candidate.model.s = Eigen::VectorXd::Zero(e_hat.cols());
+        candidate.axes = detail::axes_of(init.theta_hat, init.center, MuMode::Pinned);
+        candidate.admissible = false;
+
+        Eigen::MatrixXd values;
+        try
+        {
+            values = basis(init.theta_hat).values();
+        }
+        catch ( const InfeasibleParameters& )
+        {
+            return candidate;
+        }
+        if ( !values.allFinite() )
+        {
+            return candidate;
+        }
+        Eigen::MatrixXd design(num_probes, values.cols() + e_hat.cols());
+        design.leftCols(values.cols()) = z_hat.transpose() * values;
+        if ( e_hat.cols() > 0 )
+        {
+            design.rightCols(e_hat.cols()) = z_hat.transpose() * e_hat;
+        }
+        if ( !design.allFinite() )
+        {
+            return candidate;
+        }
+        const Eigen::VectorXd all = detail::thin_svd(design).solve(y_hat);
+        const double score =
+            linear_cv_score(z_hat, y_hat, basis, init.theta_hat, e_hat, split);
+        if ( !all.allFinite() || !std::isfinite(score) )
+        {
+            return candidate;
+        }
+        candidate.model.c = all.head(values.cols());
+        candidate.model.s = all.tail(e_hat.cols());
+        candidate.cost = 0.5 * (y_hat - design * all).squaredNorm();
+        candidate.score = score;
+        candidate.success = true;
+
+        const double displacement = (init.center - mu0).norm();
+        bool admissible = candidate.axes.maxCoeff() + displacement <= radius;
+        if ( floor_here > 0.0 )
+        {
+            admissible = admissible && candidate.axes.minCoeff() >= floor_here;
+        }
+        candidate.admissible = admissible;
+        return candidate;
     };
 
     // --- the candidate stream ---------------------------------------------
@@ -1190,7 +1322,7 @@ inline ProbeFitResult fit_from_probes(
                 candidates.push_back(run_candidate(entry.label, proposal->label,
                                                    proposal->modes, entry.theta_hat,
                                                    ladder_mode, false, basis,
-                                                   entry.center));
+                                                   entry.center, floor_axis));
                 level_centers.push_back(entry.center);
                 if ( hit_target(candidates.back()) )
                 {
@@ -1248,10 +1380,181 @@ inline ProbeFitResult fit_from_probes(
         }
         return stop_reason;
     };
+
+    // THE TABLE (LadderScope::Table): one guess's two columns. Every level
+    // the policy proposes gets a FIXED-frame entry whenever the fixed column's
+    // counting rule k >= 2 (m + n_extra) holds, and a FITTED entry (the cold
+    // VarPro climb from the guess) whenever k >= 2 (m + n_extra + P) holds and
+    // the fitted column's patience has not run out. The fixed column is cheap
+    // and feedback-blind, so it is never cut short; patience watches the
+    // fitted column only, and an inadmissible fitted entry is no improvement.
+    // No certificate, no warm start, no adaptive feedback: the entries are
+    // independent of one another. Returns why the FITTED column stopped.
+    std::vector<std::string> guesses_skipped;
+    const auto climb_table = [&]( const ResolvedInit& init,
+                                  double floor_here ) -> StopReason {
+        std::vector<LevelRecord> history;
+        StopReason stop_reason = StopReason::Exhausted;
+        double best_fitted = std::numeric_limits<double>::infinity();
+        int patience_left = config.mode_patience;
+        bool fitted_open = true;
+        std::vector<Mode> last_fit_modes;
+        bool last_fit_valid = false;
+        while ( static_cast<int>(history.size()) < kMaxModeProposals )
+        {
+            ModeSearchContext ctx;
+            ctx.dim = dim;
+            ctx.num_probes = static_cast<int>(num_probes);
+            ctx.num_extra = num_extra;
+            // The fixed column's count: the policy sees every level either
+            // column can use, and each column applies its own rule below.
+            ctx.num_params = 0;
+            ctx.history = history;
+
+            std::optional<ModeProposal> proposal = config.mode_policy->propose(ctx);
+            if ( !proposal )
+            {
+                break;
+            }
+            for ( const LevelRecord& record : history )
+            {
+                if ( record.label == proposal->label )
+                {
+                    throw std::invalid_argument(
+                        "lgpsf::fit_from_probes: the mode policy reused the label '"
+                        + proposal->label + "'");
+                }
+            }
+            if ( last_fit_valid )
+            {
+                const std::set<Mode> offered(proposal->modes.begin(), proposal->modes.end());
+                for ( const Mode& mode : last_fit_modes )
+                {
+                    if ( offered.find(mode) == offered.end() )
+                    {
+                        throw std::invalid_argument(
+                            "lgpsf::fit_from_probes: the mode policy's proposal '"
+                            + proposal->label + "' does not contain the previously "
+                            "fitted set (nested growth is the contract)");
+                    }
+                }
+            }
+
+            const int modes_here = static_cast<int>(proposal->modes.size());
+            const bool fixed_ok =
+                static_cast<int>(num_probes) >= 2 * (modes_here + num_extra);
+            const bool fitted_ok =
+                static_cast<int>(num_probes)
+                >= 2 * (modes_here + num_extra + counting_params);
+            if ( !fixed_ok )
+            {
+                // Neither column can afford it: the fitted one needs more.
+                if ( std::find(skipped.begin(), skipped.end(), proposal->label)
+                     == skipped.end() )
+                {
+                    skipped.push_back(proposal->label);
+                }
+                history.push_back(
+                    LevelRecord{proposal->label, proposal->modes, true, false});
+                continue;
+            }
+            if ( std::none_of(modes_of.begin(), modes_of.end(),
+                              [&]( const std::pair<std::string, std::vector<Mode>>& m )
+                              { return m.first == proposal->label; }) )
+            {
+                modes_of.emplace_back(proposal->label, proposal->modes);
+            }
+            BasisCache& level_bases = rung_bases[proposal->label];
+            const WhitenedBasis& basis = level_bases.get(
+                init.center, proposal->modes, MuMode::Pinned, make_basis);
+
+            candidates.push_back(fixed_candidate(init, proposal->modes,
+                                                 proposal->label, basis, floor_here));
+            level_centers.push_back(init.center);
+            bool has_winner = candidates.back().admissible;
+
+            if ( fitted_ok && fitted_open )
+            {
+                if ( patience_left <= 0 )
+                {
+                    fitted_open = false;
+                    stop_reason = StopReason::ModePatience;
+                }
+                else
+                {
+                    candidates.push_back(run_candidate(
+                        init.label, proposal->label, proposal->modes, init.theta_hat,
+                        MuMode::Pinned, false, basis, init.center, floor_here));
+                    level_centers.push_back(init.center);
+                    const CandidateFit& fitted = candidates.back();
+                    if ( fitted.admissible && fitted.score < best_fitted )
+                    {
+                        best_fitted = fitted.score;
+                        patience_left = config.mode_patience;
+                    }
+                    else
+                    {
+                        --patience_left;
+                    }
+                    has_winner = has_winner || fitted.admissible;
+                }
+            }
+            history.push_back(
+                LevelRecord{proposal->label, proposal->modes, false, has_winner});
+            last_fit_modes = proposal->modes;
+            last_fit_valid = true;
+        }
+        return stop_reason;
+    };
+
     StopReason stop_reason = StopReason::Exhausted;
     if ( config.ladder == LadderScope::Shared )
     {
         stop_reason = climb(inits, true);
+    }
+    else if ( config.ladder == LadderScope::Table )
+    {
+        // Every guess is judged by the rules its entries will be judged by,
+        // at its own centre, before it is climbed: the floor in the spacing
+        // of the quadrature there, containment with its displacement. A guess
+        // that fails is not climbed and is named in `guesses_skipped`.
+        int on_patience = 0;
+        int climbed = 0;
+        for ( const ResolvedInit& init : inits )
+        {
+            const double floor_here =
+                ( config.frame_floor > 0.0 && x.rows() >= 2 )
+                    ? config.frame_floor * local_spacing(x, init.center)
+                    : 0.0;
+            const Eigen::VectorXd axes =
+                detail::axes_of(init.theta_hat, init.center, MuMode::Pinned);
+            const double displacement = (init.center - mu0).norm();
+            bool admissible = axes.maxCoeff() + displacement <= radius;
+            if ( floor_here > 0.0 )
+            {
+                admissible = admissible && axes.minCoeff() >= floor_here;
+            }
+            if ( !admissible )
+            {
+                guesses_skipped.push_back(init.label);
+                continue;
+            }
+            ++climbed;
+            if ( climb_table(init, floor_here) == StopReason::ModePatience )
+            {
+                ++on_patience;
+            }
+        }
+        stop_reason = ( climbed > 0 && on_patience == climbed )
+                          ? StopReason::ModePatience
+                          : StopReason::Exhausted;
+        if ( candidates.empty() && climbed == 0 )
+        {
+            throw std::invalid_argument(
+                "lgpsf::fit_from_probes: every initial guess is inadmissible at its "
+                "own centre (frame_floor " + std::to_string(config.frame_floor)
+                + " spacings, containment in the batch radius), nothing to climb");
+        }
     }
     else
     {
@@ -1290,7 +1593,8 @@ inline ProbeFitResult fit_from_probes(
     const bool none_admissible =
         std::none_of(candidates.begin(), candidates.end(),
                      []( const CandidateFit& c ) { return c.admissible; });
-    if ( none_admissible && config.reject_inadmissible )
+    if ( none_admissible
+         && ( config.reject_inadmissible || config.ladder == LadderScope::Table ) )
     {
         // Nothing to offer: the winner is the best inadmissible candidate,
         // for the record; neither the release stage nor the clamp runs.
@@ -1355,7 +1659,7 @@ inline ProbeFitResult fit_from_probes(
             candidates.push_back(run_candidate(
                 "release(" + source.label + ")", winning_label, winning_modes,
                 to_theta_hat(source.model.theta, source_center, MuMode::Fitted),
-                MuMode::Fitted, true, free_basis, source_center));
+                MuMode::Fitted, true, free_basis, source_center, floor_axis));
             level_centers.push_back(source_center);
             if ( hit_target(candidates.back()) )
             {
@@ -1499,6 +1803,15 @@ inline ProbeFitResult fit_from_probes(
     {
         result.evaluations_total += candidate.evaluations;
     }
+    result.winner_fixed = champion.fixed;
+    for ( const CandidateFit& candidate : candidates )
+    {
+        if ( candidate.fixed && candidate.admissible )
+        {
+            result.fixed_score = std::min(result.fixed_score, candidate.score);
+        }
+    }
+    result.guesses_skipped = std::move(guesses_skipped);
     result.candidates = std::move(candidates);
     result.skipped = std::move(skipped);
     return result;
