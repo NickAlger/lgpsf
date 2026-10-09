@@ -125,11 +125,26 @@ comparisons are bitwise and which are to tolerance.
 Stage 1 does NOT change B's nnz per rank: the symmetric B's row layout is a property of B and the dof
 partition, and the symmetrization returns B's rows to the row owners today as well.
 
-## Validate the thesis first, then test
+## The thesis, measured (albmap_75 anchor dump, 409,016 rows with windows, 384 ranks, 25 probes)
 
-Measured offline from the fit dump (coverage_balance.py in the maintainer's research notes): window nodes per
-rank by row ownership against by column ownership (the plan's load), coverage per column, ranks touched per
-window, and the share of a row's window in slices smaller than a coarsening's cell count.  Tests: `kernel_at`
+| | max / mean over ranks |
+|---|---|
+| window nodes per rank by ROW ownership (today's owner-side load) | 57.2 (the fit log's own 54-57) |
+| window nodes per rank by COLUMN ownership (the plan's load) | 12.3 |
+
+Coverage per column: median 59 windows, mean 226, 99th percentile 2,444, max 2,996 -- the interior columns sit
+inside the giant a-priori ellipsoids of all their slow neighbours, so the column-side load is skewed too, just
+4.6x less.  Ranks touched per window: median 1, mean 1.8, 90th percentile 3, max 38 (the giant rows spread over
+many ranks, the small ones stay home).  Slice-wise coarsening: on average 40% of a row's window nodes lie in
+slices too small to coarsen and ship as points (the small windows; today they are not coarsened either).
+So the plan removes the row-ownership skew (57 -> 12 here; ~100 -> ~20 expected on albmap_40) but not the
+coverage skew, which is physics (overlapping giant windows).  Options beyond it, later: a second water-fill
+over (row, rank) slices that ships an overloaded rank's slice data to an idle rank (the halo again, but
+targeted and capped), or cheaper per-node column-side phases.
+
+## Tests
+
+Tests: `kernel_at`
 batch vs split (bitwise); the symmetrization variant vs serial `weighted_symmetrize` on a random A; design from
 partials vs `linear_cv_score` (tolerance); n = 1 column phases vs n = 1 old path on the same partition (the
 association noise floor); a perverse pattern (every row covered by every rank) and a poison row that throws in
