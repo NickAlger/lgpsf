@@ -306,6 +306,8 @@ int main( int argc, char** argv )
         if ( spec.per_guess )
         {
             cfg.row.ladder = lgpsf::LadderScope::PerGuess;
+            cfg.row.frame_floor = 0.1;
+            cfg.row.reject_inadmissible = true;   // the stop reason crosses the wire
         }
         std::optional<Eigen::MatrixXd> mu_prior_all;
         if ( spec.prior_shift )

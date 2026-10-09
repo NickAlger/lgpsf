@@ -268,7 +268,12 @@ enum class StopReason
     /// frame clamped into the admissible range and its linear coefficients
     /// re-solved (`ProbeFitConfig::frame_ceiling`). Says how the winner was
     /// made, on top of the search having run to its end.
-    Clamped
+    Clamped,
+    /// No candidate was admissible and `ProbeFitConfig::reject_inadmissible`
+    /// is set: the search has NO fit to offer. `ProbeFitResult::admissible` is
+    /// false; `model` and `winner` still hold the best inadmissible candidate,
+    /// for the record only. The caller ships its fallback (2026-10-09).
+    NoAdmissible
 };
 
 inline const char* to_string( StopReason reason )
@@ -279,6 +284,7 @@ inline const char* to_string( StopReason reason )
         case StopReason::ModePatience: return "mode_patience";
         case StopReason::Exhausted:    return "exhausted";
         case StopReason::Clamped:      return "clamped";
+        case StopReason::NoAdmissible: return "no_admissible";
     }
     return "unknown";
 }
@@ -311,6 +317,18 @@ struct ProbeFitConfig
     /// Whether the guesses share one ladder (with the warm candidate and one
     /// patience) or each climb their own, cold. See `LadderScope`.
     LadderScope ladder = LadderScope::Shared;
+
+    /// What happens when NO candidate is admissible (2026-10-09). False (the
+    /// default): what `frame_ceiling` says -- clamp the best one when it is
+    /// positive, otherwise let it ship as it is (every run through tag G).
+    /// True: the search REJECTS -- `ProbeFitResult::admissible` is false,
+    /// `stop_reason` is `NoAdmissible`, no release stage and no clamp run,
+    /// and the operator layer ships the row's baseline. Admissibility is the
+    /// containment rule (the fitted ellipsoid inside the window's ball, its
+    /// centre's displacement included) and `frame_floor`; the baseline is
+    /// always there to fall back on, so a search with nothing admissible has
+    /// nothing to offer and says so.
+    bool reject_inadmissible = false;
 
     /// Simplicity tie-break margin.
     double tie_delta = 0.0;
@@ -456,6 +474,11 @@ struct ProbeFitResult
     LGExpansion model;
 
     bool released = false;  ///< Whether the winner's center was fitted.
+    /// Whether the winner passed the admissibility rules. False only under
+    /// `reject_inadmissible` (then `stop_reason` is `NoAdmissible`) or when
+    /// nothing was admissible and no clamp ran: the best inadmissible one, as
+    /// it is.
+    bool admissible = true;
 
     double score = std::numeric_limits<double>::infinity();
     StopReason stop_reason = StopReason::Exhausted;
@@ -853,16 +876,21 @@ inline ProbeFitResult fit_from_probes(
             linear_cv_score(z_hat, y_hat, basis, fit.theta_hat, e_hat, split);
         candidate.axes = detail::axes_of(fit.theta_hat, center, mode);
 
-        bool admissible = candidate.axes.maxCoeff() <= radius;
+        // Containment: the fitted ellipsoid inside the window's ball about
+        // default_mu -- its largest semi-axis PLUS its centre's displacement
+        // within the batch radius (2026-10-09). A candidate pinned at
+        // default_mu has displacement exactly 0, so there the rule is the
+        // old one bit for bit; a guess carrying its own centre is judged
+        // where it sits, and a fitted centre's old separate bound
+        // (displacement <= radius) is implied.
+        const double displacement = (candidate.model.theta.head(dim) - mu0).norm();
+        bool admissible = candidate.axes.maxCoeff() + displacement <= radius;
         if ( floor_axis > 0.0 )
         {
             admissible = admissible && candidate.axes.minCoeff() >= floor_axis;
         }
         if ( mode == MuMode::Fitted )
         {
-            // The displacement encoding makes this the bound it always meant
-            // to be: theta_hat's leading block IS mu - center.
-            admissible = admissible && fit.theta_hat.head(dim).norm() <= radius;
             if ( config.resolution_eps > 0.0 )
             {
                 // The resolution rule, see ProbeFitConfig::resolution_eps.
@@ -874,8 +902,6 @@ inline ProbeFitResult fit_from_probes(
                 {
                     order = std::max(order, mode_entry.p + mode_entry.ell);
                 }
-                const double displacement =
-                    (candidate.model.theta.head(dim) - mu0).norm();
                 admissible = admissible
                              && candidate.axes.minCoeff()
                                     >= config.resolution_eps * displacement * order;
@@ -1261,9 +1287,19 @@ inline ProbeFitResult fit_from_probes(
     }
 
     int winner = select(candidates);
+    const bool none_admissible =
+        std::none_of(candidates.begin(), candidates.end(),
+                     []( const CandidateFit& c ) { return c.admissible; });
+    if ( none_admissible && config.reject_inadmissible )
+    {
+        // Nothing to offer: the winner is the best inadmissible candidate,
+        // for the record; neither the release stage nor the clamp runs.
+        stop_reason = StopReason::NoAdmissible;
+    }
 
     // --- guarded release stage --------------------------------------------
-    if ( config.mu == MuPolicy::PinnedThenRelease && stop_reason != StopReason::Target )
+    if ( config.mu == MuPolicy::PinnedThenRelease && stop_reason != StopReason::Target
+         && stop_reason != StopReason::NoAdmissible )
     {
         const std::string winning_label = candidates[static_cast<std::size_t>(winner)].modes_label;
         std::vector<Mode> winning_modes;
@@ -1338,9 +1374,8 @@ inline ProbeFitResult fit_from_probes(
     // part of the model that is cheap and well posed at a fixed frame -- is
     // solved again there. Nothing nonlinear is refit; the frame's directions
     // are the runaway search's, which is all the data offered.
-    if ( config.frame_ceiling > 0.0
-         && std::none_of(candidates.begin(), candidates.end(),
-                         []( const CandidateFit& c ) { return c.admissible; }) )
+    if ( config.frame_ceiling > 0.0 && none_admissible
+         && stop_reason != StopReason::NoAdmissible )
     {
         const CandidateFit source = candidates[static_cast<std::size_t>(winner)];
         const Eigen::VectorXd center = level_centers[static_cast<std::size_t>(winner)];
@@ -1455,6 +1490,7 @@ inline ProbeFitResult fit_from_probes(
     ProbeFitResult result;
     result.model = champion.model;
     result.released = champion.released;
+    result.admissible = champion.admissible;
     result.score = champion.score;
     result.stop_reason = stop_reason;
     result.winner = winner;

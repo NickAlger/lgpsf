@@ -654,7 +654,11 @@ PYBIND11_MODULE(lgpsf, m)
         .value("Exhausted", StopReason::Exhausted)
         .value("Clamped", StopReason::Clamped,
                "No candidate was admissible; the winner is the best one, clamped "
-               "into the admissible range with its coefficients re-solved.");
+               "into the admissible range with its coefficients re-solved.")
+        .value("NoAdmissible", StopReason::NoAdmissible,
+               "No candidate was admissible and reject_inadmissible is set: the "
+               "search offers nothing (result.admissible is False; the winner is "
+               "the best inadmissible one, for the record).");
 
     py::class_<CvFold>(m, "CvFold")
         .def_readonly("train", &CvFold::train)
@@ -833,6 +837,11 @@ PYBIND11_MODULE(lgpsf, m)
                        "LadderScope.Shared (the default) or PerGuess: whether "
                        "the guesses share one ladder or each climb their own, "
                        "cold.")
+        .def_readwrite("reject_inadmissible", &ProbeFitConfig::reject_inadmissible,
+                       "True: when no candidate is admissible the search offers "
+                       "nothing (StopReason.NoAdmissible) and the operator layer "
+                       "ships the baseline. False (the default): frame_ceiling's "
+                       "clamp, or the best inadmissible one as it is.")
         .def_readwrite("tie_delta", &ProbeFitConfig::tie_delta)
         .def_readwrite("resolution_eps", &ProbeFitConfig::resolution_eps,
                        "Resolution rule for RELEASED centres; 0 (the default) "
@@ -929,6 +938,8 @@ PYBIND11_MODULE(lgpsf, m)
                                "The winning model, plus the full audit trail.")
         .def_readonly("model", &ProbeFitResult::model)
         .def_readonly("released", &ProbeFitResult::released)
+        .def_readonly("admissible", &ProbeFitResult::admissible,
+                      "Whether the winner passed the admissibility rules.")
         .def_readonly("score", &ProbeFitResult::score)
         .def_readonly("stop_reason", &ProbeFitResult::stop_reason)
         .def_readonly("winner", &ProbeFitResult::winner)
@@ -998,7 +1009,9 @@ PYBIND11_MODULE(lgpsf, m)
         .value("Exhausted", RowStop::Exhausted)
         .value("SearchInfeasible", RowStop::SearchInfeasible)
         .value("Clamped", RowStop::Clamped,
-               "The search's result is the clamped fallback (frame_ceiling).");
+               "The search's result is the clamped fallback (frame_ceiling).")
+        .value("NoAdmissible", RowStop::NoAdmissible,
+               "No admissible candidate under reject_inadmissible: the baseline shipped.");
 
     py::enum_<Symmetrize>(m, "Symmetrize",
                           "What assemble_sparse does about symmetry. An "

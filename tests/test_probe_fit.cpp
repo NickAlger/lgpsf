@@ -427,6 +427,73 @@ TEST_CASE("a fit that outgrows the window is ruled inadmissible")
     // an answer plus the evidence to judge it
     CHECK(result.winner >= 0);
     CHECK(std::isfinite(result.score));
+
+    // reject_inadmissible: with nothing admissible the search offers nothing,
+    // says so, and runs neither the release stage nor the clamp -- the
+    // candidate table is the same, the verdict is not
+    if ( inadmissible == static_cast<int>(result.candidates.size()) )
+    {
+        ProbeFitConfig reject = config;
+        reject.reject_inadmissible = true;
+        reject.frame_ceiling = 1.0;   // would clamp; must not
+        const ProbeFitResult refused =
+            fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                            target.spike_index, reject, {}, target.mass);
+        CHECK(refused.stop_reason == StopReason::NoAdmissible);
+        CHECK(!refused.admissible);
+        CHECK(refused.winner >= 0);
+        CHECK(refused.candidates.size() == result.candidates.size());
+        for ( const CandidateFit& candidate : refused.candidates )
+        {
+            CHECK(!candidate.clamped);
+        }
+        CHECK(result.admissible == false);   // the old path: the best inadmissible one, flagged
+    }
+}
+
+TEST_CASE("containment counts the centre's displacement")
+{
+    // The fitted ellipsoid must sit inside the window's ball about default_mu:
+    // the same frame is admissible pinned at default_mu and inadmissible pinned
+    // where its largest axis plus its displacement exceeds the batch radius.
+    std::mt19937 gen(11);
+    const Target target = make_target(gen);
+    ProbeFitConfig config =
+        basic_config(std::make_shared<FixedSet>(target.modes, "truth"));
+    config.num_rungs = 0;
+    const lgpsf::EllipsoidFrame truth =
+        lgpsf::unpack_theta_hat(target.theta_hat_true, target.mu0, MuMode::Pinned);
+    const double radius = lgpsf::window_radius(target.x, target.mu0);
+    const int dim = static_cast<int>(target.mu0.size());
+    lgpsf::InitialGuess here;
+    here.sigma = truth.L * truth.L.transpose();
+    here.label = "here";
+    const ProbeFitResult at_home =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, config, {here}, target.mass);
+    REQUIRE(at_home.candidates.size() == 1);
+    REQUIRE(at_home.candidates.front().admissible);
+    const double axis = at_home.candidates.front().axes.maxCoeff();
+    // displaced so that axis + displacement just exceeds the radius
+    lgpsf::InitialGuess away = here;
+    away.mu = target.mu0 + Eigen::VectorXd::Unit(dim, 0) * (radius - 0.5 * axis);
+    away.label = "away";
+    const ProbeFitResult displaced =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, config, {away}, target.mass);
+    REQUIRE(displaced.candidates.size() == 1);
+    const CandidateFit& far = displaced.candidates.front();
+    const double shift = (far.model.theta.head(dim) - target.mu0).norm();
+    MESSAGE("radius " << radius << ", axis " << far.axes.maxCoeff() << ", displacement " << shift);
+    CHECK(far.admissible == (far.axes.maxCoeff() + shift <= radius));
+    CHECK(!far.admissible);
+    // and under reject_inadmissible that row has no fit to offer
+    config.reject_inadmissible = true;
+    const ProbeFitResult refused =
+        fit_from_probes(target.x, target.m2_diag, target.z, target.y, target.mu0,
+                        target.spike_index, config, {away}, target.mass);
+    CHECK(refused.stop_reason == StopReason::NoAdmissible);
+    CHECK(!refused.admissible);
 }
 
 TEST_CASE("the counting rule skips levels the probes cannot support")

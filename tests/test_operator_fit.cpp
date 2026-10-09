@@ -1841,3 +1841,41 @@ TEST_CASE("the a-priori centre moves only the sigma0 guess, and travels with the
                                  nullptr, Eigen::MatrixXd(shifted.topRows(3))),
                     std::invalid_argument);
 }
+
+TEST_CASE("reject_inadmissible ships the baseline where the search has nothing admissible")
+{
+    // A floor no frame can meet makes every candidate inadmissible: with the
+    // policy on, every searched row ships the baseline with RowStop::NoAdmissible
+    // and its search is still counted; with it off and no clamp, the old path
+    // ships the best inadmissible candidate as a Fit.
+    std::mt19937 gen(44);
+    const Synthetic op = make_operator(gen, 21, 30, 6);
+    OperatorFitConfig config = config_for(op);
+    config.row.frame_floor = 1e9;
+    config.row.frame_ceiling = 0.0;
+    OperatorFitConfig rejecting = config;
+    rejecting.row.reject_inadmissible = true;
+    const OperatorFit old_path = run(op, config);
+    const OperatorFit rejected = run(op, rejecting);
+    int fits_old = 0, baselines_new = 0, searched = 0;
+    for ( std::size_t r = 0; r < op.gate.size(); ++r )
+    {
+        if ( !op.gate[r] ) { continue; }
+        if ( old_path.diagnostics.status[r] == lgpsf::RowStatus::Fit ) { ++fits_old; }
+        if ( rejected.diagnostics.status[r] == lgpsf::RowStatus::FallbackBaseline
+             && rejected.diagnostics.stop_reason[r] == lgpsf::RowStop::NoAdmissible )
+        {
+            ++baselines_new;
+        }
+        if ( rejected.diagnostics.evaluations(static_cast<Eigen::Index>(r)) > 0 ) { ++searched; }
+        CHECK(rejected.diagnostics.status[r] != lgpsf::RowStatus::Fit);
+        // the baseline's own numbers, untouched by the policy
+        CHECK(rejected.diagnostics.baseline_score(static_cast<Eigen::Index>(r))
+              == old_path.diagnostics.baseline_score(static_cast<Eigen::Index>(r)));
+    }
+    CHECK(fits_old > 0);
+    CHECK(baselines_new == op.fitted_rows);
+    CHECK(searched == op.fitted_rows);
+    // the same evaluations were spent either way: the policy decides what ships, not what runs
+    CHECK(rejected.diagnostics.evaluations == old_path.diagnostics.evaluations);
+}

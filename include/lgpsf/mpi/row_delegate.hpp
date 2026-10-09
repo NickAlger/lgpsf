@@ -450,7 +450,7 @@ inline void unpack_candidates( Reader& reader,
         searched.released = reader.next() != 0.0;
         const int stop = reader.next_int();
         if ( stop < static_cast<int>(StopReason::Target)
-             || stop > static_cast<int>(StopReason::Clamped) )
+             || stop > static_cast<int>(StopReason::NoAdmissible) )
         {
             throw std::runtime_error(
                 "lgpsf::mpi: the migration message carries an unknown stop "

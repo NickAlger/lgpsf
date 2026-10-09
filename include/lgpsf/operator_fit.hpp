@@ -175,7 +175,12 @@ enum class RowStop
     /// The search found no admissible candidate; its result is the clamped
     /// fallback of `ProbeFitConfig::frame_ceiling` (whether THAT shipped is
     /// `status`, as for any searched fit).
-    Clamped
+    Clamped,
+    /// The search found no admissible candidate and
+    /// `ProbeFitConfig::reject_inadmissible` is set: it offered nothing, and
+    /// the baseline shipped (`status` is FallbackBaseline). The search's
+    /// evaluations and candidates are still counted.
+    NoAdmissible
 };
 
 inline const char* to_string( RowStatus status )
@@ -755,9 +760,13 @@ inline void select_row_fit(
     // `baseline_score` keep their literal meaning, and an
     // aliasing artifact (good on the cells, bad on the points)
     // cannot ship. The coefficients are not refit.
+    // A rejected search (reject_inadmissible: no admissible candidate) offers
+    // nothing: its score is infinite for the guard, and nothing is re-scored.
+    const bool rejected =
+        searched && searched->stop_reason == StopReason::NoAdmissible;
     double searched_score =
-        searched ? searched->score
-                 : std::numeric_limits<double>::infinity();
+        ( searched && !rejected ) ? searched->score
+                                  : std::numeric_limits<double>::infinity();
     if ( problem.coarsened )
     {
         const Eigen::MatrixXd z_hat_full = whiten_probes(z, m2_window);
@@ -777,7 +786,7 @@ inline void select_row_fit(
             z_hat_full, y_hat, full_baseline, theta_baseline,
             e_hat_full, row_config.split);
 
-        if ( searched )
+        if ( searched && !rejected )
         {
             // The winner is evaluated in the encoding
             // fit_from_probes fitted it in: about `center`,
@@ -807,7 +816,7 @@ inline void select_row_fit(
 
     // --- the guard ------------------------------------------
     outcome.baseline_score = baseline_score;
-    if ( searched && searched_score < baseline_score )
+    if ( searched && !rejected && searched_score < baseline_score )
     {
         outcome.status = RowStatus::Fit;
         const EllipsoidFrame shipped = searched->model.frame();
@@ -850,6 +859,8 @@ inline void select_row_fit(
                 outcome.stop = RowStop::Exhausted; break;
             case StopReason::Clamped:
                 outcome.stop = RowStop::Clamped; break;
+            case StopReason::NoAdmissible:
+                outcome.stop = RowStop::NoAdmissible; break;
         }
     }
 }
