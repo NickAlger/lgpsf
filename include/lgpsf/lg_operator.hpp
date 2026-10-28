@@ -618,6 +618,24 @@ enum class Symmetrize
              ///< dof context only. Formula: `detail::weighted_symmetrize`.
 };
 
+/// What `assemble_sparse` did at the rows' own columns (2026-10-28).
+///
+/// The tau trim applies to every deployed column, the row's own included, and
+/// a fit can make the spike and the kernel at that column a cancelling pair of
+/// any size (the kernel term reaches the diagonal from up to tau sigma away, and
+/// an LG expansion with large coefficients is not small there).  Where the own
+/// column lies beyond tau, the trim then ships the spike half of the pair alone.
+/// `own_column_threshold` repairs exactly those rows: a dropped kernel value
+/// larger in magnitude than the threshold ships untrimmed, so the pair ships
+/// whole; every other row is assembled bit for bit as without it.  Counts are
+/// over this call's rows.
+struct OwnColumnReport
+{
+    long beyond_tau = 0;       ///< rows whose own column lies beyond tau (the trim drops its kernel value)
+    long repaired = 0;         ///< of those, rows whose dropped value exceeded the threshold: shipped untrimmed
+    double max_dropped = 0.0;  ///< the largest |dropped value| among them, repaired or not (inf if not finite)
+};
+
 /// [both] Sparse decompression of the DEPLOYED operator.
 ///
 /// Per modeled row: smooth entries on the tau-ellipsoid support of the FITTED
@@ -646,12 +664,21 @@ enum class Symmetrize
 ///                    when the operator really is symmetric, and only legal in
 ///                    the square dof context.
 /// @param num_threads 0 lets the implementation choose.
+/// @param own_column_threshold  Repair rule for the rows' own columns (see
+///                    `OwnColumnReport`): an ABSOLUTE magnitude in the units of
+///                    the assembled entries.  Infinity (the default) repairs
+///                    nothing, and the assembly is what it was before the rule
+///                    existed, bit for bit.  `mpi::dist_fit` sets it to a
+///                    factor times the global median |own-column entry|.
+/// @param report      Optional: what happened at the own columns.
 /// @return            The assembled matrix, (R, K).
 /// @throws std::invalid_argument if @p tau is not positive, or if averaging is
 ///         asked of a rectangular operator.
 inline Eigen::SparseMatrix<double> assemble_sparse(
     const LGOperator& fit, double tau, Symmetrize symmetrize = Symmetrize::None,
-    int num_threads = 0 )
+    int num_threads = 0,
+    double own_column_threshold = std::numeric_limits<double>::infinity(),
+    OwnColumnReport* report = nullptr )
 {
     if ( !(tau > 0.0) )
     {
@@ -666,6 +693,10 @@ inline Eigen::SparseMatrix<double> assemble_sparse(
     }
 
     Eigen::SparseMatrix<double> assembled(fit.num_rows(), fit.num_cols());
+    if ( report )
+    {
+        *report = OwnColumnReport{};
+    }
     const std::vector<int> rows = model_rows(fit);
     if ( rows.empty() )
     {
@@ -734,6 +765,8 @@ inline Eigen::SparseMatrix<double> assemble_sparse(
     // pattern and the summation order are then independent of scheduling, so
     // the assembled matrix is bit-identical across thread counts.
     std::vector<std::vector<Eigen::Triplet<double>>> per_row(rows.size());
+    std::vector<char> own_beyond(rows.size(), 0), own_repaired(rows.size(), 0);
+    std::vector<double> own_dropped(rows.size(), 0.0);
     ellipsoid_tree::detail::parallel_for(
         0, static_cast<std::ptrdiff_t>(rows.size()),
         [&]( std::ptrdiff_t begin, std::ptrdiff_t end ) {
@@ -801,6 +834,33 @@ inline Eigen::SparseMatrix<double> assemble_sparse(
                     continue;
                 }
 
+                // The own column beyond tau: the trim above zeroed the kernel
+                // half of the diagonal.  Repair it when it is large (see
+                // OwnColumnReport); otherwise leave the row untouched.
+                if ( has_spike )
+                {
+                    const int own = fit.spike_column(rho);
+                    const auto at = std::lower_bound(deployed.begin(), deployed.end(), own);
+                    if ( at != deployed.end() && *at == own )
+                    {
+                        const detail::KernelAt here =
+                            detail::kernel_at(fit, rho, fit.x_cols.row(own));
+                        if ( here.u.row(0).squaredNorm() > tau * tau )
+                        {
+                            const double dropped =   // as deployed_smooth would have shipped it
+                                here.values(0) * (fit.m1_diag(rho) * fit.m2_diag(own));
+                            own_beyond[slot] = 1;
+                            own_dropped[slot] = std::isfinite(dropped)
+                                ? std::abs(dropped) : std::numeric_limits<double>::infinity();
+                            if ( std::isfinite(dropped) && std::abs(dropped) > own_column_threshold )
+                            {
+                                values(static_cast<Eigen::Index>(at - deployed.begin())) = dropped;
+                                own_repaired[slot] = 1;
+                            }
+                        }
+                    }
+                }
+
                 for ( std::size_t i = 0; i < deployed.size(); ++i )
                 {
                     per_row[slot].emplace_back(
@@ -817,6 +877,17 @@ inline Eigen::SparseMatrix<double> assemble_sparse(
             }
         },
         num_threads);
+
+    if ( report )
+    {
+        *report = OwnColumnReport{};
+        for ( std::size_t slot = 0; slot < rows.size(); ++slot )
+        {
+            report->beyond_tau += own_beyond[slot];
+            report->repaired += own_repaired[slot];
+            report->max_dropped = std::max(report->max_dropped, own_dropped[slot]);
+        }
+    }
 
     std::vector<Eigen::Triplet<double>> triplets;
     for ( const std::vector<Eigen::Triplet<double>>& block : per_row )
@@ -835,6 +906,46 @@ inline Eigen::SparseMatrix<double> assemble_sparse(
     }
     assembled.makeCompressed();
     return assembled;
+}
+
+/// [both] Each row's own-column entry as `assemble_sparse` (no repair, no
+/// symmetrization) ships it: the spike plus the kernel at the own column when
+/// that column is in the window and within tau.  NaN for rows with no model or
+/// no spike column, and for rows whose terms are not finite.  The scale of the
+/// own-column repair is the median of the nonzero magnitudes (`mpi::dist_fit`).
+/// @param fit  The operator.
+/// @param tau  The assembly's support radius in fitted sigma.
+/// @return     (R,) the entries.
+inline Eigen::VectorXd deployed_own_entries( const LGOperator& fit, double tau )
+{
+    Eigen::VectorXd out = Eigen::VectorXd::Constant(
+        fit.num_rows(), std::numeric_limits<double>::quiet_NaN());
+    if ( !fit.spike )
+    {
+        return out;
+    }
+    for ( int rho : model_rows(fit) )
+    {
+        const int own = fit.spike_column(rho);
+        if ( own < 0 )
+        {
+            continue;
+        }
+        double entry = fit.m1_diag(rho) * fit.s(rho);
+        if ( detail::in_window(fit, rho, own) )
+        {
+            const detail::KernelAt here = detail::kernel_at(fit, rho, fit.x_cols.row(own));
+            if ( here.u.row(0).squaredNorm() <= tau * tau )
+            {
+                entry += here.values(0) * (fit.m1_diag(rho) * fit.m2_diag(own));
+            }
+        }
+        if ( std::isfinite(entry) )
+        {
+            out(rho) = entry;
+        }
+    }
+    return out;
 }
 
 /// [both] Per-row relative residual against held-out probes -- the scorecard.

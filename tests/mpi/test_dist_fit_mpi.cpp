@@ -86,6 +86,7 @@
 #include "lgpsf/mpi/dist_wsym.hpp"
 #include "lgpsf/mode_policy.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -191,6 +192,11 @@ struct PassSpec
     /// table's verdict (`winner_fixed`, `fixed_score`, `guesses_skipped`) has
     /// to cross the wire with the searched result.
     bool table = false;
+    /// The own-column repair (2026-10-28): `DistFitInput::own_column_repair`
+    /// on the distributed side, and on the reference the same factor times the
+    /// SERIAL lower median of |deployed_own_entries|; the global median must
+    /// equal the serial one bitwise, and the assembly with it.
+    double own_column_repair = 0.0;
 };
 
 } // namespace
@@ -361,6 +367,7 @@ int main( int argc, char** argv )
         ref_vals.assign(static_cast<std::size_t>(n) * n, 0.0);
         std::vector<int> ref_fit_points(static_cast<std::size_t>(n), 0);
         std::vector<int> ref_window_size(static_cast<std::size_t>(n), 0);
+        double ref_median = std::numeric_limits<double>::quiet_NaN();
         if ( rank == 0 )
         {
             Eigen::MatrixXd HV_all(n, k);
@@ -373,9 +380,29 @@ int main( int argc, char** argv )
             const lgpsf::OperatorFit ref_fit = lgpsf::fit_operator(
                 x_all, m_all, m_all, V_all, HV_all, sigma_pass, cfg,
                 std::nullopt, std::nullopt, {}, {}, {}, nullptr, mu_prior_all);
+            double threshold = std::numeric_limits<double>::infinity();
+            if ( spec.own_column_repair > 0.0 )
+            {
+                const Eigen::VectorXd own =
+                    lgpsf::deployed_own_entries(ref_fit.model, tau_assemble);
+                std::vector<double> mags;
+                for ( Eigen::Index r = 0; r < own.size(); ++r )
+                {
+                    if ( std::isfinite(own(r)) && own(r) != 0.0 )
+                    {
+                        mags.push_back(std::abs(own(r)));
+                    }
+                }
+                std::sort(mags.begin(), mags.end());
+                if ( !mags.empty() )
+                {
+                    ref_median = mags[(mags.size() - 1) / 2];
+                    threshold = spec.own_column_repair * ref_median;
+                }
+            }
             const Eigen::SparseMatrix<double> B_ref = lgpsf::assemble_sparse(
                 ref_fit.model, tau_assemble, lgpsf::Symmetrize::None,
-                cfg.num_threads);
+                cfg.num_threads, threshold);
             for ( int outer = 0; outer < B_ref.outerSize(); ++outer )
             {
                 for ( Eigen::SparseMatrix<double>::InnerIterator it(B_ref, outer);
@@ -396,6 +423,7 @@ int main( int argc, char** argv )
         MPI_Bcast(ref_vals.data(), n * n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Bcast(ref_fit_points.data(), n, MPI_INT, 0, MPI_COMM_WORLD);
         MPI_Bcast(ref_window_size.data(), n, MPI_INT, 0, MPI_COMM_WORLD);
+        MPI_Bcast(&ref_median, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
         // ---- the byte cap, sized from the payload that will actually exist -
         //
@@ -529,6 +557,7 @@ int main( int argc, char** argv )
             }
         }
 
+        in.own_column_repair = spec.own_column_repair;
         const lgpsf::mpi::HaloPlan plan =
             lgpsf::mpi::halo_plan(MPI_COMM_WORLD, windows, in.x_local,
                                   in.col_gids, /*k_cut=*/32);
@@ -803,8 +832,25 @@ int main( int argc, char** argv )
         {
             mig_sum[1] += 1;   // ... and on the receive side, specifically
         }
+        long median_bad = 0;
+        if ( spec.own_column_repair > 0.0 )
+        {
+            // the global median is computed collectively: every rank holds the same value, the serial one
+            const bool same = ( std::isnan(ref_median) && std::isnan(res.own_column_median) )
+                              || res.own_column_median == ref_median;
+            long mine = same ? 0 : 1;
+            MPI_Allreduce(&mine, &median_bad, 1, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
+            if ( rank == 0 )
+            {
+                std::printf("[%s] own-column repair: median %.6e (serial %.6e), threshold %.3e, "
+                            "%ld rows beyond tau, %ld repaired, max dropped %.3e\n",
+                            label, res.own_column_median, ref_median, res.own_column_threshold,
+                            res.own_column.beyond_tau, res.own_column.repaired,
+                            res.own_column.max_dropped);
+            }
+        }
         const long total_bad =
-            tot_bad + tot_wsym_bad + tot_fp_bad + mig_sum[1];
+            tot_bad + tot_wsym_bad + tot_fp_bad + mig_sum[1] + median_bad;
         if ( rank == 0 )
         {
             if ( cfg.coarsen_above > 0 )
@@ -873,6 +919,7 @@ int main( int argc, char** argv )
         labels.push_back("empty-rank" + suffix);
         labels.push_back("prior-perguess" + suffix);
         labels.push_back("table" + suffix);
+        labels.push_back("own-column" + suffix);
 
         {
             PassSpec spec;
@@ -996,6 +1043,18 @@ int main( int argc, char** argv )
                 spec.bytes_cap = static_cast<std::size_t>(-1);
                 spec.expect_migration = true;
             }
+            failures += run_pass(spec);
+        }
+        {
+            // The own-column repair on top of the production shape (the table,
+            // the shifted a-priori centre): the global median, the threshold
+            // and the assembled rows must equal the serial ones bitwise.
+            PassSpec spec;
+            spec.label = labels[first + 9].c_str();
+            spec.coarsen = c;
+            spec.table = true;
+            spec.prior_shift = true;
+            spec.own_column_repair = 1e4;
             failures += run_pass(spec);
         }
     }

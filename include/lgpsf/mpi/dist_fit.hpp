@@ -34,8 +34,12 @@
 #include <Eigen/Sparse>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -113,6 +117,15 @@ struct DistFitInput
     /// tolerance of 0 would otherwise MEAN "target a perfectly even split",
     /// which is the meaning "off" displaces.
     double balance_tolerance = 0.0;
+
+    /// The own-column repair (2026-10-28; `OwnColumnReport` in lg_operator.hpp):
+    /// the assembly ships a row's kernel value at its own column untrimmed when
+    /// the tau trim would drop more than this factor times the GLOBAL median
+    /// |own-column entry| (`deployed_own_entries`, over every rank's rows).  0
+    /// (the default) is OFF: no median is computed and the assembly is what it
+    /// was before this existed, bit for bit.  Collective: every rank must pass
+    /// the same value.  1e4 is the calibrated value of the paper's campaign.
+    double own_column_repair = 0.0;
 
     /// (nrows) the previous rung's per-row WEIGHT for the rule, or empty on
     /// the first rung (where the window size is used, being the only thing
@@ -195,7 +208,52 @@ struct DistFitResult
 
     /// How the redistribution went, when it was on.  Telemetry.
     RowExchangeStats            balance;
+
+    /// The own-column repair (`DistFitInput::own_column_repair`), GLOBAL over
+    /// the ranks: counts summed, max_dropped the maximum; the median and the
+    /// threshold it set (NaN / infinity when the repair is off).
+    OwnColumnReport             own_column;
+    double                      own_column_median = std::numeric_limits<double>::quiet_NaN();
+    double                      own_column_threshold = std::numeric_limits<double>::infinity();
 };
+
+/// The exact LOWER median of the union of every rank's values (all positive
+/// and finite), the same on every rank and independent of how the values are
+/// distributed: a bisection on the bit patterns of positive doubles, which are
+/// ordered like the values, so at most 64 all-reductions of one count.  NaN
+/// when no rank has a value.  Collective.
+inline double global_lower_median( MPI_Comm comm, std::vector<double> values )
+{
+    std::sort(values.begin(), values.end());
+    long n_local = static_cast<long>(values.size()), n = 0;
+    MPI_Allreduce(&n_local, &n, 1, MPI_LONG, MPI_SUM, comm);
+    if ( n == 0 )
+    {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    const long k = (n - 1) / 2;   // 0-based rank of the lower median
+    double lo = values.empty() ? std::numeric_limits<double>::infinity() : values.front();
+    double hi = values.empty() ? 0.0 : values.back();
+    MPI_Allreduce(MPI_IN_PLACE, &lo, 1, MPI_DOUBLE, MPI_MIN, comm);
+    MPI_Allreduce(MPI_IN_PLACE, &hi, 1, MPI_DOUBLE, MPI_MAX, comm);
+    std::int64_t a = 0, b = 0;
+    std::memcpy(&a, &lo, sizeof a);
+    std::memcpy(&b, &hi, sizeof b);
+    // invariant: the answer is the smallest t in [a, b] with count(<= t) > k
+    while ( a < b )
+    {
+        const std::int64_t m = a + (b - a) / 2;
+        double t = 0.0;
+        std::memcpy(&t, &m, sizeof t);
+        long c_local = static_cast<long>(
+            std::upper_bound(values.begin(), values.end(), t) - values.begin()), c = 0;
+        MPI_Allreduce(&c_local, &c, 1, MPI_LONG, MPI_SUM, comm);
+        if ( c > k ) { b = m; } else { a = m + 1; }
+    }
+    double out = 0.0;
+    std::memcpy(&out, &a, sizeof out);
+    return out;
+}
 
 /// The SPMD fit.  `windows` must be the object handed to `halo_plan`
 /// (see `make_window_ellipsoids`); `tau_assemble` is the deployment
@@ -377,9 +435,46 @@ inline DistFitResult dist_fit( const HaloPlan& plan,
                                        out.fit.diagnostics.row_seconds(r));
     }
 
+    // ---- the own-column repair's threshold (collective when any rank asks) --
+    {
+        double probe[2] = { in.own_column_repair, -in.own_column_repair };
+        MPI_Allreduce(MPI_IN_PLACE, probe, 2, MPI_DOUBLE, MPI_MAX, plan.comm);
+        if ( probe[0] != -probe[1] )
+        {
+            throw std::invalid_argument(
+                "lgpsf::mpi::dist_fit: own_column_repair differs across ranks; "
+                "it is collective and must agree");
+        }
+        if ( in.own_column_repair > 0.0 )
+        {
+            const Eigen::VectorXd own = deployed_own_entries(out.fit.model, tau_assemble);
+            std::vector<double> mags;
+            for ( Eigen::Index r = 0; r < own.size(); ++r )
+            {
+                if ( std::isfinite(own(r)) && own(r) != 0.0 )
+                {
+                    mags.push_back(std::abs(own(r)));
+                }
+            }
+            out.own_column_median = global_lower_median(plan.comm, std::move(mags));
+            if ( std::isfinite(out.own_column_median) )
+            {
+                out.own_column_threshold = in.own_column_repair * out.own_column_median;
+            }
+        }
+    }
+
     // ---- assemble the UNsymmetrized local block ------------------------
     out.B_local = assemble_sparse(out.fit.model, tau_assemble,
-                                  Symmetrize::None, config.num_threads);
+                                  Symmetrize::None, config.num_threads,
+                                  out.own_column_threshold, &out.own_column);
+    {
+        long counts[2] = { out.own_column.beyond_tau, out.own_column.repaired };
+        MPI_Allreduce(MPI_IN_PLACE, counts, 2, MPI_LONG, MPI_SUM, plan.comm);
+        out.own_column.beyond_tau = counts[0];
+        out.own_column.repaired = counts[1];
+        MPI_Allreduce(MPI_IN_PLACE, &out.own_column.max_dropped, 1, MPI_DOUBLE, MPI_MAX, plan.comm);
+    }
     return out;
 }
 

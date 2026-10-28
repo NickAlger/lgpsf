@@ -554,6 +554,91 @@ TEST_CASE("a row whose covariance overflows still ships its smooth part with its
     }
 }
 
+TEST_CASE("an own column beyond tau: the repair ships a cancelling pair whole, and only above its threshold")
+{
+    // The field case of 2026-10-28 (lgpsf-antarctica dev/BADROW-GUARD-2026-10-28.md):
+    // the fitted kernel's centre sits off the node, the node lies just beyond
+    // tau, and the spike cancels a large kernel value there.  The tau trim drops
+    // the kernel half and the diagonal reads the spike alone.
+    std::mt19937 gen(33);
+    const LGOperator plain = hand_built(gen);
+    LGOperator op = plain;
+    const int rho = model_rows(op).front();
+    const double tau = 4.0;
+
+    const Eigen::VectorXd node = op.x_cols.row(rho).transpose();
+    Eigen::VectorXd theta_hat(3);
+    theta_hat << std::log(0.25), std::log(0.18), 0.0;
+    Eigen::VectorXd centre = node;
+    centre(0) -= 4.2 * 0.25;
+    op.theta.row(rho) = to_theta(theta_hat, centre, MuMode::Pinned).transpose();
+    const lgpsf::EllipsoidFrame frame = lgpsf::unpack_theta_hat(theta_hat, centre, MuMode::Pinned);
+    op.mu.row(rho) = frame.mu.transpose();
+    for ( int i = 0; i < 2; ++i )
+    {
+        for ( int j = 0; j < 2; ++j )
+        {
+            op.L(rho, i * 2 + j) = frame.L(i, j);
+        }
+    }
+    op.c.row(rho) *= 1e5;
+    const lgpsf::detail::KernelAt here = lgpsf::detail::kernel_at(op, rho, op.x_cols.row(rho));
+    const double radius = here.u.row(0).norm();
+    REQUIRE(radius > tau);
+    REQUIRE(radius < tau + 0.5);
+    const double dropped = here.values(0) * (op.m1_diag(rho) * op.m2_diag(rho));
+    REQUIRE(std::abs(dropped) > 1.0);
+    const double wanted = 1.25e-3;
+    op.s(rho) = (wanted - dropped) / op.m1_diag(rho);
+
+    lgpsf::OwnColumnReport r0, r_low, r_high;
+    const Eigen::MatrixXd A0 = Eigen::MatrixXd(
+        assemble_sparse(op, tau, lgpsf::Symmetrize::None, 1, std::numeric_limits<double>::infinity(), &r0));
+    const Eigen::MatrixXd A_low = Eigen::MatrixXd(
+        assemble_sparse(op, tau, lgpsf::Symmetrize::None, 1, 0.5 * std::abs(dropped), &r_low));
+    const Eigen::MatrixXd A_high = Eigen::MatrixXd(
+        assemble_sparse(op, tau, lgpsf::Symmetrize::None, 1, 2.0 * std::abs(dropped), &r_high));
+
+    // without the repair the diagonal is the spike half alone
+    CHECK(A0(rho, rho) == doctest::Approx(op.m1_diag(rho) * op.s(rho)));
+    CHECK(std::abs(A0(rho, rho) - wanted) > 0.5 * std::abs(dropped));
+    // repaired, the pair is whole: the diagonal is the sum, to the round-off of its terms
+    CHECK(std::abs(A_low(rho, rho) - wanted) < 1e-12 * std::abs(dropped));
+    // below the threshold nothing changes, bit for bit
+    CHECK(A_high == A0);
+    // and the repair touches nothing but that one entry, bit for bit
+    for ( int i = 0; i < A0.rows(); ++i )
+    {
+        for ( int j = 0; j < A0.cols(); ++j )
+        {
+            if ( i != rho || j != rho )
+            {
+                CHECK(A_low(i, j) == A0(i, j));
+            }
+        }
+    }
+    CHECK(r0.beyond_tau >= 1);
+    CHECK(r0.repaired == 0);
+    CHECK(r_low.repaired == 1);
+    CHECK(r_high.repaired == 0);
+    CHECK(r_low.beyond_tau == r0.beyond_tau);
+    CHECK(r0.max_dropped == doctest::Approx(std::abs(dropped)));
+
+    // the median's input: each row's own-column entry as the plain assembly ships it
+    const Eigen::VectorXd own = lgpsf::deployed_own_entries(op, tau);
+    for ( int r : model_rows(op) )
+    {
+        CHECK(own(r) == doctest::Approx(A0(r, r)).epsilon(1e-13));
+    }
+    // with no rows beyond tau the repair is a no-op at any threshold
+    const Eigen::MatrixXd P0 = Eigen::MatrixXd(assemble_sparse(plain, tau));
+    lgpsf::OwnColumnReport rp;
+    const Eigen::MatrixXd P1 = Eigen::MatrixXd(
+        assemble_sparse(plain, tau, lgpsf::Symmetrize::None, 0, 0.0, &rp));
+    CHECK(P1 == P0);
+    CHECK(rp.beyond_tau == 0);
+}
+
 TEST_CASE("a row whose spike or kernel is not finite ships nothing")
 {
     std::mt19937 gen(32);
